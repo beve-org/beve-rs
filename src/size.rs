@@ -52,6 +52,34 @@ pub fn write_size(mut n: u64, out: &mut Vec<u8>) {
     }
 }
 
+/// Encode SIZE into the provided 8-byte buffer and return the number of bytes used.
+#[inline]
+pub fn encode_size_to_array(mut n: u64, out: &mut [u8; 8]) -> usize {
+    if n < (1 << 6) {
+        out[0] = (n as u8) << 2;
+        1
+    } else if n < (1 << 14) {
+        out[0] = (((n & 0x3f) as u8) << 2) | 0b01;
+        n >>= 6;
+        out[1] = n as u8;
+        2
+    } else if n < (1 << 30) {
+        out[0] = (((n & 0x3f) as u8) << 2) | 0b10;
+        n >>= 6;
+        out[1] = n as u8;
+        out[2] = (n >> 8) as u8;
+        out[3] = (n >> 16) as u8;
+        4
+    } else {
+        out[0] = (((n & 0x3f) as u8) << 2) | 0b11;
+        n >>= 6;
+        for i in 0..7 {
+            out[i + 1] = (n >> (i * 8)) as u8;
+        }
+        8
+    }
+}
+
 #[inline]
 pub fn read_size(input: &[u8], pos: &mut usize) -> Result<u64> {
     if *pos >= input.len() { return Err(Error::Eof); }
@@ -86,4 +114,3 @@ pub fn read_size(input: &[u8], pos: &mut usize) -> Result<u64> {
         }
     }
 }
-

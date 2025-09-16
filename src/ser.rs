@@ -3,7 +3,7 @@ use serde::ser::{self, Serialize};
 
 use crate::error::{Error, Result};
 use crate::header::*;
-use crate::size::write_size;
+use crate::size::{write_size, encode_size_to_array};
 
 pub struct Serializer {
     pub(crate) buf: Vec<u8>,
@@ -19,6 +19,29 @@ impl Serializer {
 
     #[inline]
     fn extend_from_slice(&mut self, s: &[u8]) { self.buf.extend_from_slice(s) }
+
+    #[inline]
+    fn reserve_size_patch(&mut self) -> SizePatch {
+        let pos = self.buf.len();
+        self.buf.extend_from_slice(&[0u8; 8]);
+        SizePatch { pos }
+    }
+
+    #[inline]
+    fn finalize_size_patch(&mut self, patch: SizePatch, count: usize) {
+        let payload_start = patch.pos + 8;
+        let payload_end = self.buf.len();
+        let mut tmp = [0u8; 8];
+        let used = encode_size_to_array(count as u64, &mut tmp);
+        self.buf[patch.pos..patch.pos + used].copy_from_slice(&tmp[..used]);
+        let delta = 8 - used;
+        if delta > 0 {
+            if payload_start < payload_end {
+                self.buf.copy_within(payload_start..payload_end, patch.pos + used);
+            }
+            self.buf.truncate(payload_end - delta);
+        }
+    }
 
     // ----- helpers to write full VALUEs -----
     fn write_null(&mut self) { self.push(0) }
@@ -202,9 +225,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         self.serialize_seq(Some(len))
     }
 
-    fn serialize_tuple_struct(self, _name: &'static str, len: usize) -> Result<Self::SerializeTupleStruct> {
-        self.serialize_seq(Some(len))
-    }
+    fn serialize_tuple_struct(self, _name: &'static str, len: usize) -> Result<Self::SerializeTupleStruct> { self.serialize_seq(Some(len)) }
 
     fn serialize_tuple_variant(self, _name: &'static str, variant_index: u32, _variant: &'static str, len: usize) -> Result<Self::SerializeTupleVariant> {
         // Emit type-tag header+index, then the value as a generic array (tuple)
@@ -232,13 +253,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         value.serialize(self)
     }
 
-    fn serialize_bytes_newtype(self, v: &[u8]) -> Result<()> { // non-standard helper; not used by serde
-        self.serialize_bytes(v)
-    }
-
-    fn serialize_enum(self, _name: &'static str, _variant_index: u32, _variant: &'static str, _value: &dyn Serialize) -> Result<()> {
-        Err(Error::Unsupported("serialize_enum should be dispatched through variant helpers"))
-    }
+    // Note: No `serialize_enum`; enum variants dispatch through variant helpers.
 
     fn is_human_readable(&self) -> bool { false }
 }
@@ -247,12 +262,12 @@ impl<'a> ser::Serializer for &'a mut Serializer {
 
 enum SeqMode {
     Unknown,
-    Generic,
-    TypedUnsigned(u8), // bytecode
-    TypedSigned(u8),
-    TypedFloat(u8),
-    TypedBool { byte_acc: u8, bit_idx: u8 },
-    TypedString,
+    Generic { patch: Option<SizePatch> },
+    TypedUnsigned { byte_code: u8, patch: Option<SizePatch> },
+    TypedSigned { byte_code: u8, patch: Option<SizePatch> },
+    TypedFloat { byte_code: u8, patch: Option<SizePatch> },
+    TypedBool { byte_acc: u8, bit_idx: u8, patch: Option<SizePatch> },
+    TypedString { patch: Option<SizePatch> },
 }
 
 pub struct SeqSerializer<'a> {
@@ -260,27 +275,59 @@ pub struct SeqSerializer<'a> {
     len: Option<usize>,
     mode: SeqMode,
     count: usize,
-    // For unknown-length sequences we buffer and write at end
-    buffer: Vec<u8>,
 }
 
 impl<'a> SeqSerializer<'a> {
-    fn new(ser: &'a mut Serializer, len: Option<usize>) -> Self {
-        Self { ser, len, mode: SeqMode::Unknown, count: 0, buffer: Vec::new() }
+    fn new(ser: &'a mut Serializer, len: Option<usize>) -> Self { Self { ser, len, mode: SeqMode::Unknown, count: 0 } }
+
+    fn start_generic_if_needed(&mut self) {
+        if !matches!(self.mode, SeqMode::Generic { .. }) {
+            match self.len {
+                Some(n) => { self.ser.write_generic_array_header(n); self.mode = SeqMode::Generic { patch: None }; }
+                None => { self.ser.push(TYPE_GENERIC_ARRAY); let p = self.ser.reserve_size_patch(); self.mode = SeqMode::Generic { patch: Some(p) }; }
+            }
+        }
     }
 
-    fn ensure_generic_header(&mut self) {
+    fn start_typed_signed_if_needed(&mut self, byte_code: u8) {
+        match self.mode { SeqMode::TypedSigned { byte_code: bc, .. } if bc == byte_code => return, _ => {} }
         match self.len {
-            Some(n) if self.count == 0 => {
-                self.ser.write_generic_array_header(n);
-                self.mode = SeqMode::Generic;
+            Some(n) => { self.ser.write_typed_array_header_numeric(ARRAY_SIGNED, byte_code, n); self.mode = SeqMode::TypedSigned { byte_code, patch: None }; }
+            None => { let header = make_header(TYPE_TYPED_ARRAY, ARRAY_SIGNED, byte_code); self.ser.push(header); let p = self.ser.reserve_size_patch(); self.mode = SeqMode::TypedSigned { byte_code, patch: Some(p) }; }
+        }
+    }
+
+    fn start_typed_unsigned_if_needed(&mut self, byte_code: u8) {
+        match self.mode { SeqMode::TypedUnsigned { byte_code: bc, .. } if bc == byte_code => return, _ => {} }
+        match self.len {
+            Some(n) => { self.ser.write_typed_array_header_numeric(ARRAY_UNSIGNED, byte_code, n); self.mode = SeqMode::TypedUnsigned { byte_code, patch: None }; }
+            None => { let header = make_header(TYPE_TYPED_ARRAY, ARRAY_UNSIGNED, byte_code); self.ser.push(header); let p = self.ser.reserve_size_patch(); self.mode = SeqMode::TypedUnsigned { byte_code, patch: Some(p) }; }
+        }
+    }
+
+    fn start_typed_float_if_needed(&mut self, byte_code: u8) {
+        match self.mode { SeqMode::TypedFloat { byte_code: bc, .. } if bc == byte_code => return, _ => {} }
+        match self.len {
+            Some(n) => { self.ser.write_typed_array_header_numeric(ARRAY_FLOAT, byte_code, n); self.mode = SeqMode::TypedFloat { byte_code, patch: None }; }
+            None => { let header = make_header(TYPE_TYPED_ARRAY, ARRAY_FLOAT, byte_code); self.ser.push(header); let p = self.ser.reserve_size_patch(); self.mode = SeqMode::TypedFloat { byte_code, patch: Some(p) }; }
+        }
+    }
+
+    fn start_typed_bool_if_needed(&mut self) {
+        if !matches!(self.mode, SeqMode::TypedBool { .. }) {
+            match self.len {
+                Some(n) => { self.ser.write_typed_array_header_bool(n); self.mode = SeqMode::TypedBool { byte_acc: 0, bit_idx: 0, patch: None }; }
+                None => { let header = make_header(TYPE_TYPED_ARRAY, ARRAY_BOOL_OR_STRING, 0); self.ser.push(header); let p = self.ser.reserve_size_patch(); self.mode = SeqMode::TypedBool { byte_acc: 0, bit_idx: 0, patch: Some(p) }; }
             }
-            None => {
-                if let SeqMode::Unknown = self.mode {
-                    self.mode = SeqMode::Generic;
-                }
+        }
+    }
+
+    fn start_typed_string_if_needed(&mut self) {
+        if !matches!(self.mode, SeqMode::TypedString { .. }) {
+            match self.len {
+                Some(n) => { self.ser.write_typed_array_header_string(n); self.mode = SeqMode::TypedString { patch: None }; }
+                None => { let header = make_header(TYPE_TYPED_ARRAY, ARRAY_BOOL_OR_STRING, 1); self.ser.push(header); let p = self.ser.reserve_size_patch(); self.mode = SeqMode::TypedString { patch: Some(p) }; }
             }
-            _ => {}
         }
     }
 }
@@ -293,55 +340,27 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
     type Ok = ();
     type Error = Error;
 
-    type SerializeSeq = ser::Impossible<(), Error>;
-    type SerializeTuple = ser::Impossible<(), Error>;
-    type SerializeTupleStruct = ser::Impossible<(), Error>;
-    type SerializeTupleVariant = ser::Impossible<(), Error>;
-    type SerializeMap = ser::Impossible<(), Error>;
-    type SerializeStruct = ser::Impossible<(), Error>;
-    type SerializeStructVariant = ser::Impossible<(), Error>;
+    type SerializeSeq = SeqSerializer<'b>;
+    type SerializeTuple = SeqSerializer<'b>;
+    type SerializeTupleStruct = SeqSerializer<'b>;
+    type SerializeTupleVariant = VariantSeqSerializer<'b>;
+    type SerializeMap = MapSerializer<'b>;
+    type SerializeStruct = StructSerializer<'b>;
+    type SerializeStructVariant = VariantStructSerializer<'b>;
 
     fn serialize_bool(self, v: bool) -> Result<()> {
-        match &mut self.seq.mode {
-            SeqMode::Unknown => {
-                match self.seq.len {
-                    Some(n) => {
-                        self.seq.ser.write_typed_array_header_bool(n);
-                        self.seq.mode = SeqMode::TypedBool { byte_acc: 0, bit_idx: 0 };
-                    }
-                    None => {
-                        self.seq.mode = SeqMode::TypedBool { byte_acc: 0, bit_idx: 0 };
-                    }
-                }
+        self.seq.start_typed_bool_if_needed();
+        if let SeqMode::TypedBool { byte_acc, bit_idx, .. } = &mut self.seq.mode {
+            if v { *byte_acc |= 1 << *bit_idx; }
+            *bit_idx += 1;
+            if *bit_idx == 8 {
+                self.seq.ser.push(*byte_acc);
+                *byte_acc = 0;
+                *bit_idx = 0;
             }
-            SeqMode::TypedBool { .. } => {}
-            _ => return Err(Error::Mismatch("heterogeneous sequence: expected boolean consistent with first element")),
-        }
-
-        match &mut self.seq.mode {
-            SeqMode::TypedBool { byte_acc, bit_idx } => {
-                if self.seq.len.is_some() {
-                    if v { *byte_acc |= 1 << *bit_idx; }
-                    *bit_idx += 1;
-                    if *bit_idx == 8 {
-                        self.seq.ser.push(*byte_acc);
-                        *byte_acc = 0;
-                        *bit_idx = 0;
-                    }
-                } else {
-                    if v { *byte_acc |= 1 << *bit_idx; }
-                    *bit_idx += 1;
-                    if *bit_idx == 8 {
-                        self.seq.buffer.push(*byte_acc);
-                        *byte_acc = 0;
-                        *bit_idx = 0;
-                    }
-                }
-                self.seq.count += 1;
-                Ok(())
-            }
-            _ => unreachable!(),
-        }
+            self.seq.count += 1;
+            Ok(())
+        } else { unreachable!() }
     }
 
     fn serialize_i8(self, v: i8) -> Result<()> { self.serialize_signed(v, 1) }
@@ -365,78 +384,38 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
     }
 
     fn serialize_str(self, v: &str) -> Result<()> {
-        match self.seq.mode {
-            SeqMode::Unknown => {
-                match self.seq.len {
-                    Some(n) => {
-                        self.seq.ser.write_typed_array_header_string(n);
-                    }
-                    None => {}
-                }
-                self.seq.mode = SeqMode::TypedString;
-            }
-            SeqMode::TypedString => {}
-            _ => return Err(Error::Mismatch("heterogeneous sequence types (expected all strings)")),
-        }
-
-        // Strings in typed string array are written as SIZE | DATA (no per-element header)
-        if self.seq.len.is_some() {
-            write_size(v.len() as u64, &mut self.seq.ser.buf);
-            self.seq.ser.extend_from_slice(v.as_bytes());
-        } else {
-            write_size(v.len() as u64, &mut self.seq.buffer);
-            self.seq.buffer.extend_from_slice(v.as_bytes());
-        }
+        self.seq.start_typed_string_if_needed();
+        write_size(v.len() as u64, &mut self.seq.ser.buf);
+        self.seq.ser.extend_from_slice(v.as_bytes());
         self.seq.count += 1;
         Ok(())
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<()> {
         // Treat as unsigned typed array of u8 nested sequence-of-bytes: fallback to generic element
-        self.seq.ensure_generic_header();
+        self.seq.start_generic_if_needed();
         // Write full VALUE for bytes as a typed array of u8
         let header = make_header(TYPE_TYPED_ARRAY, ARRAY_UNSIGNED, 0);
-        if self.seq.len.is_some() {
-            self.seq.ser.push(header);
-            write_size(v.len() as u64, &mut self.seq.ser.buf);
-            self.seq.ser.extend_from_slice(v);
-        } else {
-            self.seq.buffer.push(header);
-            write_size(v.len() as u64, &mut self.seq.buffer);
-            self.seq.buffer.extend_from_slice(v);
-        }
+        self.seq.ser.push(header);
+        write_size(v.len() as u64, &mut self.seq.ser.buf);
+        self.seq.ser.extend_from_slice(v);
         self.seq.count += 1;
         Ok(())
     }
 
     fn serialize_none(self) -> Result<()> { self.serialize_unit() }
     fn serialize_some<T: ?Sized + Serialize>(self, v: &T) -> Result<()> { v.serialize(self) }
-    fn serialize_unit(self) -> Result<()> {
-        self.seq.ensure_generic_header();
-        if self.seq.len.is_some() {
-            self.seq.ser.write_null();
-        } else {
-            self.seq.buffer.push(0);
-        }
-        self.seq.count += 1;
-        Ok(())
-    }
+    fn serialize_unit(self) -> Result<()> { self.seq.start_generic_if_needed(); self.seq.ser.write_null(); self.seq.count += 1; Ok(()) }
 
     fn serialize_unit_struct(self, _name: &'static str) -> Result<()> { self.serialize_unit() }
 
     fn serialize_unit_variant(self, _name: &'static str, variant_index: u32, _variant: &'static str) -> Result<()> {
         // As a generic element: extension type-tag with null value
-        self.seq.ensure_generic_header();
+        self.seq.start_generic_if_needed();
         let h = make_extension_header(EXT_TYPE_TAG);
-        if self.seq.len.is_some() {
-            self.seq.ser.push(h);
-            write_size(variant_index as u64, &mut self.seq.ser.buf);
-            self.seq.ser.write_null();
-        } else {
-            self.seq.buffer.push(h);
-            write_size(variant_index as u64, &mut self.seq.buffer);
-            self.seq.buffer.push(0);
-        }
+        self.seq.ser.push(h);
+        write_size(variant_index as u64, &mut self.seq.ser.buf);
+        self.seq.ser.write_null();
         self.seq.count += 1;
         Ok(())
     }
@@ -450,103 +429,78 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
         _variant: &'static str,
         value: &T,
     ) -> Result<()> {
-        self.seq.ensure_generic_header();
+        self.seq.start_generic_if_needed();
         let h = make_extension_header(EXT_TYPE_TAG);
-        if self.seq.len.is_some() {
-            self.seq.ser.push(h);
-            write_size(variant_index as u64, &mut self.seq.ser.buf);
-            value.serialize(&mut self.seq.ser)
-        } else {
-            self.seq.buffer.push(h);
-            write_size(variant_index as u64, &mut self.seq.buffer);
-            let mut tmp = Serializer { buf: Vec::new() };
-            value.serialize(&mut tmp)?;
-            self.seq.buffer.extend_from_slice(&tmp.buf);
-            Ok(())
-        }
+        self.seq.ser.push(h);
+        write_size(variant_index as u64, &mut self.seq.ser.buf);
+        // Reborrow underlying serializer as &mut Serializer to satisfy trait
+        let ser = &mut *self.seq.ser;
+        value.serialize(ser)
     }
 
-    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> { Err(Error::Unsupported("nested seq via seq element")) }
-    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple> { Err(Error::Unsupported("nested tuple via seq element")) }
-    fn serialize_tuple_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeTupleStruct> { Err(Error::Unsupported("nested tuple struct via seq element")) }
-    fn serialize_tuple_variant(self, _name: &'static str, _variant_index: u32, _variant: &'static str, _len: usize) -> Result<Self::SerializeTupleVariant> { Err(Error::Unsupported("nested tuple variant via seq element")) }
-    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> { Err(Error::Unsupported("map in typed sequence element")) }
-    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> { Err(Error::Unsupported("struct in typed sequence element")) }
-    fn serialize_struct_variant(self, _name: &'static str, _variant_index: u32, _variant: &'static str, _len: usize) -> Result<Self::SerializeStructVariant> { Err(Error::Unsupported("struct variant in typed sequence element")) }
-
-    fn serialize_f32(self, v: f32) -> Result<()> where Self: Sized { self.serialize_float_by(v.to_le_bytes().as_slice(), 2) }
+    fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq> { self.seq.start_generic_if_needed(); self.seq.count += 1; Ok(SeqSerializer::new(self.seq.ser, len)) }
+    fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple> { self.seq.start_generic_if_needed(); self.seq.count += 1; Ok(SeqSerializer::new(self.seq.ser, Some(len))) }
+    fn serialize_tuple_struct(self, _name: &'static str, len: usize) -> Result<Self::SerializeTupleStruct> { self.seq.start_generic_if_needed(); self.seq.count += 1; Ok(SeqSerializer::new(self.seq.ser, Some(len))) }
+    fn serialize_tuple_variant(self, _name: &'static str, variant_index: u32, _variant: &'static str, len: usize) -> Result<Self::SerializeTupleVariant> { self.seq.start_generic_if_needed(); self.seq.count += 1; let h=make_extension_header(EXT_TYPE_TAG); self.seq.ser.push(h); write_size(variant_index as u64, &mut self.seq.ser.buf); Ok(VariantSeqSerializer::new(self.seq.ser, len)) }
+    fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap> { self.seq.start_generic_if_needed(); self.seq.count += 1; Ok(MapSerializer::new(self.seq.ser, len)) }
+    fn serialize_struct(self, _name: &'static str, len: usize) -> Result<Self::SerializeStruct> { self.seq.start_generic_if_needed(); self.seq.count += 1; Ok(StructSerializer::new(self.seq.ser, len)) }
+    fn serialize_struct_variant(self, _name: &'static str, variant_index: u32, _variant: &'static str, len: usize) -> Result<Self::SerializeStructVariant> { self.seq.start_generic_if_needed(); self.seq.count += 1; let h=make_extension_header(EXT_TYPE_TAG); self.seq.ser.push(h); write_size(variant_index as u64, &mut self.seq.ser.buf); Ok(VariantStructSerializer::new(self.seq.ser, len)) }
 
     // helper impls
 }
 
 impl<'a, 'b> SeqElemSer<'a, 'b> {
-    fn serialize_signed<T: Into<i128>>(self, v: T, bytes: usize) -> Result<()> {
+    fn serialize_signed<T: Into<i128>>(&mut self, v: T, bytes: usize) -> Result<()> {
         let byte_code = Serializer::code_for_bytes(bytes);
         match self.seq.mode {
             SeqMode::Unknown => {
                 match self.seq.len {
-                    Some(n) => {
-                        self.seq.ser.write_typed_array_header_numeric(ARRAY_SIGNED, byte_code, n);
-                    }
-                    None => {}
+                    Some(n) => { self.seq.ser.write_typed_array_header_numeric(ARRAY_SIGNED, byte_code, n); self.seq.mode = SeqMode::TypedSigned { byte_code, patch: None }; }
+                    None => { let header = make_header(TYPE_TYPED_ARRAY, ARRAY_SIGNED, byte_code); self.seq.ser.push(header); let p = self.seq.ser.reserve_size_patch(); self.seq.mode = SeqMode::TypedSigned { byte_code, patch: Some(p) }; }
                 }
-                self.seq.mode = SeqMode::TypedSigned(byte_code);
             }
-            SeqMode::TypedSigned(bc) if bc == byte_code => {}
+            SeqMode::TypedSigned { byte_code: bc, .. } if bc == byte_code => {}
             _ => return Err(Error::Mismatch("heterogeneous sequence types (signed integer mix)")),
         }
         let x: i128 = v.into();
         let bytes_le = x.to_le_bytes();
-        if self.seq.len.is_some() {
-            self.seq.ser.extend_from_slice(&bytes_le[..bytes]);
-        } else {
-            self.seq.buffer.extend_from_slice(&bytes_le[..bytes]);
-        }
+        // Stream directly into output; unknown-length arrays use backpatching
+        self.seq.ser.extend_from_slice(&bytes_le[..bytes]);
         self.seq.count += 1;
         Ok(())
     }
 
-    fn serialize_unsigned<T: Into<u128>>(self, v: T, bytes: usize) -> Result<()> {
+    fn serialize_unsigned<T: Into<u128>>(&mut self, v: T, bytes: usize) -> Result<()> {
         let byte_code = Serializer::code_for_bytes(bytes);
         match self.seq.mode {
             SeqMode::Unknown => {
                 match self.seq.len {
-                    Some(n) => self.seq.ser.write_typed_array_header_numeric(ARRAY_UNSIGNED, byte_code, n),
-                    None => {}
+                    Some(n) => { self.seq.ser.write_typed_array_header_numeric(ARRAY_UNSIGNED, byte_code, n); self.seq.mode = SeqMode::TypedUnsigned { byte_code, patch: None }; }
+                    None => { let header = make_header(TYPE_TYPED_ARRAY, ARRAY_UNSIGNED, byte_code); self.seq.ser.push(header); let p = self.seq.ser.reserve_size_patch(); self.seq.mode = SeqMode::TypedUnsigned { byte_code, patch: Some(p) }; }
                 }
-                self.seq.mode = SeqMode::TypedUnsigned(byte_code);
             }
-            SeqMode::TypedUnsigned(bc) if bc == byte_code => {}
+            SeqMode::TypedUnsigned { byte_code: bc, .. } if bc == byte_code => {}
             _ => return Err(Error::Mismatch("heterogeneous sequence types (unsigned integer mix)")),
         }
         let x: u128 = v.into();
         let bytes_le = x.to_le_bytes();
-        if self.seq.len.is_some() {
-            self.seq.ser.extend_from_slice(&bytes_le[..bytes]);
-        } else {
-            self.seq.buffer.extend_from_slice(&bytes_le[..bytes]);
-        }
+        self.seq.ser.extend_from_slice(&bytes_le[..bytes]);
         self.seq.count += 1;
         Ok(())
     }
 
-    fn serialize_float_by(self, raw: &[u8], byte_code: u8) -> Result<()> {
+    fn serialize_float_by(&mut self, raw: &[u8], byte_code: u8) -> Result<()> {
         match self.seq.mode {
             SeqMode::Unknown => {
                 match self.seq.len {
-                    Some(n) => self.seq.ser.write_typed_array_header_numeric(ARRAY_FLOAT, byte_code, n),
-                    None => {}
+                    Some(n) => { self.seq.ser.write_typed_array_header_numeric(ARRAY_FLOAT, byte_code, n); self.seq.mode = SeqMode::TypedFloat { byte_code, patch: None }; }
+                    None => { let header = make_header(TYPE_TYPED_ARRAY, ARRAY_FLOAT, byte_code); self.seq.ser.push(header); let p = self.seq.ser.reserve_size_patch(); self.seq.mode = SeqMode::TypedFloat { byte_code, patch: Some(p) }; }
                 }
-                self.seq.mode = SeqMode::TypedFloat(byte_code);
             }
-            SeqMode::TypedFloat(bc) if bc == byte_code => {}
+            SeqMode::TypedFloat { byte_code: bc, .. } if bc == byte_code => {}
             _ => return Err(Error::Mismatch("heterogeneous sequence types (float mix)")),
         }
-        if self.seq.len.is_some() {
-            self.seq.ser.extend_from_slice(raw);
-        } else {
-            self.seq.buffer.extend_from_slice(raw);
-        }
+        self.seq.ser.extend_from_slice(raw);
         self.seq.count += 1;
         Ok(())
     }
@@ -557,17 +511,10 @@ impl<'a> ser::SerializeSeq for SeqSerializer<'a> {
     type Error = Error;
 
     fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> {
-        // If we are already in generic mode, just write full value(s)
-        if matches!(self.mode, SeqMode::Generic) {
-            if self.len.is_some() {
-                value.serialize(&mut *self.ser)
-            } else {
-                let mut tmp = Serializer { buf: Vec::new() };
-                value.serialize(&mut tmp)?;
-                self.buffer.extend_from_slice(&tmp.buf);
-                self.count += 1;
-                Ok(())
-            }
+        if matches!(self.mode, SeqMode::Generic { .. }) {
+            value.serialize(&mut *self.ser)?;
+            self.count += 1;
+            Ok(())
         } else {
             let mut elem = SeqElemSer { seq: self };
             value.serialize(&mut elem)
@@ -575,47 +522,17 @@ impl<'a> ser::SerializeSeq for SeqSerializer<'a> {
     }
 
     fn end(mut self) -> Result<()> {
-        // Flush boolean bits
-        if let SeqMode::TypedBool { byte_acc, bit_idx } = &mut self.mode {
-            if self.len.is_some() {
-                if *bit_idx != 0 { self.ser.push(*byte_acc); }
-            } else {
-                if *bit_idx != 0 { self.buffer.push(*byte_acc); }
-            }
-        }
-        if self.len.is_none() {
-            // Unknown length; now write header + size + buffer
-            match self.mode {
-                SeqMode::Unknown => {
-                    // zero-length sequence; choose generic for compatibility
-                    self.ser.write_generic_array_header(0);
-                }
-                SeqMode::Generic => {
-                    self.ser.write_generic_array_header(self.count);
-                    self.ser.extend_from_slice(&self.buffer);
-                }
-                SeqMode::TypedUnsigned(bc) => {
-                    self.ser.write_typed_array_header_numeric(ARRAY_UNSIGNED, bc, self.count);
-                    self.ser.extend_from_slice(&self.buffer);
-                }
-                SeqMode::TypedSigned(bc) => {
-                    self.ser.write_typed_array_header_numeric(ARRAY_SIGNED, bc, self.count);
-                    self.ser.extend_from_slice(&self.buffer);
-                }
-                SeqMode::TypedFloat(bc) => {
-                    self.ser.write_typed_array_header_numeric(ARRAY_FLOAT, bc, self.count);
-                    self.ser.extend_from_slice(&self.buffer);
-                }
-                SeqMode::TypedBool { .. } => {
-                    self.ser.write_typed_array_header_bool(self.count);
-                    self.ser.extend_from_slice(&self.buffer);
-                }
-                SeqMode::TypedString => {
-                    self.ser.write_typed_array_header_string(self.count);
-                    self.ser.extend_from_slice(&self.buffer);
-                }
-            }
-        }
+        if let SeqMode::TypedBool { byte_acc, bit_idx, .. } = &mut self.mode { if *bit_idx != 0 { self.ser.push(*byte_acc); } }
+        if self.len.is_none() { match self.mode {
+            SeqMode::Unknown => { self.ser.push(TYPE_GENERIC_ARRAY); let mut tmp=[0u8;8]; let used=encode_size_to_array(0,&mut tmp); self.ser.extend_from_slice(&tmp[..used]); }
+            SeqMode::Generic { patch: Some(p) } => self.ser.finalize_size_patch(p, self.count),
+            SeqMode::TypedUnsigned { patch: Some(p), .. } => self.ser.finalize_size_patch(p, self.count),
+            SeqMode::TypedSigned { patch: Some(p), .. } => self.ser.finalize_size_patch(p, self.count),
+            SeqMode::TypedFloat { patch: Some(p), .. } => self.ser.finalize_size_patch(p, self.count),
+            SeqMode::TypedBool { patch: Some(p), .. } => self.ser.finalize_size_patch(p, self.count),
+            SeqMode::TypedString { patch: Some(p) } => self.ser.finalize_size_patch(p, self.count),
+            _ => {}
+        }}
         Ok(())
     }
 }
@@ -630,31 +547,28 @@ impl<'a> ser::SerializeTuple for SeqSerializer<'a> {
 impl<'a> ser::SerializeTupleStruct for SeqSerializer<'a> {
     type Ok = ();
     type Error = Error;
-    fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> { ser::SerializeSeq::serialize_element(self, value) }
+    fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> { ser::SerializeSeq::serialize_element(self, value) }
     fn end(self) -> Result<()> { ser::SerializeSeq::end(self) }
 }
 
 // =============== Tuple Variant Serializer ===============
 
-pub struct VariantSeqSerializer<'a> {
-    ser: &'a mut Serializer,
-    inner: SeqSerializer<'a>,
-}
+pub struct VariantSeqSerializer<'a> { inner: SeqSerializer<'a> }
 
 impl<'a> VariantSeqSerializer<'a> {
     fn new(ser: &'a mut Serializer, len: usize) -> Self {
         let mut inner = SeqSerializer::new(ser, Some(len));
         // For tuple variants, we encode as a generic array as the VALUE following the tag
-        inner.ensure_generic_header();
-        Self { ser: inner.ser, inner }
+        inner.start_generic_if_needed();
+        Self { inner }
     }
 }
 
 impl<'a> ser::SerializeTupleVariant for VariantSeqSerializer<'a> {
     type Ok = ();
     type Error = Error;
-    fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> { self.inner.serialize_element(value) }
-    fn end(self) -> Result<()> { self.inner.end() }
+    fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> { ser::SerializeSeq::serialize_element(&mut self.inner, value) }
+    fn end(self) -> Result<()> { ser::SerializeSeq::end(self.inner) }
 }
 
 // =============== Map/Struct Serializer ===============
@@ -671,13 +585,11 @@ pub struct MapSerializer<'a> {
     len: Option<usize>,
     mode: KeyMode,
     count: usize,
-    buffer: Vec<u8>,
+    patch: Option<SizePatch>,
 }
 
 impl<'a> MapSerializer<'a> {
-    fn new(ser: &'a mut Serializer, len: Option<usize>) -> Self {
-        Self { ser, len, mode: KeyMode::Unknown, count: 0, buffer: Vec::new() }
-    }
+    fn new(ser: &'a mut Serializer, len: Option<usize>) -> Self { Self { ser, len, mode: KeyMode::Unknown, count: 0, patch: None } }
 }
 
 impl<'a> ser::SerializeMap for MapSerializer<'a> {
@@ -701,30 +613,166 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                 match self.map.mode {
                     KeyMode::Unknown => {
                         if let Some(n) = self.map.len { self.map.ser.push(TYPE_OBJECT | (KEY_STRING << 3)); write_size(n as u64, &mut self.map.ser.buf); }
+                        else { self.map.ser.push(TYPE_OBJECT | (KEY_STRING << 3)); self.map.patch = Some(self.map.ser.reserve_size_patch()); }
                         self.map.mode = KeyMode::String;
                     }
                     KeyMode::String => {}
                     _ => return Err(Error::Mismatch("object keys must be homogeneous")),
                 }
-                if self.map.len.is_some() {
-                    write_size(v.len() as u64, &mut self.map.ser.buf);
-                    self.map.ser.extend_from_slice(v.as_bytes());
-                } else {
-                    write_size(v.len() as u64, &mut self.map.buffer);
-                    self.map.buffer.extend_from_slice(v.as_bytes());
-                }
+                write_size(v.len() as u64, &mut self.map.ser.buf);
+                self.map.ser.extend_from_slice(v.as_bytes());
                 Ok(())
             }
-            fn serialize_i8(self, v: i8) -> Result<()> { self.serialize_signed(v, 1) }
-            fn serialize_i16(self, v: i16) -> Result<()> { self.serialize_signed(v, 2) }
-            fn serialize_i32(self, v: i32) -> Result<()> { self.serialize_signed(v, 4) }
-            fn serialize_i64(self, v: i64) -> Result<()> { self.serialize_signed(v, 8) }
-            fn serialize_i128(self, v: i128) -> Result<()> { self.serialize_signed(v, 16) }
-            fn serialize_u8(self, v: u8) -> Result<()> { self.serialize_unsigned(v, 1) }
-            fn serialize_u16(self, v: u16) -> Result<()> { self.serialize_unsigned(v, 2) }
-            fn serialize_u32(self, v: u32) -> Result<()> { self.serialize_unsigned(v, 4) }
-            fn serialize_u64(self, v: u64) -> Result<()> { self.serialize_unsigned(v, 8) }
-            fn serialize_u128(self, v: u128) -> Result<()> { self.serialize_unsigned(v, 16) }
+            fn serialize_i8(self, v: i8) -> Result<()> {
+                let bytes = 1; let code = Serializer::code_for_bytes(bytes);
+                match self.map.mode {
+                    KeyMode::Unknown => {
+                        if let Some(n) = self.map.len { self.map.ser.push(make_header(TYPE_OBJECT, KEY_SIGNED, code)); write_size(n as u64, &mut self.map.ser.buf); }
+                        else { self.map.ser.push(make_header(TYPE_OBJECT, KEY_SIGNED, code)); self.map.patch = Some(self.map.ser.reserve_size_patch()); }
+                        self.map.mode = KeyMode::Signed(code);
+                    }
+                    KeyMode::Signed(c) if c == code => {}
+                    _ => return Err(Error::Mismatch("object keys must be homogeneous signed integers of same width")),
+                }
+                let raw = (v as i128).to_le_bytes();
+                self.map.ser.extend_from_slice(&raw[..bytes]);
+                Ok(())
+            }
+            fn serialize_i16(self, v: i16) -> Result<()> {
+                let bytes = 2; let code = Serializer::code_for_bytes(bytes);
+                match self.map.mode {
+                    KeyMode::Unknown => {
+                        if let Some(n) = self.map.len { self.map.ser.push(make_header(TYPE_OBJECT, KEY_SIGNED, code)); write_size(n as u64, &mut self.map.ser.buf); }
+                        else { self.map.ser.push(make_header(TYPE_OBJECT, KEY_SIGNED, code)); self.map.patch = Some(self.map.ser.reserve_size_patch()); }
+                        self.map.mode = KeyMode::Signed(code);
+                    }
+                    KeyMode::Signed(c) if c == code => {}
+                    _ => return Err(Error::Mismatch("object keys must be homogeneous signed integers of same width")),
+                }
+                let raw = (v as i128).to_le_bytes();
+                self.map.ser.extend_from_slice(&raw[..bytes]);
+                Ok(())
+            }
+            fn serialize_i32(self, v: i32) -> Result<()> {
+                let bytes = 4; let code = Serializer::code_for_bytes(bytes);
+                match self.map.mode {
+                    KeyMode::Unknown => {
+                        if let Some(n) = self.map.len { self.map.ser.push(make_header(TYPE_OBJECT, KEY_SIGNED, code)); write_size(n as u64, &mut self.map.ser.buf); }
+                        else { self.map.ser.push(make_header(TYPE_OBJECT, KEY_SIGNED, code)); self.map.patch = Some(self.map.ser.reserve_size_patch()); }
+                        self.map.mode = KeyMode::Signed(code);
+                    }
+                    KeyMode::Signed(c) if c == code => {}
+                    _ => return Err(Error::Mismatch("object keys must be homogeneous signed integers of same width")),
+                }
+                let raw = (v as i128).to_le_bytes();
+                self.map.ser.extend_from_slice(&raw[..bytes]);
+                Ok(())
+            }
+            fn serialize_i64(self, v: i64) -> Result<()> {
+                let bytes = 8; let code = Serializer::code_for_bytes(bytes);
+                match self.map.mode {
+                    KeyMode::Unknown => {
+                        if let Some(n) = self.map.len { self.map.ser.push(make_header(TYPE_OBJECT, KEY_SIGNED, code)); write_size(n as u64, &mut self.map.ser.buf); }
+                        else { self.map.ser.push(make_header(TYPE_OBJECT, KEY_SIGNED, code)); self.map.patch = Some(self.map.ser.reserve_size_patch()); }
+                        self.map.mode = KeyMode::Signed(code);
+                    }
+                    KeyMode::Signed(c) if c == code => {}
+                    _ => return Err(Error::Mismatch("object keys must be homogeneous signed integers of same width")),
+                }
+                let raw = (v as i128).to_le_bytes();
+                self.map.ser.extend_from_slice(&raw[..bytes]);
+                Ok(())
+            }
+            fn serialize_i128(self, v: i128) -> Result<()> {
+                let bytes = 16; let code = Serializer::code_for_bytes(bytes);
+                match self.map.mode {
+                    KeyMode::Unknown => {
+                        if let Some(n) = self.map.len { self.map.ser.push(make_header(TYPE_OBJECT, KEY_SIGNED, code)); write_size(n as u64, &mut self.map.ser.buf); }
+                        else { self.map.ser.push(make_header(TYPE_OBJECT, KEY_SIGNED, code)); self.map.patch = Some(self.map.ser.reserve_size_patch()); }
+                        self.map.mode = KeyMode::Signed(code);
+                    }
+                    KeyMode::Signed(c) if c == code => {}
+                    _ => return Err(Error::Mismatch("object keys must be homogeneous signed integers of same width")),
+                }
+                let raw = v.to_le_bytes();
+                self.map.ser.extend_from_slice(&raw[..bytes]);
+                Ok(())
+            }
+            fn serialize_u8(self, v: u8) -> Result<()> {
+                let bytes = 1; let code = Serializer::code_for_bytes(bytes);
+                match self.map.mode {
+                    KeyMode::Unknown => {
+                        if let Some(n) = self.map.len { self.map.ser.push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code)); write_size(n as u64, &mut self.map.ser.buf); }
+                        else { self.map.ser.push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code)); self.map.patch = Some(self.map.ser.reserve_size_patch()); }
+                        self.map.mode = KeyMode::Unsigned(code);
+                    }
+                    KeyMode::Unsigned(c) if c == code => {}
+                    _ => return Err(Error::Mismatch("object keys must be homogeneous unsigned integers of same width")),
+                }
+                let raw = (v as u128).to_le_bytes();
+                self.map.ser.extend_from_slice(&raw[..bytes]);
+                Ok(())
+            }
+            fn serialize_u16(self, v: u16) -> Result<()> {
+                let bytes = 2; let code = Serializer::code_for_bytes(bytes);
+                match self.map.mode {
+                    KeyMode::Unknown => {
+                        if let Some(n) = self.map.len { self.map.ser.push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code)); write_size(n as u64, &mut self.map.ser.buf); }
+                        else { self.map.ser.push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code)); self.map.patch = Some(self.map.ser.reserve_size_patch()); }
+                        self.map.mode = KeyMode::Unsigned(code);
+                    }
+                    KeyMode::Unsigned(c) if c == code => {}
+                    _ => return Err(Error::Mismatch("object keys must be homogeneous unsigned integers of same width")),
+                }
+                let raw = (v as u128).to_le_bytes();
+                self.map.ser.extend_from_slice(&raw[..bytes]);
+                Ok(())
+            }
+            fn serialize_u32(self, v: u32) -> Result<()> {
+                let bytes = 4; let code = Serializer::code_for_bytes(bytes);
+                match self.map.mode {
+                    KeyMode::Unknown => {
+                        if let Some(n) = self.map.len { self.map.ser.push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code)); write_size(n as u64, &mut self.map.ser.buf); }
+                        else { self.map.ser.push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code)); self.map.patch = Some(self.map.ser.reserve_size_patch()); }
+                        self.map.mode = KeyMode::Unsigned(code);
+                    }
+                    KeyMode::Unsigned(c) if c == code => {}
+                    _ => return Err(Error::Mismatch("object keys must be homogeneous unsigned integers of same width")),
+                }
+                let raw = (v as u128).to_le_bytes();
+                self.map.ser.extend_from_slice(&raw[..bytes]);
+                Ok(())
+            }
+            fn serialize_u64(self, v: u64) -> Result<()> {
+                let bytes = 8; let code = Serializer::code_for_bytes(bytes);
+                match self.map.mode {
+                    KeyMode::Unknown => {
+                        if let Some(n) = self.map.len { self.map.ser.push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code)); write_size(n as u64, &mut self.map.ser.buf); }
+                        else { self.map.ser.push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code)); self.map.patch = Some(self.map.ser.reserve_size_patch()); }
+                        self.map.mode = KeyMode::Unsigned(code);
+                    }
+                    KeyMode::Unsigned(c) if c == code => {}
+                    _ => return Err(Error::Mismatch("object keys must be homogeneous unsigned integers of same width")),
+                }
+                let raw = (v as u128).to_le_bytes();
+                self.map.ser.extend_from_slice(&raw[..bytes]);
+                Ok(())
+            }
+            fn serialize_u128(self, v: u128) -> Result<()> {
+                let bytes = 16; let code = Serializer::code_for_bytes(bytes);
+                match self.map.mode {
+                    KeyMode::Unknown => {
+                        if let Some(n) = self.map.len { self.map.ser.push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code)); write_size(n as u64, &mut self.map.ser.buf); }
+                        else { self.map.ser.push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code)); self.map.patch = Some(self.map.ser.reserve_size_patch()); }
+                        self.map.mode = KeyMode::Unsigned(code);
+                    }
+                    KeyMode::Unsigned(c) if c == code => {}
+                    _ => return Err(Error::Mismatch("object keys must be homogeneous unsigned integers of same width")),
+                }
+                let raw = v.to_le_bytes();
+                self.map.ser.extend_from_slice(&raw[..bytes]);
+                Ok(())
+            }
             fn serialize_bool(self, _v: bool) -> Result<()> { Err(Error::InvalidType("boolean not allowed as object key")) }
             fn serialize_f32(self, _v: f32) -> Result<()> { Err(Error::InvalidType("float not allowed as object key")) }
             fn serialize_f64(self, _v: f64) -> Result<()> { Err(Error::InvalidType("float not allowed as object key")) }
@@ -746,37 +794,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
             fn serialize_struct_variant(self,_:&'static str,_:u32,_:&'static str,_:usize)->Result<Self::SerializeStructVariant>{ Err(Error::InvalidType("struct variant not allowed as object key")) }
             fn is_human_readable(&self)->bool{ false }
 
-            // helpers for int keys
-            fn serialize_signed<T: Into<i128>>(self, v: T, bytes: usize) -> Result<()> {
-                let code = Serializer::code_for_bytes(bytes);
-                match self.map.mode {
-                    KeyMode::Unknown => {
-                        if let Some(n) = self.map.len { self.map.ser.push(make_header(TYPE_OBJECT, KEY_SIGNED, code)); write_size(n as u64, &mut self.map.ser.buf); }
-                        self.map.mode = KeyMode::Signed(code);
-                    }
-                    KeyMode::Signed(c) if c == code => {}
-                    _ => return Err(Error::Mismatch("object keys must be homogeneous signed integers of same width")),
-                }
-                let x: i128 = v.into();
-                let raw = x.to_le_bytes();
-                if self.map.len.is_some() { self.map.ser.extend_from_slice(&raw[..bytes]); } else { self.map.buffer.extend_from_slice(&raw[..bytes]); }
-                Ok(())
-            }
-            fn serialize_unsigned<T: Into<u128>>(self, v: T, bytes: usize) -> Result<()> {
-                let code = Serializer::code_for_bytes(bytes);
-                match self.map.mode {
-                    KeyMode::Unknown => {
-                        if let Some(n) = self.map.len { self.map.ser.push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code)); write_size(n as u64, &mut self.map.ser.buf); }
-                        self.map.mode = KeyMode::Unsigned(code);
-                    }
-                    KeyMode::Unsigned(c) if c == code => {}
-                    _ => return Err(Error::Mismatch("object keys must be homogeneous unsigned integers of same width")),
-                }
-                let x: u128 = v.into();
-                let raw = x.to_le_bytes();
-                if self.map.len.is_some() { self.map.ser.extend_from_slice(&raw[..bytes]); } else { self.map.buffer.extend_from_slice(&raw[..bytes]); }
-                Ok(())
-            }
+            // no additional helpers inside trait impl
         }
 
         let mut ks = KeySer { map: self };
@@ -784,29 +802,22 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
     }
 
     fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> {
-        if self.len.is_some() {
-            value.serialize(&mut *self.ser)?;
-        } else {
-            let mut tmp = Serializer { buf: Vec::new() };
-            value.serialize(&mut tmp)?;
-            self.buffer.extend_from_slice(&tmp.buf);
-        }
+        value.serialize(&mut *self.ser)?;
         self.count += 1;
         Ok(())
     }
 
     fn end(mut self) -> Result<()> {
         if self.len.is_none() {
-            // finalize unknown length map
-            let header = match self.mode {
-                KeyMode::Unknown => TYPE_OBJECT, // string object with zero fields by default
-                KeyMode::String => TYPE_OBJECT | (KEY_STRING << 3),
-                KeyMode::Signed(code) => make_header(TYPE_OBJECT, KEY_SIGNED, code),
-                KeyMode::Unsigned(code) => make_header(TYPE_OBJECT, KEY_UNSIGNED, code),
-            };
-            self.ser.push(header);
-            write_size(self.count as u64, &mut self.ser.buf);
-            self.ser.extend_from_slice(&self.buffer);
+            if let Some(p) = self.patch.take() {
+                self.ser.finalize_size_patch(p, self.count);
+            } else {
+                // empty map, default to string-keyed object
+                self.ser.push(TYPE_OBJECT | (KEY_STRING << 3));
+                let mut tmp = [0u8; 8];
+                let used = encode_size_to_array(0, &mut tmp);
+                self.ser.extend_from_slice(&tmp[..used]);
+            }
         }
         Ok(())
     }
@@ -838,8 +849,10 @@ impl<'a> ser::SerializeStruct for StructSerializer<'a> {
     fn end(self) -> Result<()> { Ok(()) }
 }
 
+#[derive(Clone, Copy)]
+struct SizePatch { pos: usize }
+
 pub struct VariantStructSerializer<'a> {
-    ser: &'a mut Serializer,
     inner: StructSerializer<'a>,
 }
 
@@ -847,14 +860,13 @@ impl<'a> VariantStructSerializer<'a> {
     fn new(ser: &'a mut Serializer, len: usize) -> Self {
         // After type-tag header and index, we write the struct as the VALUE object
         let inner = StructSerializer::new(ser, len);
-        Self { ser, inner }
+        Self { inner }
     }
 }
 
 impl<'a> ser::SerializeStructVariant for VariantStructSerializer<'a> {
     type Ok = ();
     type Error = Error;
-    fn serialize_field<T: ?Sized + Serialize>(&mut self, key: &'static str, value: &T) -> Result<()> { self.inner.serialize_field(key, value) }
-    fn end(self) -> Result<()> { self.inner.end() }
+    fn serialize_field<T: ?Sized + Serialize>(&mut self, key: &'static str, value: &T) -> Result<()> { ser::SerializeStruct::serialize_field(&mut self.inner, key, value) }
+    fn end(self) -> Result<()> { ser::SerializeStruct::end(self.inner) }
 }
-

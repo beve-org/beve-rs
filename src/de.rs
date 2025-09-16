@@ -47,6 +47,10 @@ impl<'de> Deserializer<'de> {
         let s = self.read_exact(nbytes)?;
         let mut buf = [0u8; 16];
         buf[..nbytes].copy_from_slice(s);
+        // Sign-extend if the highest bit of the most significant byte is set
+        if nbytes < 16 && (s[nbytes - 1] & 0x80) != 0 {
+            for b in &mut buf[nbytes..] { *b = 0xFF; }
+        }
         Ok(i128::from_le_bytes(buf))
     }
 
@@ -61,10 +65,10 @@ impl<'de> Deserializer<'de> {
     fn parse_f32(&mut self) -> Result<f32> { Ok(f32::from_le_bytes(self.read_exact(4)?.try_into().unwrap())) }
     fn parse_f64(&mut self) -> Result<f64> { Ok(f64::from_le_bytes(self.read_exact(8)?.try_into().unwrap())) }
 
-    fn parse_string(&mut self) -> Result<String> {
+    fn parse_string_borrowed(&mut self) -> Result<&'de str> {
         let len = read_size(self.input, &mut self.pos)? as usize;
         let s = self.read_exact(len)?;
-        core::str::from_utf8(s).map(|s| s.to_owned()).map_err(|_| Error::InvalidType("invalid utf-8"))
+        core::str::from_utf8(s).map_err(|_| Error::InvalidType("invalid utf-8"))
     }
 
     fn deserialize_value<V: Visitor<'de>>(&mut self, visitor: V) -> Result<V::Value> {
@@ -105,8 +109,8 @@ impl<'de> Deserializer<'de> {
                 }
             }
             TYPE_STRING => {
-                let s = self.parse_string()?;
-                visitor.visit_string(s)
+                let s = self.parse_string_borrowed()?;
+                visitor.visit_borrowed_str(s)
             }
             TYPE_OBJECT => {
                 let key_type = parse_subtype(header);
@@ -166,10 +170,25 @@ impl<'de> Deserializer<'de> {
                         let access = EnumAccess { de: self, tag };
                         visitor.visit_enum(access)
                     }
-                    EXT_DELIMITER => {
-                        // Treated as a delimiter, not a value; for deserializing a single T, skip
-                        // For now, return unit
-                        visitor.visit_unit()
+                    EXT_DELIMITER => visitor.visit_unit(),
+                    EXT_COMPLEX => {
+                        let ch = self.read_byte()?; // complex header
+                        let is_array = (ch & 0x01) != 0;
+                        let ty = (ch >> 3) & 0x03;
+                        let bc = (ch >> 5) & 0x07;
+                        if ty != NUM_FLOAT { return Err(Error::Unsupported("only floating point complex supported")); }
+                        if !is_array {
+                            // single complex -> present as 2-element sequence
+                            visitor.visit_seq(ComplexPairAccess { de: self, byte_code: bc, state: 0 })
+                        } else {
+                            let len = read_size(self.input, &mut self.pos)? as usize;
+                            visitor.visit_seq(SeqAccessComplexArray { de: self, remaining: len, byte_code: bc })
+                        }
+                    }
+                    EXT_MATRICES => {
+                        // Present as a map with keys: layout, extents, value
+                        let mheader = self.read_byte()?; // layout bit in bit0
+                        visitor.visit_map(MatrixAccess { de: self, step: 0, mheader })
                     }
                     _ => Err(Error::Unsupported("extension type not supported")),
                 }
@@ -245,6 +264,7 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessGeneric<'a, 'de> {
         let val = seed.deserialize(&mut *self.de)?;
         Ok(Some(val))
     }
+    fn size_hint(&self) -> Option<usize> { Some(self.remaining) }
 }
 
 struct SeqAccessUnsigned<'a, 'de> { de: &'a mut Deserializer<'de>, remaining: usize, byte_code: u8 }
@@ -257,6 +277,7 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessUnsigned<'a, 'de> {
         let deser = NumDe::Unsigned(v);
         seed.deserialize(deser).map(Some)
     }
+    fn size_hint(&self) -> Option<usize> { Some(self.remaining) }
 }
 
 struct SeqAccessSigned<'a, 'de> { de: &'a mut Deserializer<'de>, remaining: usize, byte_code: u8 }
@@ -269,6 +290,7 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessSigned<'a, 'de> {
         let deser = NumDe::Signed(v);
         seed.deserialize(deser).map(Some)
     }
+    fn size_hint(&self) -> Option<usize> { Some(self.remaining) }
 }
 
 struct SeqAccessFloat32<'a, 'de> { de: &'a mut Deserializer<'de>, remaining: usize }
@@ -281,6 +303,7 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessFloat32<'a, 'de> {
         let deser = NumDe::F32(v);
         seed.deserialize(deser).map(Some)
     }
+    fn size_hint(&self) -> Option<usize> { Some(self.remaining) }
 }
 
 struct SeqAccessFloat64<'a, 'de> { de: &'a mut Deserializer<'de>, remaining: usize }
@@ -293,6 +316,7 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessFloat64<'a, 'de> {
         let deser = NumDe::F64(v);
         seed.deserialize(deser).map(Some)
     }
+    fn size_hint(&self) -> Option<usize> { Some(self.remaining) }
 }
 
 struct SeqAccessBool<'a, 'de> { de: &'a mut Deserializer<'de>, remaining: usize, bit_idx: u8, current: u8, bits_left: u8 }
@@ -312,6 +336,7 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessBool<'a, 'de> {
         let d = BoolDe(bit != 0);
         seed.deserialize(d).map(Some)
     }
+    fn size_hint(&self) -> Option<usize> { Some(self.remaining) }
 }
 
 struct SeqAccessString<'a, 'de> { de: &'a mut Deserializer<'de>, remaining: usize }
@@ -319,10 +344,11 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessString<'a, 'de> {
     type Error = Error;
     fn next_element_seed<T: de::DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>> {
         if self.remaining == 0 { return Ok(None); }
-        let s = self.de.parse_string()?;
+        let s = self.de.parse_string_borrowed()?;
         self.remaining -= 1;
-        seed.deserialize(StrDe(s)).map(Some)
+        seed.deserialize(StrRefDe(s)).map(Some)
     }
+    fn size_hint(&self) -> Option<usize> { Some(self.remaining) }
 }
 
 // =============== MapAccess implementations ===============
@@ -342,6 +368,106 @@ impl<'de, 'a> de::MapAccess<'de> for MapAccessString<'a, 'de> {
         self.remaining -= 1;
         seed.deserialize(&mut *self.de)
     }
+}
+
+// =============== Complex Extension Helpers ===============
+
+struct ComplexPairAccess<'a, 'de> { de: &'a mut Deserializer<'de>, byte_code: u8, state: u8 }
+impl<'de, 'a> de::SeqAccess<'de> for ComplexPairAccess<'a, 'de> {
+    type Error = Error;
+    fn next_element_seed<T: de::DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>> {
+        if self.state >= 2 { return Ok(None); }
+        self.state += 1;
+        let deser = match self.byte_code { 2 => { let v = self.de.parse_f32()?; NumDe::F32(v) } , 3 => { let v = self.de.parse_f64()?; NumDe::F64(v) }, _ => return Err(Error::Unsupported("unsupported complex float width")) };
+        seed.deserialize(deser).map(Some)
+    }
+    fn size_hint(&self) -> Option<usize> { Some((2 - self.state) as usize) }
+}
+
+struct SeqAccessComplexArray<'a, 'de> { de: &'a mut Deserializer<'de>, remaining: usize, byte_code: u8 }
+impl<'de, 'a> de::SeqAccess<'de> for SeqAccessComplexArray<'a, 'de> {
+    type Error = Error;
+    fn next_element_seed<T: de::DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>> {
+        if self.remaining == 0 { return Ok(None); }
+        self.remaining -= 1;
+        let delem = ComplexElemDe { de: self.de, byte_code: self.byte_code };
+        seed.deserialize(delem).map(Some)
+    }
+    fn size_hint(&self) -> Option<usize> { Some(self.remaining) }
+}
+
+struct ComplexElemDe<'a, 'de> { de: &'a mut Deserializer<'de>, byte_code: u8 }
+impl<'de, 'a> de::Deserializer<'de> for ComplexElemDe<'a, 'de> {
+    type Error = Error;
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { visitor.visit_seq(ComplexPairAccess { de: self.de, byte_code: self.byte_code, state: 0 }) }
+    fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { self.deserialize_any(visitor) }
+    fn deserialize_tuple<V: Visitor<'de>>(self, _len: usize, visitor: V) -> Result<V::Value> { self.deserialize_any(visitor) }
+    forward_to_deserialize_any!{
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct newtype_struct tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+// =============== Matrix Extension Helper ===============
+
+struct MatrixAccess<'a, 'de> { de: &'a mut Deserializer<'de>, step: u8, mheader: u8 }
+impl<'de, 'a> de::MapAccess<'de> for MatrixAccess<'a, 'de> {
+    type Error = Error;
+    fn next_key_seed<K: de::DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>> {
+        let key = match self.step { 0 => "layout", 1 => "extents", 2 => "value", _ => return Ok(None) };
+        self.step += 1;
+        seed.deserialize(StrRefDe(key)).map(Some)
+    }
+    fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
+        match self.step - 1 {
+            0 => {
+                let layout = if (self.mheader & 0x01) == 0 { "layout_right" } else { "layout_left" };
+                seed.deserialize(StrRefDe(layout))
+            }
+            1 => {
+                // extents as typed integer array (signed or unsigned)
+                let h = self.de.read_byte()?;
+                let len = read_size(self.de.input, &mut self.de.pos)? as usize;
+                match h {
+                    // Unsigned arrays
+                    0x14 => seed.deserialize(SeqArrayDeUnsigned { de: self.de, len, byte_code: 0 }),
+                    0x34 => seed.deserialize(SeqArrayDeUnsigned { de: self.de, len, byte_code: 1 }),
+                    0x54 => seed.deserialize(SeqArrayDeUnsigned { de: self.de, len, byte_code: 2 }),
+                    0x74 => seed.deserialize(SeqArrayDeUnsigned { de: self.de, len, byte_code: 3 }),
+                    // Signed arrays
+                    0x0c => seed.deserialize(SeqArrayDeSigned { de: self.de, len, byte_code: 0 }),
+                    0x2c => seed.deserialize(SeqArrayDeSigned { de: self.de, len, byte_code: 1 }),
+                    0x4c => seed.deserialize(SeqArrayDeSigned { de: self.de, len, byte_code: 2 }),
+                    0x6c => seed.deserialize(SeqArrayDeSigned { de: self.de, len, byte_code: 3 }),
+                    _ => Err(Error::InvalidHeader(h)),
+                }
+            }
+            2 => {
+                // value: just delegate to underlying deserializer at current position
+                seed.deserialize(&mut *self.de)
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+struct SeqArrayDeUnsigned<'a, 'de> { de: &'a mut Deserializer<'de>, len: usize, byte_code: u8 }
+impl<'de, 'a> de::Deserializer<'de> for SeqArrayDeUnsigned<'a, 'de> {
+    type Error = Error;
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        visitor.visit_seq(SeqAccessUnsigned { de: self.de, remaining: self.len, byte_code: self.byte_code })
+    }
+    fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { self.deserialize_any(visitor) }
+    forward_to_deserialize_any!{ bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct newtype_struct tuple tuple_struct map struct enum identifier ignored_any }
+}
+
+struct SeqArrayDeSigned<'a, 'de> { de: &'a mut Deserializer<'de>, len: usize, byte_code: u8 }
+impl<'de, 'a> de::Deserializer<'de> for SeqArrayDeSigned<'a, 'de> {
+    type Error = Error;
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        visitor.visit_seq(SeqAccessSigned { de: self.de, remaining: self.len, byte_code: self.byte_code })
+    }
+    fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { self.deserialize_any(visitor) }
+    forward_to_deserialize_any!{ bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct newtype_struct tuple tuple_struct map struct enum identifier ignored_any }
 }
 
 struct MapAccessSigned<'a, 'de> { de: &'a mut Deserializer<'de>, remaining: usize, byte_code: u8 }
@@ -392,10 +518,7 @@ impl<'de, 'a> de::VariantAccess<'de> for VariantAccess<'a, 'de> {
     type Error = Error;
     fn unit_variant(self) -> Result<()> {
         // Consume optional VALUE if present
-        if self.de.remaining() > 0 {
-            // Try to read next as a value and drop; if it fails, ignore
-            let _ = self.de.deserialize_any(de::IgnoredAny);
-        }
+        if self.de.remaining() > 0 { let _ = serde::de::Deserializer::deserialize_ignored_any(self.de, de::IgnoredAny); }
         Ok(())
     }
     fn newtype_variant_seed<T: de::DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value> { seed.deserialize(self.de) }
@@ -428,18 +551,18 @@ impl<'de> de::Deserializer<'de> for NumDe {
             NumDe::F64(f) => visitor.visit_f64(f),
         }
     }
-    fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Unsigned(u) if u <= u8::MAX as u128 => visitor.visit_u8(u as u8), _ => Err(Error::Mismatch("expected u8")) } }
-    fn deserialize_u16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Unsigned(u) if u <= u16::MAX as u128 => visitor.visit_u16(u as u16), _ => Err(Error::Mismatch("expected u16")) } }
-    fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Unsigned(u) if u <= u32::MAX as u128 => visitor.visit_u32(u as u32), _ => Err(Error::Mismatch("expected u32")) } }
-    fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Unsigned(u) if u <= u64::MAX as u128 => visitor.visit_u64(u as u64), _ => Err(Error::Mismatch("expected u64")) } }
-    fn deserialize_u128<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Unsigned(u) => visitor.visit_u128(u), _ => Err(Error::Mismatch("expected u128")) } }
-    fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Signed(i) if i >= i8::MIN as i128 && i <= i8::MAX as i128 => visitor.visit_i8(i as i8), _ => Err(Error::Mismatch("expected i8")) } }
-    fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Signed(i) if i >= i16::MIN as i128 && i <= i16::MAX as i128 => visitor.visit_i16(i as i16), _ => Err(Error::Mismatch("expected i16")) } }
-    fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Signed(i) if i >= i32::MIN as i128 && i <= i32::MAX as i128 => visitor.visit_i32(i as i32), _ => Err(Error::Mismatch("expected i32")) } }
-    fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Signed(i) if i >= i64::MIN as i128 && i <= i64::MAX as i128 => visitor.visit_i64(i as i64), _ => Err(Error::Mismatch("expected i64")) } }
-    fn deserialize_i128<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Signed(i) => visitor.visit_i128(i), _ => Err(Error::Mismatch("expected i128")) } }
-    fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::F32(f) => visitor.visit_f32(f), _ => Err(Error::Mismatch("expected f32")) } }
-    fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::F64(f) => visitor.visit_f64(f), _ => Err(Error::Mismatch("expected f64")) } }
+    fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Unsigned(u) if u <= u8::MAX as u128 => visitor.visit_u8(u as u8), NumDe::Signed(i) if i>=0 && i <= u8::MAX as i128 => visitor.visit_u8(i as u8), _ => Err(Error::Mismatch("expected u8")) } }
+    fn deserialize_u16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Unsigned(u) if u <= u16::MAX as u128 => visitor.visit_u16(u as u16), NumDe::Signed(i) if i>=0 && i <= u16::MAX as i128 => visitor.visit_u16(i as u16), _ => Err(Error::Mismatch("expected u16")) } }
+    fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Unsigned(u) if u <= u32::MAX as u128 => visitor.visit_u32(u as u32), NumDe::Signed(i) if i>=0 && i <= u32::MAX as i128 => visitor.visit_u32(i as u32), _ => Err(Error::Mismatch("expected u32")) } }
+    fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Unsigned(u) if u <= u64::MAX as u128 => visitor.visit_u64(u as u64), NumDe::Signed(i) if i>=0 && i <= u64::MAX as i128 => visitor.visit_u64(i as u64), _ => Err(Error::Mismatch("expected u64")) } }
+    fn deserialize_u128<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Unsigned(u) => visitor.visit_u128(u), NumDe::Signed(i) if i>=0 => visitor.visit_u128(i as u128), _ => Err(Error::Mismatch("expected u128")) } }
+    fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Signed(i) if i>= i8::MIN as i128 && i <= i8::MAX as i128 => visitor.visit_i8(i as i8), NumDe::Unsigned(u) if u <= i8::MAX as u128 => visitor.visit_i8(u as i8), _ => Err(Error::Mismatch("expected i8")) } }
+    fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Signed(i) if i>= i16::MIN as i128 && i <= i16::MAX as i128 => visitor.visit_i16(i as i16), NumDe::Unsigned(u) if u <= i16::MAX as u128 => visitor.visit_i16(u as i16), _ => Err(Error::Mismatch("expected i16")) } }
+    fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Signed(i) if i>= i32::MIN as i128 && i <= i32::MAX as i128 => visitor.visit_i32(i as i32), NumDe::Unsigned(u) if u <= i32::MAX as u128 => visitor.visit_i32(u as i32), _ => Err(Error::Mismatch("expected i32")) } }
+    fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Signed(i) if i>= i64::MIN as i128 && i <= i64::MAX as i128 => visitor.visit_i64(i as i64), NumDe::Unsigned(u) if u <= i64::MAX as u128 => visitor.visit_i64(u as i64), _ => Err(Error::Mismatch("expected i64")) } }
+    fn deserialize_i128<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::Signed(i) => visitor.visit_i128(i), NumDe::Unsigned(u) if u <= i128::MAX as u128 => visitor.visit_i128(u as i128), _ => Err(Error::Mismatch("expected i128")) } }
+    fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::F32(f) => visitor.visit_f32(f), NumDe::F64(f) => visitor.visit_f32(f as f32), NumDe::Signed(i) => visitor.visit_f32(i as f32), NumDe::Unsigned(u) => visitor.visit_f32(u as f32) } }
+    fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { match self { NumDe::F64(f) => visitor.visit_f64(f), NumDe::F32(f) => visitor.visit_f64(f as f64), NumDe::Signed(i) => visitor.visit_f64(i as f64), NumDe::Unsigned(u) => visitor.visit_f64(u as f64) } }
 
     forward_to_deserialize_any!{
         bool char str string bytes byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct map struct enum identifier ignored_any
@@ -468,7 +591,7 @@ impl<'de> de::Deserializer<'de> for StrDe {
 }
 
 struct StrRefDe<'a>(&'a str);
-impl<'de, 'a> de::Deserializer<'de> for StrRefDe<'a> {
+impl<'de, 'a: 'de> de::Deserializer<'de> for StrRefDe<'a> {
     type Error = Error;
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { visitor.visit_borrowed_str(self.0) }
     fn deserialize_identifier<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { visitor.visit_borrowed_str(self.0) }

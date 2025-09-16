@@ -33,7 +33,6 @@ impl fmt::Display for Error {
     }
 }
 
-#[cfg(feature = "std")]
 impl std::error::Error for Error {}
 
 impl serde::ser::Error for Error {
@@ -43,4 +42,3 @@ impl serde::ser::Error for Error {
 impl serde::de::Error for Error {
     fn custom<T: fmt::Display>(msg: T) -> Self { Error::MessageOwned(msg.to_string()) }
 }
-

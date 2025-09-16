@@ -65,3 +65,8 @@ pub fn bool_value(header: u8) -> Result<bool> {
     Ok((header & 0b10000) != 0)
 }
 
+#[inline]
+pub fn make_complex_header(is_array: bool, num_class: u8, byte_count_code: u8) -> u8 {
+    (byte_count_code << 5) | ((num_class & 0b11) << 3) | if is_array { 1 } else { 0 }
+}
+

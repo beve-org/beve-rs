@@ -28,15 +28,46 @@ mod size;
 mod header;
 mod ser;
 mod de;
+pub mod fast;
+mod ext;
 
 pub use crate::error::{Error, Result};
 pub use crate::ser::{to_vec, Serializer};
 pub use crate::de::{from_slice, Deserializer};
+pub use crate::fast::{
+    BeveTypedSlice,
+    to_vec_typed_slice,
+    write_typed_slice,
+    to_vec_bool_slice,
+    write_bool_slice,
+    to_vec_str_slice,
+    write_str_slice,
+    to_vec_string_slice,
+    write_string_slice,
+    to_vec_complex64,
+    to_vec_complex32,
+    to_vec_complex64_slice,
+    to_vec_complex32_slice,
+};
+pub use crate::ext::{Complex, ComplexSlice};
+pub use crate::ext::{Matrix, MatrixLayout};
 
 /// BEVE-specific utilities and helper types.
 pub mod util {
-    /// Matrix layout for the matrices extension (not yet implemented in serializer/deserializer).
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum MatrixLayout { Right, Left }
+    pub use crate::ext::MatrixLayout;
 }
 
+use std::io::{Read, Write};
+
+/// Serialize a value to any writer. For unknown-length containers, this uses an internal buffer.
+pub fn to_writer<W: Write, T: serde::Serialize>(mut writer: W, value: &T) -> Result<()> {
+    let bytes = to_vec(value)?;
+    writer.write_all(&bytes).map_err(|e| Error::MessageOwned(e.to_string()))
+}
+
+/// Deserialize a value by reading all bytes from a reader into a buffer first.
+pub fn from_reader<R: Read, T: serde::de::DeserializeOwned>(mut reader: R) -> Result<T> {
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf).map_err(|e| Error::MessageOwned(e.to_string()))?;
+    from_slice(&buf)
+}

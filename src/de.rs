@@ -1,3 +1,4 @@
+use serde::de::value::BoolDeserializer;
 use serde::de::{self, DeserializeOwned, Visitor};
 use serde::forward_to_deserialize_any;
 use std::string::String;
@@ -256,12 +257,13 @@ impl<'de> Deserializer<'de> {
                     ARRAY_BOOL_OR_STRING => {
                         if (header & 0b0010_0000) == 0 {
                             // boolean array
+                            let packed_len = (len + 7) / 8;
+                            let data = self.read_exact(packed_len)?;
                             visitor.visit_seq(SeqAccessBool {
-                                de: self,
+                                data,
                                 remaining: len,
+                                byte_idx: 0,
                                 bit_idx: 0,
-                                current: 0,
-                                bits_left: 0,
                             })
                         } else {
                             // string array
@@ -642,14 +644,13 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessFloat64<'a, 'de> {
     }
 }
 
-struct SeqAccessBool<'a, 'de> {
-    de: &'a mut Deserializer<'de>,
+struct SeqAccessBool<'de> {
+    data: &'de [u8],
     remaining: usize,
+    byte_idx: usize,
     bit_idx: u8,
-    current: u8,
-    bits_left: u8,
 }
-impl<'de, 'a> de::SeqAccess<'de> for SeqAccessBool<'a, 'de> {
+impl<'de> de::SeqAccess<'de> for SeqAccessBool<'de> {
     type Error = Error;
     fn next_element_seed<T: de::DeserializeSeed<'de>>(
         &mut self,
@@ -658,18 +659,16 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessBool<'a, 'de> {
         if self.remaining == 0 {
             return Ok(None);
         }
-        if self.bits_left == 0 {
-            self.current = self.de.read_byte()?;
-            self.bits_left = 8;
-            self.bit_idx = 0;
-        }
         // MSB-first: read bit7, then bit6, ... to bit0
-        let bit = (self.current >> (7 - self.bit_idx)) & 1;
+        let current = self.data[self.byte_idx];
+        let bit = (current >> (7 - self.bit_idx)) & 1;
         self.bit_idx += 1;
-        self.bits_left -= 1;
+        if self.bit_idx == 8 {
+            self.bit_idx = 0;
+            self.byte_idx += 1;
+        }
         self.remaining -= 1;
-        let d = BoolDe(bit != 0);
-        seed.deserialize(d).map(Some)
+        seed.deserialize(BoolDeserializer::new(bit != 0)).map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
         Some(self.remaining)
@@ -1226,20 +1225,6 @@ impl<'de> de::Deserializer<'de> for NumDe {
 
     forward_to_deserialize_any! {
         bool char str string bytes byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct map struct enum identifier ignored_any
-    }
-}
-
-struct BoolDe(bool);
-impl<'de> de::Deserializer<'de> for BoolDe {
-    type Error = Error;
-    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_bool(self.0)
-    }
-    fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_bool(self.0)
-    }
-    forward_to_deserialize_any! {
-        i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct map struct enum identifier ignored_any
     }
 }
 

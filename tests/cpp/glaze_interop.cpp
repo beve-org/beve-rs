@@ -1,8 +1,10 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <complex>
 #include <cstdio>
 #include <iostream>
+#include <optional>
 
 #include "glaze/api/impl.hpp"
 #include "glaze/beve/read.hpp"
@@ -68,6 +70,63 @@ static bool eq(const Basic& a, const Basic& b) {
   return a.i==b.i && a.d==b.d && a.name==b.name && a.vs==b.vs && a.vb==b.vb && a.m==b.m && a.mi==b.mi && a.color==b.color;
 }
 
+// Nested structs for interop
+struct Inner {
+  int x{};
+  std::string y{};
+};
+
+template <> struct glz::meta<Inner> {
+  using T = Inner;
+  static constexpr std::string_view name = "Inner";
+  static constexpr auto value = object(
+    "x", &T::x,
+    "y", &T::y
+  );
+};
+
+struct Outer {
+  std::string title{};
+  Inner inner{};
+  std::vector<Inner> list{};
+  std::optional<Inner> maybe{};
+};
+
+template <> struct glz::meta<Outer> {
+  using T = Outer;
+  static constexpr std::string_view name = "Outer";
+  static constexpr auto value = object(
+    "title", &T::title,
+    "inner", &T::inner,
+    "list", &T::list,
+    "maybe", &T::maybe
+  );
+};
+
+static bool eq(const Inner& a, const Inner& b) {
+  return a.x == b.x && a.y == b.y;
+}
+
+static bool eq(const Outer& a, const Outer& b) {
+  if (a.title != b.title) return false;
+  if (!eq(a.inner, b.inner)) return false;
+  if (a.list.size() != b.list.size()) return false;
+  for (size_t i = 0; i < a.list.size(); ++i) if (!eq(a.list[i], b.list[i])) return false;
+  if (a.maybe.has_value() != b.maybe.has_value()) return false;
+  if (a.maybe && b.maybe && !eq(*a.maybe, *b.maybe)) return false;
+  return true;
+}
+
+static Outer sample_nested() {
+  Inner in{.x = 7, .y = std::string{"inner"}};
+  Outer o{};
+  o.title = "outer";
+  o.inner = in;
+  o.list = { Inner{.x = 1, .y = std::string{"a"}}, Inner{.x = 2, .y = std::string{"b"}} };
+  o.maybe = Inner{.x = -5, .y = std::string{"maybe"}};
+  return o;
+}
+
 static std::string read_stdin_all() {
   std::string s; std::string chunk;
   char buf[4096];
@@ -96,6 +155,7 @@ int main(int argc, char** argv) {
     else if (cas == "vec_string") { auto v=sample_vec_string(); glz::write_beve(v, out); }
     else if (cas == "color") { auto v=sample_color(); glz::write_beve(v, out); }
     else if (cas == "basic") { auto v=sample_basic(); glz::write_beve(v, out); }
+    else if (cas == "nested") { auto v=sample_nested(); glz::write_beve(v, out); }
     else if (cas == "cplx64") { std::complex<double> v{1.5, -2.25}; glz::write_beve(v, out); }
     else if (cas == "vcplx64") { std::vector<std::complex<double>> v{{1.0,2.0},{-3.0,4.5}}; glz::write_beve(v, out); }
     else if (cas == "mapi8") { std::map<int8_t,int> m{{-1,10},{2,20}}; glz::write_beve(m, out); }
@@ -113,6 +173,7 @@ int main(int argc, char** argv) {
     else if (cas == "vec_string") { auto expect=sample_vec_string(); decltype(expect) got; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (got==expect) { std::cout<<"OK\n"; return 0; } }
     else if (cas == "color") { auto expect=sample_color(); decltype(expect) got; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (got==expect) { std::cout<<"OK\n"; return 0; } }
     else if (cas == "basic") { auto expect=sample_basic(); decltype(expect) got; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (eq(got, expect)) { std::cout<<"OK\n"; return 0; } }
+    else if (cas == "nested") { auto expect=sample_nested(); decltype(expect) got; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (eq(got, expect)) { std::cout<<"OK\n"; return 0; } }
     else if (cas == "cplx64") { std::complex<double> expect{1.5,-2.25}; decltype(expect) got; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (got==expect) { std::cout<<"OK\n"; return 0; } }
     else if (cas == "vcplx64") { std::vector<std::complex<double>> expect{{1.0,2.0},{-3.0,4.5}}; decltype(expect) got; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (got==expect) { std::cout<<"OK\n"; return 0; } }
     else if (cas == "mapi8") { std::map<int8_t,int> expect{{-1,10},{2,20}}; decltype(expect) got; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (got==expect) { std::cout<<"OK\n"; return 0; } }

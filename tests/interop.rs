@@ -22,6 +22,17 @@ struct Basic {
     color: Color,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Inner { x: i32, y: String }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Outer {
+    title: String,
+    inner: Inner,
+    list: Vec<Inner>,
+    maybe: Option<Inner>,
+}
+
 fn sample_vec_f64() -> Vec<f64> { vec![1.1, -2.25, 3.5] }
 fn sample_vec_u32() -> Vec<u32> { vec![1, 2, 1000] }
 fn sample_vec_bool() -> Vec<bool> { vec![true,false,true,true,false] }
@@ -31,6 +42,15 @@ fn sample_basic() -> Basic {
     let mut m = std::collections::BTreeMap::new(); m.insert("a".into(),1); m.insert("bb".into(),2);
     let mut mi = std::collections::BTreeMap::new(); mi.insert(5, 3.14); mi.insert(7, 7.42);
     Basic { i: 42, d: -3.125, name: "hello".into(), vs: sample_vec_f64(), vb: sample_vec_bool(), m, mi, color: Color::Green }
+}
+
+fn sample_nested() -> Outer {
+    Outer {
+        title: "outer".into(),
+        inner: Inner { x: 7, y: "inner".into() },
+        list: vec![Inner { x: 1, y: "a".into() }, Inner { x: 2, y: "b".into() }],
+        maybe: Some(Inner { x: -5, y: "maybe".into() }),
+    }
 }
 
 fn run_glaze(args: &[&str], stdin: Option<&[u8]>) -> Option<(i32, Vec<u8>, Vec<u8>)> {
@@ -73,6 +93,7 @@ fn glaze_to_rust_roundtrip_cases() {
     glaze_to_rust!("vec_string", Vec<String>, sample_vec_string());
     glaze_to_rust!("color", Color, sample_color());
     glaze_to_rust!("basic", Basic, sample_basic());
+    glaze_to_rust!("nested", Outer, sample_nested());
 }
 
 #[test]
@@ -83,6 +104,7 @@ fn rust_to_glaze_roundtrip_cases() {
     rust_to_glaze_ok!("vec_string", sample_vec_string());
     rust_to_glaze_ok!("color", sample_color());
     rust_to_glaze_ok!("basic", sample_basic());
+    rust_to_glaze_ok!("nested", sample_nested());
 }
 
 #[test]

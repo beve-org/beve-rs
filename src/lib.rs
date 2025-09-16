@@ -32,7 +32,7 @@ pub mod fast;
 mod ext;
 
 pub use crate::error::{Error, Result};
-pub use crate::ser::{to_vec, Serializer};
+pub use crate::ser::{to_vec, to_vec_with_options, Serializer, SerializerOptions, EnumEncoding};
 pub use crate::de::{from_slice, Deserializer};
 pub use crate::fast::{
     BeveTypedSlice,
@@ -62,6 +62,12 @@ use std::io::{Read, Write};
 /// Serialize a value to any writer. For unknown-length containers, this uses an internal buffer.
 pub fn to_writer<W: Write, T: serde::Serialize>(mut writer: W, value: &T) -> Result<()> {
     let bytes = to_vec(value)?;
+    writer.write_all(&bytes).map_err(|e| Error::MessageOwned(e.to_string()))
+}
+
+/// Serialize a value to any writer with custom options.
+pub fn to_writer_with_options<W: Write, T: serde::Serialize>(mut writer: W, value: &T, opts: SerializerOptions) -> Result<()> {
+    let bytes = to_vec_with_options(value, opts)?;
     writer.write_all(&bytes).map_err(|e| Error::MessageOwned(e.to_string()))
 }
 

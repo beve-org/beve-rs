@@ -109,10 +109,11 @@ pub fn to_vec_typed_slice<T: BeveTypedSlice>(slice: &[T]) -> Vec<u8> {
 /// Write a boolean typed array (bit-packed) to `out`.
 pub fn write_bool_slice(out: &mut Vec<u8>, slice: &[bool]) {
     write_typed_array_header_bool(out, slice.len());
+    // Pack MSB-first per Glaze/BEVE interop: first element -> bit7
     let mut acc: u8 = 0;
-    let mut idx: u8 = 0;
+    let mut idx: u8 = 0; // counts elements within the current byte
     for &b in slice {
-        if b { acc |= 1 << idx; }
+        if b { acc |= 1 << (7 - idx); }
         idx += 1;
         if idx == 8 { out.push(acc); acc = 0; idx = 0; }
     }
@@ -226,4 +227,3 @@ pub fn to_vec_matrix_f64(layout: MatrixLayoutFast, extents: &[u64], data: &[f64]
     for &v in data { out.extend_from_slice(&v.to_le_bytes()); }
     out
 }
-

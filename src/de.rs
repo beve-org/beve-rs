@@ -247,7 +247,49 @@ impl<'de, 'a> serde::Deserializer<'de> for &'a mut Deserializer<'de> {
     fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { self.deserialize_any(visitor) }
     fn deserialize_struct<V: Visitor<'de>>(self, _name: &'static str, _fields: &'static [&'static str], visitor: V) -> Result<V::Value> { self.deserialize_any(visitor) }
 
-    fn deserialize_enum<V: Visitor<'de>>(self, _name: &'static str, _variants: &'static [&'static str], visitor: V) -> Result<V::Value> { self.deserialize_any(visitor) }
+    fn deserialize_enum<V: Visitor<'de>>(self, _name: &'static str, _variants: &'static [&'static str], visitor: V) -> Result<V::Value> {
+        let header = self.peek_byte()?;
+        let ty = parse_type(header);
+        match ty {
+            TYPE_EXTENSION => {
+                let _ = self.read_byte()?; // consume extension header
+                let ext = parse_extension_id(header);
+                match ext {
+                    EXT_TYPE_TAG => {
+                        let tag = read_size(self.input, &mut self.pos)? as u64;
+                        let access = EnumAccess { de: self, tag };
+                        visitor.visit_enum(access)
+                    }
+                    _ => Err(Error::InvalidHeader(header)),
+                }
+            }
+            TYPE_NUMBER => {
+                let header = self.read_byte()?; // consume number header
+                let subtype = parse_subtype(header);
+                let idx: u64 = match subtype {
+                    NUM_UNSIGNED => self.parse_unsigned(parse_byte_count_code(header))? as u64,
+                    NUM_SIGNED => {
+                        let v = self.parse_signed(parse_byte_count_code(header))?;
+                        if v < 0 { return Err(Error::InvalidType("negative enum index")); }
+                        v as u64
+                    }
+                    _ => return Err(Error::InvalidType("enum index must be integer")),
+                };
+                visitor.visit_enum(EnumIndexAccess { idx })
+            }
+            TYPE_STRING => {
+                let _ = self.read_byte()?; // consume string header
+                let len = read_size(self.input, &mut self.pos)? as usize;
+                if self.pos + len > self.input.len() { return Err(Error::Eof); }
+                let s = core::str::from_utf8(&self.input[self.pos..self.pos + len])
+                    .map_err(|_| Error::InvalidType("invalid utf-8"))?
+                    .to_owned();
+                self.pos += len;
+                visitor.visit_enum(EnumStrAccess { name: s })
+            }
+            _ => self.deserialize_any(visitor),
+        }
+    }
 
     fn deserialize_identifier<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { self.deserialize_any(visitor) }
     fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> { self.deserialize_any(visitor) }
@@ -329,7 +371,8 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessBool<'a, 'de> {
             self.bits_left = 8;
             self.bit_idx = 0;
         }
-        let bit = (self.current >> self.bit_idx) & 1;
+        // MSB-first: read bit7, then bit6, ... to bit0
+        let bit = (self.current >> (7 - self.bit_idx)) & 1;
         self.bit_idx += 1;
         self.bits_left -= 1;
         self.remaining -= 1;
@@ -524,6 +567,35 @@ impl<'de, 'a> de::VariantAccess<'de> for VariantAccess<'a, 'de> {
     fn newtype_variant_seed<T: de::DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value> { seed.deserialize(self.de) }
     fn tuple_variant<V: Visitor<'de>>(self, _len: usize, visitor: V) -> Result<V::Value> { de::Deserializer::deserialize_any(self.de, visitor) }
     fn struct_variant<V: Visitor<'de>>(self, _fields: &'static [&'static str], visitor: V) -> Result<V::Value> { de::Deserializer::deserialize_any(self.de, visitor) }
+}
+
+struct EnumIndexAccess { idx: u64 }
+impl<'de> de::EnumAccess<'de> for EnumIndexAccess {
+    type Error = Error;
+    type Variant = VariantAccessNoValue;
+    fn variant_seed<V: de::DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self::Variant)> {
+        let v = seed.deserialize(NumDe::Unsigned(self.idx as u128))?;
+        Ok((v, VariantAccessNoValue))
+    }
+}
+
+struct EnumStrAccess { name: String }
+impl<'de> de::EnumAccess<'de> for EnumStrAccess {
+    type Error = Error;
+    type Variant = VariantAccessNoValue;
+    fn variant_seed<V: de::DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self::Variant)> {
+        let v = seed.deserialize(StrDe(self.name))?;
+        Ok((v, VariantAccessNoValue))
+    }
+}
+
+struct VariantAccessNoValue;
+impl<'de> de::VariantAccess<'de> for VariantAccessNoValue {
+    type Error = Error;
+    fn unit_variant(self) -> Result<()> { Ok(()) }
+    fn newtype_variant_seed<T: de::DeserializeSeed<'de>>(self, _seed: T) -> Result<T::Value> { Err(Error::InvalidType("enum value not present")) }
+    fn tuple_variant<V: Visitor<'de>>(self, _len: usize, _visitor: V) -> Result<V::Value> { Err(Error::InvalidType("enum value not present")) }
+    fn struct_variant<V: Visitor<'de>>(self, _fields: &'static [&'static str], _visitor: V) -> Result<V::Value> { Err(Error::InvalidType("enum value not present")) }
 }
 
 // =============== Primitive Value Deserializers ===============

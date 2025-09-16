@@ -5,13 +5,34 @@ use crate::error::{Error, Result};
 use crate::header::*;
 use crate::size::{write_size, encode_size_to_array};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnumEncoding {
+    Number,
+    String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SerializerOptions {
+    pub enum_encoding: EnumEncoding,
+}
+
+impl Default for SerializerOptions {
+    fn default() -> Self {
+        // Default to numbers for interop with Glaze
+        Self { enum_encoding: EnumEncoding::Number }
+    }
+}
+
 pub struct Serializer {
     pub(crate) buf: Vec<u8>,
+    pub(crate) opts: SerializerOptions,
 }
 
 impl Serializer {
-    pub fn new() -> Self { Self { buf: Vec::new() } }
-    pub fn with_capacity(cap: usize) -> Self { Self { buf: Vec::with_capacity(cap) } }
+    pub fn new() -> Self { Self { buf: Vec::new(), opts: SerializerOptions::default() } }
+    pub fn with_capacity(cap: usize) -> Self { Self { buf: Vec::with_capacity(cap), opts: SerializerOptions::default() } }
+    pub fn with_options(opts: SerializerOptions) -> Self { Self { buf: Vec::new(), opts } }
+    pub fn with_capacity_and_options(cap: usize, opts: SerializerOptions) -> Self { Self { buf: Vec::with_capacity(cap), opts } }
     pub fn into_vec(self) -> Vec<u8> { self.buf }
 
     #[inline]
@@ -94,6 +115,15 @@ impl Serializer {
         self.extend_from_slice(&v.to_le_bytes());
     }
 
+    #[inline]
+    fn write_variant_index(&mut self, variant_index: u32) {
+        let idx = variant_index as u64;
+        if idx <= u8::MAX as u64 { self.write_unsigned_value::<1, _>(idx as u8); }
+        else if idx <= u16::MAX as u64 { self.write_unsigned_value::<2, _>(idx as u16); }
+        else if idx <= u32::MAX as u64 { self.write_unsigned_value::<4, _>(idx as u32); }
+        else { self.write_unsigned_value::<8, _>(idx as u64); }
+    }
+
     fn write_str_value(&mut self, s: &str) {
         self.push(TYPE_STRING);
         write_size(s.len() as u64, &mut self.buf);
@@ -136,6 +166,12 @@ impl Serializer {
 
 pub fn to_vec<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     let mut ser = Serializer::new();
+    value.serialize(&mut ser)?;
+    Ok(ser.into_vec())
+}
+
+pub fn to_vec_with_options<T: Serialize>(value: &T, opts: SerializerOptions) -> Result<Vec<u8>> {
+    let mut ser = Serializer::with_options(opts);
     value.serialize(&mut ser)?;
     Ok(ser.into_vec())
 }
@@ -198,10 +234,9 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     fn serialize_unit_struct(self, _name: &'static str) -> Result<()> { self.write_null(); Ok(()) }
 
     fn serialize_unit_variant(self, _name: &'static str, variant_index: u32, _variant: &'static str) -> Result<()> {
-        // Extension: Type Tag: HEADER | SIZE(tag) | VALUE(null)
-        self.push(make_extension_header(EXT_TYPE_TAG));
-        write_size(variant_index as u64, &mut self.buf);
-        self.write_null();
+        // For Glaze interop: encode unit variants as a 32-bit unsigned discriminant.
+        // Glaze emits and expects 4-byte unsigned for enums.
+        self.write_unsigned_value::<4, _>(variant_index as u32);
         Ok(())
     }
 
@@ -212,6 +247,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         _variant: &'static str,
         value: &T,
     ) -> Result<()> {
+        // Variants with values require the type-tag extension for round-trip
         self.push(make_extension_header(EXT_TYPE_TAG));
         write_size(variant_index as u64, &mut self.buf);
         value.serialize(self)
@@ -351,7 +387,8 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
     fn serialize_bool(self, v: bool) -> Result<()> {
         self.seq.start_typed_bool_if_needed();
         if let SeqMode::TypedBool { byte_acc, bit_idx, .. } = &mut self.seq.mode {
-            if v { *byte_acc |= 1 << *bit_idx; }
+            // MSB-first packing: first element goes to bit7
+            if v { *byte_acc |= 1 << (7 - *bit_idx); }
             *bit_idx += 1;
             if *bit_idx == 8 {
                 self.seq.ser.push(*byte_acc);

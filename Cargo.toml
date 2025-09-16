@@ -1,0 +1,16 @@
+[package]
+name = "beve"
+version = "0.1.0"
+edition = "2021"
+description = "Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specification with serde support"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/stephenberry/beve-rs"
+homepage = "https://github.com/stephenberry/beve-rs"
+readme = "README.md"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+

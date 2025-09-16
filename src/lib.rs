@@ -23,34 +23,24 @@
 //! assert_eq!(p, p2);
 //! ```
 
+mod de;
 mod error;
-mod size;
+mod ext;
+pub mod fast;
 mod header;
 mod ser;
-mod de;
-pub mod fast;
-mod ext;
+mod size;
 
-pub use crate::error::{Error, Result};
-pub use crate::ser::{to_vec, to_vec_with_options, Serializer, SerializerOptions, EnumEncoding};
 pub use crate::de::{from_slice, Deserializer};
-pub use crate::fast::{
-    BeveTypedSlice,
-    to_vec_typed_slice,
-    write_typed_slice,
-    to_vec_bool_slice,
-    write_bool_slice,
-    to_vec_str_slice,
-    write_str_slice,
-    to_vec_string_slice,
-    write_string_slice,
-    to_vec_complex64,
-    to_vec_complex32,
-    to_vec_complex64_slice,
-    to_vec_complex32_slice,
-};
+pub use crate::error::{Error, Result};
 pub use crate::ext::{Complex, ComplexSlice};
 pub use crate::ext::{Matrix, MatrixLayout};
+pub use crate::fast::{
+    to_vec_bool_slice, to_vec_complex32, to_vec_complex32_slice, to_vec_complex64,
+    to_vec_complex64_slice, to_vec_str_slice, to_vec_string_slice, to_vec_typed_slice,
+    write_bool_slice, write_str_slice, write_string_slice, write_typed_slice, BeveTypedSlice,
+};
+pub use crate::ser::{to_vec, to_vec_with_options, EnumEncoding, Serializer, SerializerOptions};
 
 /// BEVE-specific utilities and helper types.
 pub mod util {
@@ -62,18 +52,28 @@ use std::io::{Read, Write};
 /// Serialize a value to any writer. For unknown-length containers, this uses an internal buffer.
 pub fn to_writer<W: Write, T: serde::Serialize>(mut writer: W, value: &T) -> Result<()> {
     let bytes = to_vec(value)?;
-    writer.write_all(&bytes).map_err(|e| Error::MessageOwned(e.to_string()))
+    writer
+        .write_all(&bytes)
+        .map_err(|e| Error::MessageOwned(e.to_string()))
 }
 
 /// Serialize a value to any writer with custom options.
-pub fn to_writer_with_options<W: Write, T: serde::Serialize>(mut writer: W, value: &T, opts: SerializerOptions) -> Result<()> {
+pub fn to_writer_with_options<W: Write, T: serde::Serialize>(
+    mut writer: W,
+    value: &T,
+    opts: SerializerOptions,
+) -> Result<()> {
     let bytes = to_vec_with_options(value, opts)?;
-    writer.write_all(&bytes).map_err(|e| Error::MessageOwned(e.to_string()))
+    writer
+        .write_all(&bytes)
+        .map_err(|e| Error::MessageOwned(e.to_string()))
 }
 
 /// Deserialize a value by reading all bytes from a reader into a buffer first.
 pub fn from_reader<R: Read, T: serde::de::DeserializeOwned>(mut reader: R) -> Result<T> {
     let mut buf = Vec::new();
-    reader.read_to_end(&mut buf).map_err(|e| Error::MessageOwned(e.to_string()))?;
+    reader
+        .read_to_end(&mut buf)
+        .map_err(|e| Error::MessageOwned(e.to_string()))?;
     from_slice(&buf)
 }

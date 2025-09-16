@@ -19,9 +19,11 @@ fn main() {
     let mut cmd = Command::new(compiler);
     cmd.arg("-std=c++23")
         .arg("-O2")
-        .arg("-I").arg("reference/glaze/include")
+        .arg("-I")
+        .arg("reference/glaze/include")
         .arg(&cpp_src)
-        .arg("-o").arg(&bin_path);
+        .arg("-o")
+        .arg(&bin_path);
 
     match cmd.status() {
         Ok(status) if status.success() => {

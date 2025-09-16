@@ -1,11 +1,30 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 // Minimal SIZE encoder for tests (matches src/size.rs behavior)
 fn write_size_for_test(mut n: u64, out: &mut Vec<u8>) {
-    if n < (1 << 6) { out.push((n as u8) << 2); return; }
-    if n < (1 << 14) { out.push((((n & 0x3f) as u8) << 2) | 0b01); n >>= 6; out.push(n as u8); return; }
-    if n < (1 << 30) { out.push((((n & 0x3f) as u8) << 2) | 0b10); n >>= 6; out.push(n as u8); out.push((n >> 8) as u8); out.push((n >> 16) as u8); return; }
-    out.push((((n & 0x3f) as u8) << 2) | 0b11); n >>= 6; for i in 0..7 { out.push((n >> (i * 8)) as u8); }
+    if n < (1 << 6) {
+        out.push((n as u8) << 2);
+        return;
+    }
+    if n < (1 << 14) {
+        out.push((((n & 0x3f) as u8) << 2) | 0b01);
+        n >>= 6;
+        out.push(n as u8);
+        return;
+    }
+    if n < (1 << 30) {
+        out.push((((n & 0x3f) as u8) << 2) | 0b10);
+        n >>= 6;
+        out.push(n as u8);
+        out.push((n >> 8) as u8);
+        out.push((n >> 16) as u8);
+        return;
+    }
+    out.push((((n & 0x3f) as u8) << 2) | 0b11);
+    n >>= 6;
+    for i in 0..7 {
+        out.push((n >> (i * 8)) as u8);
+    }
 }
 
 #[test]
@@ -15,10 +34,15 @@ fn fast_numeric_vs_serde() {
             let v: Vec<$t> = $val;
             let fast = beve::to_vec_typed_slice(&v);
             let via_serde = beve::to_vec(&v).unwrap();
-            assert_eq!(fast, via_serde, "mismatch for {}", std::any::type_name::<$t>());
-        }
+            assert_eq!(
+                fast,
+                via_serde,
+                "mismatch for {}",
+                std::any::type_name::<$t>()
+            );
+        };
     }
-    check!(u8, vec![1,2,3,4,5]);
+    check!(u8, vec![1, 2, 3, 4, 5]);
     check!(u16, vec![1, 512, 1024]);
     check!(u32, vec![1, 2, 3, 4]);
     check!(u64, vec![9, 10, 11]);
@@ -32,7 +56,9 @@ fn fast_numeric_vs_serde() {
 
 #[test]
 fn fast_bool_vs_serde() {
-    let v = vec![true, false, true, true, false, true, false, true, false, true];
+    let v = vec![
+        true, false, true, true, false, true, false, true, false, true,
+    ];
     let fast = beve::to_vec_bool_slice(&v);
     let via_serde = beve::to_vec(&v).unwrap();
     assert_eq!(fast, via_serde);
@@ -58,13 +84,34 @@ fn fast_string_vs_serde() {
 #[test]
 fn fast_bool_in_struct_vs_serde() {
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
-    struct S { flags: Vec<bool> }
+    struct S {
+        flags: Vec<bool>,
+    }
 
     fn write_size_test(mut n: u64, out: &mut Vec<u8>) {
-        if n < (1 << 6) { out.push((n as u8) << 2); return; }
-        if n < (1 << 14) { out.push((((n & 0x3f) as u8) << 2) | 0b01); n >>= 6; out.push(n as u8); return; }
-        if n < (1 << 30) { out.push((((n & 0x3f) as u8) << 2) | 0b10); n >>= 6; out.push(n as u8); out.push((n >> 8) as u8); out.push((n >> 16) as u8); return; }
-        out.push((((n & 0x3f) as u8) << 2) | 0b11); n >>= 6; for i in 0..7 { out.push((n >> (i * 8)) as u8); }
+        if n < (1 << 6) {
+            out.push((n as u8) << 2);
+            return;
+        }
+        if n < (1 << 14) {
+            out.push((((n & 0x3f) as u8) << 2) | 0b01);
+            n >>= 6;
+            out.push(n as u8);
+            return;
+        }
+        if n < (1 << 30) {
+            out.push((((n & 0x3f) as u8) << 2) | 0b10);
+            n >>= 6;
+            out.push(n as u8);
+            out.push((n >> 8) as u8);
+            out.push((n >> 16) as u8);
+            return;
+        }
+        out.push((((n & 0x3f) as u8) << 2) | 0b11);
+        n >>= 6;
+        for i in 0..7 {
+            out.push((n >> (i * 8)) as u8);
+        }
     }
 
     let v = vec![true, false, true, true, false, false, true, false, true];
@@ -91,7 +138,9 @@ fn fast_bool_in_struct_vs_serde() {
 #[test]
 fn fast_numeric_in_struct_vs_serde() {
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
-    struct S<T> { data: Vec<T> }
+    struct S<T> {
+        data: Vec<T>,
+    }
 
     macro_rules! check {
         ($t:ty, $val:expr) => {
@@ -107,15 +156,20 @@ fn fast_numeric_in_struct_vs_serde() {
 
             let s = S { data: v.clone() };
             let via_serde = beve::to_vec(&s).unwrap();
-            assert_eq!(expected, via_serde, "mismatch for {}", std::any::type_name::<$t>());
+            assert_eq!(
+                expected,
+                via_serde,
+                "mismatch for {}",
+                std::any::type_name::<$t>()
+            );
 
             // Deserialization roundtrip
             let back: S<$t> = beve::from_slice(&expected).unwrap();
             assert_eq!(back, s);
-        }
+        };
     }
 
-    check!(u8, vec![1,2,3,4,5]);
+    check!(u8, vec![1, 2, 3, 4, 5]);
     check!(u16, vec![1, 512, 1024]);
     check!(u32, vec![1, 2, 3, 4]);
     check!(u64, vec![9, 10, 11]);
@@ -130,7 +184,9 @@ fn fast_numeric_in_struct_vs_serde() {
 #[test]
 fn fast_string_in_struct_vs_serde() {
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
-    struct S { labels: Vec<String> }
+    struct S {
+        labels: Vec<String>,
+    }
 
     let v = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
 

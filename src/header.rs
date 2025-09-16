@@ -39,34 +39,39 @@ pub fn make_header(ty: u8, subtype: u8, byte_count_code: u8) -> u8 {
 }
 
 #[inline]
-pub fn make_extension_header(ext_id: u8) -> u8 { ((ext_id & 0x1f) << 3) | TYPE_EXTENSION }
+pub fn make_extension_header(ext_id: u8) -> u8 {
+    ((ext_id & 0x1f) << 3) | TYPE_EXTENSION
+}
 
 #[inline]
-pub fn parse_type(header: u8) -> u8 { header & 0b111 }
+pub fn parse_type(header: u8) -> u8 {
+    header & 0b111
+}
 
 #[inline]
-pub fn parse_subtype(header: u8) -> u8 { (header >> 3) & 0b11 }
+pub fn parse_subtype(header: u8) -> u8 {
+    (header >> 3) & 0b11
+}
 
 #[inline]
-pub fn parse_byte_count_code(header: u8) -> u8 { header >> 5 }
+pub fn parse_byte_count_code(header: u8) -> u8 {
+    header >> 5
+}
 
 #[inline]
-pub fn parse_extension_id(header: u8) -> u8 { header >> 3 }
+pub fn parse_extension_id(header: u8) -> u8 {
+    header >> 3
+}
 
 #[inline]
-pub fn is_null(header: u8) -> bool { header == 0 }
-
-#[inline]
-pub fn is_bool(header: u8) -> bool { (header & 0b111) == TYPE_NULL_BOOL && (header & 0b1000) != 0 }
+pub fn is_bool(header: u8) -> bool {
+    (header & 0b111) == TYPE_NULL_BOOL && (header & 0b1000) != 0
+}
 
 #[inline]
 pub fn bool_value(header: u8) -> Result<bool> {
-    if !is_bool(header) { return Err(Error::InvalidType("not a boolean header")); }
+    if !is_bool(header) {
+        return Err(Error::InvalidType("not a boolean header"));
+    }
     Ok((header & 0b10000) != 0)
 }
-
-#[inline]
-pub fn make_complex_header(is_array: bool, num_class: u8, byte_count_code: u8) -> u8 {
-    (byte_count_code << 5) | ((num_class & 0b11) << 3) | if is_array { 1 } else { 0 }
-}
-

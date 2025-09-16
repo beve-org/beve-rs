@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[test]
 fn roundtrip_primitives() {
@@ -24,7 +24,7 @@ fn roundtrip_primitives() {
 
 #[test]
 fn roundtrip_arrays() {
-    let v: Vec<u32> = vec![1,2,3,4,5];
+    let v: Vec<u32> = vec![1, 2, 3, 4, 5];
     let bytes = beve::to_vec(&v).unwrap();
     let back: Vec<u32> = beve::from_slice(&bytes).unwrap();
     assert_eq!(v, back);
@@ -41,7 +41,10 @@ fn roundtrip_arrays() {
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-struct Point { x: f64, y: f64 }
+struct Point {
+    x: f64,
+    y: f64,
+}
 
 #[test]
 fn roundtrip_struct() {
@@ -92,4 +95,3 @@ fn roundtrip_enum() {
     let back: MyEnum = beve::from_slice(&bytes).unwrap();
     assert_eq!(v, back);
 }
-

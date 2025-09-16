@@ -1,6 +1,6 @@
+use crate::ext::Complex;
 use crate::header::*;
 use crate::size::write_size;
-use crate::ext::Complex;
 
 /// Write a typed array header and length for numeric arrays.
 #[inline]
@@ -70,20 +70,26 @@ impl BeveTypedSlice for f32 {
     const BYTE_CODE: u8 = 2; // 4 bytes
     const ELEM_SIZE: usize = core::mem::size_of::<f32>();
     #[inline]
-    fn write_one_le(v: &Self, out: &mut Vec<u8>) { out.extend_from_slice(&v.to_le_bytes()); }
+    fn write_one_le(v: &Self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
 }
 impl BeveTypedSlice for f64 {
     const CLASS: u8 = ARRAY_FLOAT;
     const BYTE_CODE: u8 = 3; // 8 bytes
     const ELEM_SIZE: usize = core::mem::size_of::<f64>();
     #[inline]
-    fn write_one_le(v: &Self, out: &mut Vec<u8>) { out.extend_from_slice(&v.to_le_bytes()); }
+    fn write_one_le(v: &Self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
 }
 
 /// Write a typed numeric array directly to `out` without serde.
 pub fn write_typed_slice<T: BeveTypedSlice>(out: &mut Vec<u8>, slice: &[T]) {
     write_typed_array_header_numeric(out, T::CLASS, T::BYTE_CODE, slice.len());
-    if slice.is_empty() { return; }
+    if slice.is_empty() {
+        return;
+    }
     // Fast path for little-endian platforms: copy contiguous bytes for POD numeric types
     #[cfg(target_endian = "little")]
     unsafe {
@@ -95,7 +101,9 @@ pub fn write_typed_slice<T: BeveTypedSlice>(out: &mut Vec<u8>, slice: &[T]) {
     }
     #[cfg(not(target_endian = "little"))]
     {
-        for v in slice { T::write_one_le(v, out); }
+        for v in slice {
+            T::write_one_le(v, out);
+        }
     }
 }
 
@@ -113,11 +121,19 @@ pub fn write_bool_slice(out: &mut Vec<u8>, slice: &[bool]) {
     let mut acc: u8 = 0;
     let mut idx: u8 = 0; // counts elements within the current byte
     for &b in slice {
-        if b { acc |= 1 << (7 - idx); }
+        if b {
+            acc |= 1 << (7 - idx);
+        }
         idx += 1;
-        if idx == 8 { out.push(acc); acc = 0; idx = 0; }
+        if idx == 8 {
+            out.push(acc);
+            acc = 0;
+            idx = 0;
+        }
     }
-    if idx != 0 { out.push(acc); }
+    if idx != 0 {
+        out.push(acc);
+    }
 }
 
 /// Encode a boolean slice to a new Vec<u8> (BEVE typed boolean array).
@@ -210,20 +226,30 @@ pub fn to_vec_complex32_slice(slice: &[Complex<f32>]) -> Vec<u8> {
 // -------- Matrices (extension) --------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MatrixLayoutFast { Right, Left }
+pub enum MatrixLayoutFast {
+    Right,
+    Left,
+}
 
 pub fn to_vec_matrix_f64(layout: MatrixLayoutFast, extents: &[u64], data: &[f64]) -> Vec<u8> {
     let mut out = Vec::new();
     // Extension: matrices
     out.push(((EXT_MATRICES & 0x1f) << 3) | (TYPE_EXTENSION & 0b111));
     // Matrix header: bit0 layout (0 row-major/right, 1 column-major/left per spec)
-    let mh = match layout { MatrixLayoutFast::Right => 0u8, MatrixLayoutFast::Left => 1u8 };
+    let mh = match layout {
+        MatrixLayoutFast::Right => 0u8,
+        MatrixLayoutFast::Left => 1u8,
+    };
     out.push(mh);
     // Extents as typed array of u64 (0x74)
     write_typed_array_header_numeric(&mut out, ARRAY_UNSIGNED, 3, extents.len());
-    for &e in extents { out.extend_from_slice(&e.to_le_bytes()); }
+    for &e in extents {
+        out.extend_from_slice(&e.to_le_bytes());
+    }
     // Data as typed array of f64
     write_typed_array_header_numeric(&mut out, ARRAY_FLOAT, 3, data.len());
-    for &v in data { out.extend_from_slice(&v.to_le_bytes()); }
+    for &v in data {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
     out
 }

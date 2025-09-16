@@ -1,7 +1,11 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-enum Color { Red, Green, Blue }
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
 
 fn main() {
     let bytes = beve::to_vec(&Color::Green).unwrap();
@@ -9,4 +13,3 @@ fn main() {
     let mut stdout = std::io::stdout();
     stdout.write_all(&bytes).unwrap();
 }
-

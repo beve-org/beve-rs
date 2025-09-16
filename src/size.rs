@@ -5,16 +5,6 @@
 use crate::error::{Error, Result};
 
 #[inline]
-pub fn byte_count_to_bytes(count_code: u8) -> usize {
-    match count_code {
-        0 => 1,
-        1 => 2,
-        2 => 4,
-        _ => 8,
-    }
-}
-
-#[inline]
 pub fn write_size(mut n: u64, out: &mut Vec<u8>) {
     if n < (1 << 6) {
         // 1 byte: 2-bit code 0, 6-bit value
@@ -82,7 +72,9 @@ pub fn encode_size_to_array(mut n: u64, out: &mut [u8; 8]) -> usize {
 
 #[inline]
 pub fn read_size(input: &[u8], pos: &mut usize) -> Result<u64> {
-    if *pos >= input.len() { return Err(Error::Eof); }
+    if *pos >= input.len() {
+        return Err(Error::Eof);
+    }
     let b0 = input[*pos];
     *pos += 1;
     let code = b0 & 0b11;
@@ -90,13 +82,17 @@ pub fn read_size(input: &[u8], pos: &mut usize) -> Result<u64> {
     match code {
         0 => Ok(value), // 1 byte
         1 => {
-            if *pos >= input.len() { return Err(Error::Eof); }
+            if *pos >= input.len() {
+                return Err(Error::Eof);
+            }
             value |= (input[*pos] as u64) << 6;
             *pos += 1;
             Ok(value)
         }
         2 => {
-            if input.len() < *pos + 3 { return Err(Error::Eof); }
+            if input.len() < *pos + 3 {
+                return Err(Error::Eof);
+            }
             value |= (input[*pos] as u64) << 6;
             value |= (input[*pos + 1] as u64) << 14;
             value |= (input[*pos + 2] as u64) << 22;
@@ -104,7 +100,9 @@ pub fn read_size(input: &[u8], pos: &mut usize) -> Result<u64> {
             Ok(value)
         }
         _ => {
-            if input.len() < *pos + 7 { return Err(Error::Eof); }
+            if input.len() < *pos + 7 {
+                return Err(Error::Eof);
+            }
             // bytes 1..7 (7 bytes)
             for i in 0..7 {
                 value |= (input[*pos + i] as u64) << (6 + 8 * i as u64);

@@ -15,7 +15,9 @@ pub enum Error {
 }
 
 impl Error {
-    pub fn msg<T: Into<String>>(msg: T) -> Self { Self::MessageOwned(msg.into()) }
+    pub fn msg<T: Into<String>>(msg: T) -> Self {
+        Self::MessageOwned(msg.into())
+    }
 }
 
 impl fmt::Display for Error {
@@ -36,9 +38,13 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl serde::ser::Error for Error {
-    fn custom<T: fmt::Display>(msg: T) -> Self { Error::MessageOwned(msg.to_string()) }
+    fn custom<T: fmt::Display>(msg: T) -> Self {
+        Error::MessageOwned(msg.to_string())
+    }
 }
 
 impl serde::de::Error for Error {
-    fn custom<T: fmt::Display>(msg: T) -> Self { Error::MessageOwned(msg.to_string()) }
+    fn custom<T: fmt::Display>(msg: T) -> Self {
+        Error::MessageOwned(msg.to_string())
+    }
 }

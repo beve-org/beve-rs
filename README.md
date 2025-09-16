@@ -1,54 +1,103 @@
 # beve-rs
-Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specification with serde support. Fast, robust, and easy to use.
+Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specification with serde support. The crate targets cross-language interoperability, predictable layout, and zero-copy fast paths for scientific and analytics workloads.
 
-Features
-- Direct struct serialization/deserialization via `serde`
-- Little-endian, spec-compliant encoding
-- Typed arrays for numeric, booleans (bit-packed), and strings when possible
-- String and integer keyed objects
-- Enum support using BEVE type-tag extension
+## Getting Started
+Add the crate to your project with `cargo add beve` or by editing `Cargo.toml`:
+```toml
+[dependencies]
+beve = "0.1"
+```
+The library only depends on `serde` and works on stable Rust 1.72+.
 
-Fast Paths
-- Numeric slices without serde: `beve::to_vec_typed_slice(&[T])` where `T` ∈ `{i8,i16,i32,i64,i128,u8,u16,u32,u64,u128,f32,f64}`
-- Boolean slices: `beve::to_vec_bool_slice(&[bool])`
-- String slices: `beve::to_vec_str_slice(&[&str])`, `beve::to_vec_string_slice(&[String])`
-
-These functions write BEVE typed arrays directly to the output buffer with no intermediate serde overhead.
-
-Example
+## Encode & Decode with Serde
+Use `beve::to_vec` and `beve::from_slice` for idiomatic serde round-trips:
 ```rust
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct Point { x: f64, y: f64 }
 
-let p = Point { x: 1.0, y: -2.0 };
-let bytes = beve::to_vec(&p).unwrap();
-let p2: Point = beve::from_slice(&bytes).unwrap();
-assert_eq!(p, p2);
+fn main() -> beve::Result<()> {
+    let p = Point { x: 1.0, y: -2.0 };
+    let bytes = beve::to_vec(&p)?;
+    let p2: Point = beve::from_slice(&bytes)?;
+    assert_eq!(p, p2);
+    Ok(())
+}
 ```
-
-Fast path examples
+You can stream to files or sockets with `beve::to_writer` and read everything back using `beve::from_reader`:
 ```rust
-// Numeric typed array (u32)
-let data = [1u32, 2, 3, 4];
-let bytes = beve::to_vec_typed_slice(&data);
-
-// Boolean typed array (bit-packed)
-let flags = [true, false, true, true];
-let bytes = beve::to_vec_bool_slice(&flags);
-
-// String typed array
-let words = ["alpha", "beta", "gamma"];
-let bytes = beve::to_vec_str_slice(&words);
+fn write_point(p: &Point) -> beve::Result<()> {
+    beve::to_writer(std::fs::File::create("out.beve")?, p)?;
+    let decoded: Point = beve::from_reader(std::fs::File::open("out.beve")?)?;
+    assert_eq!(*p, decoded);
+    Ok(())
+}
 ```
 
-Spec & References
-- Specification: reference/beve/README.md
-- C++ reference: reference/glaze
-- Julia reference: reference/BEVE.jl
+## Typed Array Fast Paths
+BEVE bakes in typed arrays for numeric, boolean, and string sequences. Skip serde overhead by calling the dedicated helpers:
+```rust
+let floats = [1.0f32, 3.5, -2.25];
+let bytes = beve::to_vec_typed_slice(&floats);
 
-Notes
-- Float16, bfloat16, and float128 scalar numbers are recognized but not yet mapped to Rust numeric types (use f32/f64). Typed arrays support f32/f64, signed/unsigned up to 128-bit, booleans, and strings.
-- Unknown-length sequences and maps are buffered to determine size, then emitted with a single header and compact body.
-- The implementation targets correctness and performance without external dependencies beyond `serde`.
+let flags = [true, false, true, true];
+let packed = beve::to_vec_bool_slice(&flags);
+
+let names = ["alpha", "beta", "gamma"];
+let encoded = beve::to_vec_str_slice(&names);
+```
+The resulting payloads match serde output, so `beve::from_slice::<Vec<T>>` continues to work.
+
+## Complex Numbers and Matrices
+The crate exposes helpers for common scientific types:
+```rust
+use beve::{Complex, Matrix, MatrixLayout};
+
+fn encode_science() -> beve::Result<()> {
+    let complex = [
+        Complex { re: 1.0f64, im: -0.5 },
+        Complex { re: 0.0, im: 2.0 },
+    ];
+    let dense = beve::to_vec_complex64_slice(&complex);
+    let roundtrip: Vec<Complex<f64>> = beve::from_slice(&dense)?;
+    assert_eq!(roundtrip, complex);
+
+    let matrix = Matrix {
+        layout: MatrixLayout::Right,
+        extents: &[3, 3],
+        data: &[1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+    };
+    let bytes = beve::to_vec(&matrix)?;
+    assert!(!bytes.is_empty());
+    Ok(())
+}
+```
+Matrices serialize as `{ layout, extents, value }` maps for easy consumption by other languages.
+
+## Enum Configuration
+By default enums emit numeric discriminants for compatibility with the reference C++ encoder. Switch to string variants when coordinating with serde-first consumers:
+```rust
+use serde::Serialize;
+use beve::{SerializerOptions, EnumEncoding};
+
+#[derive(Serialize)]
+enum MyEnum { Struct { a: i32, b: u32 } }
+
+let opts = SerializerOptions { enum_encoding: EnumEncoding::String };
+let bytes = beve::to_vec_with_options(&MyEnum::Struct { a: 1, b: 2 }, opts)?;
+```
+
+## Supported Data Model
+- Scalars: signed/unsigned integers up to 128-bit, f32/f64, null, bool, and UTF-8 strings
+- Collections: typed arrays (numeric, bool, string), generic sequences, maps with string or integer keys, and nested structs/enums
+- Streaming: `to_writer`, `to_writer_with_options`, and `from_reader` for IO-bound workflows
+- Interop: payloads align with `reference/glaze` and `reference/BEVE.jl`; spec resides in `reference/beve/README.md`
+
+## Checking Your Work
+Run the usual cargo commands before sending a change:
+```bash
+cargo fmt
+cargo clippy --all-targets --all-features
+cargo test
+```

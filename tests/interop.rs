@@ -57,12 +57,17 @@ fn sample_vec_string() -> Vec<String> {
 fn sample_color() -> Color {
     Color::Green
 }
+
+fn pi_two_decimal() -> f64 {
+    (std::f64::consts::PI * 100.0).round() / 100.0
+}
+
 fn sample_basic() -> Basic {
     let mut m = std::collections::BTreeMap::new();
     m.insert("a".into(), 1);
     m.insert("bb".into(), 2);
     let mut mi = std::collections::BTreeMap::new();
-    mi.insert(5, 3.14);
+    mi.insert(5, pi_two_decimal());
     mi.insert(7, 7.42);
     Basic {
         i: 42,

@@ -10,6 +10,7 @@ readme = "README.md"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+half = { version = "2.4", features = ["serde"] }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

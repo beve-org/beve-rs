@@ -2,6 +2,7 @@ use crate::ext::Complex;
 use crate::header::*;
 use crate::size::write_size;
 use core::ptr;
+use half::{bf16, f16};
 
 /// Write a typed array header and length for numeric arrays.
 #[inline]
@@ -14,7 +15,7 @@ fn write_typed_array_header_numeric(out: &mut Vec<u8>, class: u8, byte_code: u8,
 /// Write a typed array header for boolean arrays.
 #[inline]
 fn write_typed_array_header_bool(out: &mut Vec<u8>, len: usize) {
-    let header = ((0u8) << 5) | ((ARRAY_BOOL_OR_STRING & 0b11) << 3) | (TYPE_TYPED_ARRAY & 0b111);
+    let header = ((ARRAY_BOOL_OR_STRING & 0b11) << 3) | (TYPE_TYPED_ARRAY & 0b111);
     out.push(header);
     write_size(len as u64, out);
 }
@@ -84,10 +85,28 @@ impl BeveTypedSlice for f64 {
         out.extend_from_slice(&v.to_le_bytes());
     }
 }
+impl BeveTypedSlice for bf16 {
+    const CLASS: u8 = ARRAY_FLOAT;
+    const BYTE_CODE: u8 = 0; // Special-case brain float (2 bytes)
+    const ELEM_SIZE: usize = core::mem::size_of::<bf16>();
+    #[inline]
+    fn write_one_le(v: &Self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+}
+impl BeveTypedSlice for f16 {
+    const CLASS: u8 = ARRAY_FLOAT;
+    const BYTE_CODE: u8 = 1; // 2 bytes
+    const ELEM_SIZE: usize = core::mem::size_of::<f16>();
+    #[inline]
+    fn write_one_le(v: &Self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+}
 
 /// Write a typed numeric array directly to `out` without serde.
 pub fn write_typed_slice<T: BeveTypedSlice>(out: &mut Vec<u8>, slice: &[T]) {
-    let payload = slice.len() * T::ELEM_SIZE;
+    let payload = core::mem::size_of_val(slice);
     // Reserve for header byte, size prefix (<=8 bytes), and payload.
     out.reserve(1 + 8 + payload);
     write_typed_array_header_numeric(out, T::CLASS, T::BYTE_CODE, slice.len());
@@ -102,7 +121,6 @@ pub fn write_typed_slice<T: BeveTypedSlice>(out: &mut Vec<u8>, slice: &[T]) {
             ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, dst, payload);
             out.set_len(start + payload);
         }
-        return;
     }
     #[cfg(not(target_endian = "little"))]
     {
@@ -150,7 +168,7 @@ pub fn to_vec_bool_slice(slice: &[bool]) -> Vec<u8> {
 }
 
 /// Write a typed string array to `out` (each element as SIZE | UTF-8 DATA, no per-element header).
-pub fn write_str_slice<'a>(out: &mut Vec<u8>, slice: &[&'a str]) {
+pub fn write_str_slice(out: &mut Vec<u8>, slice: &[&str]) {
     write_typed_array_header_string(out, slice.len());
     for s in slice {
         write_size(s.len() as u64, out);
@@ -208,63 +226,57 @@ pub fn to_vec_complex32(re: f32, im: f32) -> Vec<u8> {
 }
 
 pub fn to_vec_complex64_slice(slice: &[Complex<f64>]) -> Vec<u8> {
-    let elem_size = core::mem::size_of::<Complex<f64>>();
-    let payload = slice.len() * elem_size;
+    let payload = core::mem::size_of_val(slice);
     let mut out = Vec::with_capacity(2 + 8 + payload);
     write_complex_header(&mut out, true, 3);
     write_size(slice.len() as u64, &mut out);
-    if slice.is_empty() {
-        return out;
-    }
-    #[cfg(target_endian = "little")]
-    {
-        let start = out.len();
-        unsafe {
-            let dst = out.as_mut_ptr().add(start);
-            ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, dst, payload);
-            out.set_len(start + payload);
+    if !slice.is_empty() {
+        #[cfg(target_endian = "little")]
+        {
+            let start = out.len();
+            unsafe {
+                let dst = out.as_mut_ptr().add(start);
+                ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, dst, payload);
+                out.set_len(start + payload);
+            }
         }
-        return out;
-    }
-    #[cfg(not(target_endian = "little"))]
-    {
-        out.reserve(payload);
-        for c in slice {
-            out.extend_from_slice(&c.re.to_le_bytes());
-            out.extend_from_slice(&c.im.to_le_bytes());
+        #[cfg(not(target_endian = "little"))]
+        {
+            out.reserve(payload);
+            for c in slice {
+                out.extend_from_slice(&c.re.to_le_bytes());
+                out.extend_from_slice(&c.im.to_le_bytes());
+            }
         }
-        return out;
     }
+    out
 }
 
 pub fn to_vec_complex32_slice(slice: &[Complex<f32>]) -> Vec<u8> {
-    let elem_size = core::mem::size_of::<Complex<f32>>();
-    let payload = slice.len() * elem_size;
+    let payload = core::mem::size_of_val(slice);
     let mut out = Vec::with_capacity(2 + 8 + payload);
     write_complex_header(&mut out, true, 2);
     write_size(slice.len() as u64, &mut out);
-    if slice.is_empty() {
-        return out;
-    }
-    #[cfg(target_endian = "little")]
-    {
-        let start = out.len();
-        unsafe {
-            let dst = out.as_mut_ptr().add(start);
-            ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, dst, payload);
-            out.set_len(start + payload);
+    if !slice.is_empty() {
+        #[cfg(target_endian = "little")]
+        {
+            let start = out.len();
+            unsafe {
+                let dst = out.as_mut_ptr().add(start);
+                ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, dst, payload);
+                out.set_len(start + payload);
+            }
         }
-        return out;
-    }
-    #[cfg(not(target_endian = "little"))]
-    {
-        out.reserve(payload);
-        for c in slice {
-            out.extend_from_slice(&c.re.to_le_bytes());
-            out.extend_from_slice(&c.im.to_le_bytes());
+        #[cfg(not(target_endian = "little"))]
+        {
+            out.reserve(payload);
+            for c in slice {
+                out.extend_from_slice(&c.re.to_le_bytes());
+                out.extend_from_slice(&c.im.to_le_bytes());
+            }
         }
-        return out;
     }
+    out
 }
 
 // -------- Matrices (extension) --------

@@ -1,5 +1,6 @@
 #![deny(warnings)]
 
+use half::{bf16, f16};
 use serde::{Deserialize, Serialize};
 
 #[test]
@@ -19,8 +20,8 @@ fn roundtrip_primitives() {
     rt(65535u16);
     rt(1_000_000u32);
     rt(1_000_000_000_000u64);
-    rt(3.14f32);
-    rt(-2.71828f64);
+    rt(std::f32::consts::PI);
+    rt(-std::f64::consts::E);
     rt(String::from("hello"));
 }
 
@@ -40,6 +41,48 @@ fn roundtrip_arrays() {
     let bytes = beve::to_vec(&vs).unwrap();
     let back: Vec<String> = beve::from_slice(&bytes).unwrap();
     assert_eq!(vs, back);
+}
+
+#[test]
+fn roundtrip_half_scalars() {
+    let f16_values = [
+        f16::from_f32(0.0),
+        f16::from_f32(-3.5),
+        f16::from_bits(0x7bff), // max finite
+    ];
+    for &value in &f16_values {
+        let bytes = beve::to_vec(&value).unwrap();
+        let back: f16 = beve::from_slice(&bytes).unwrap();
+        assert_eq!(value, back);
+    }
+
+    let bf16_values = [
+        bf16::from_f32(1.0),
+        bf16::from_f32(-2.25),
+        bf16::from_bits(0x7f80), // infinity
+    ];
+    for &value in &bf16_values {
+        let bytes = beve::to_vec(&value).unwrap();
+        let back: bf16 = beve::from_slice(&bytes).unwrap();
+        assert_eq!(value, back);
+    }
+}
+
+#[test]
+fn roundtrip_half_arrays() {
+    let f16_vec: Vec<f16> = vec![f16::from_f32(-1.0), f16::from_f32(0.5), f16::from_f32(3.75)];
+    let bytes = beve::to_vec(&f16_vec).unwrap();
+    let back: Vec<f16> = beve::from_slice(&bytes).unwrap();
+    assert_eq!(f16_vec, back);
+
+    let bf16_vec: Vec<bf16> = vec![
+        bf16::from_f32(-10.0),
+        bf16::from_f32(0.0),
+        bf16::from_f32(42.0),
+    ];
+    let bytes = beve::to_vec(&bf16_vec).unwrap();
+    let back: Vec<bf16> = beve::from_slice(&bytes).unwrap();
+    assert_eq!(bf16_vec, back);
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]

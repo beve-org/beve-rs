@@ -1,3 +1,4 @@
+use half::{bf16, f16};
 use serde::de::value::BoolDeserializer;
 use serde::de::{self, DeserializeOwned, Visitor};
 use serde::forward_to_deserialize_any;
@@ -16,6 +17,27 @@ fn byte_count_to_bytes(code: u8) -> Result<usize> {
         3 => Ok(8),
         4 => Ok(16),
         _ => Err(Error::Unsupported("byte width > 16 not supported")),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HalfKind {
+    Bf16,
+    F16,
+}
+
+impl HalfKind {
+    #[inline]
+    fn to_f32(self, bits: u16) -> f32 {
+        match self {
+            HalfKind::Bf16 => bf16::from_bits(bits).to_f32(),
+            HalfKind::F16 => f16::from_bits(bits).to_f32(),
+        }
+    }
+
+    #[inline]
+    fn to_f64(self, bits: u16) -> f64 {
+        self.to_f32(bits) as f64
     }
 }
 
@@ -50,6 +72,22 @@ fn make_seq_signed<'de>(
         remaining: len,
         elem_size,
         offset: 0,
+    })
+}
+
+#[inline]
+fn make_seq_half<'de>(
+    de: &mut Deserializer<'de>,
+    len: usize,
+    kind: HalfKind,
+) -> Result<SeqAccessHalf<'de>> {
+    let total = len.checked_mul(2).ok_or(Error::InvalidSize)?;
+    let data = de.read_exact(total)?;
+    Ok(SeqAccessHalf {
+        data,
+        remaining: len,
+        offset: 0,
+        kind,
     })
 }
 
@@ -164,11 +202,46 @@ impl<'de> Deserializer<'de> {
         Ok(u128::from_le_bytes(buf))
     }
 
+    fn parse_bf16_bits(&mut self) -> Result<u16> {
+        let s = self.read_exact(2)?;
+        Ok(u16::from_le_bytes([s[0], s[1]]))
+    }
+
+    fn parse_f16_bits(&mut self) -> Result<u16> {
+        let s = self.read_exact(2)?;
+        Ok(u16::from_le_bytes([s[0], s[1]]))
+    }
+
     fn parse_f32(&mut self) -> Result<f32> {
         Ok(f32::from_le_bytes(self.read_exact(4)?.try_into().unwrap()))
     }
     fn parse_f64(&mut self) -> Result<f64> {
         Ok(f64::from_le_bytes(self.read_exact(8)?.try_into().unwrap()))
+    }
+
+    fn deserialize_half_newtype<V: Visitor<'de>>(
+        &mut self,
+        visitor: V,
+        kind: HalfKind,
+    ) -> Result<V::Value> {
+        let header = self.peek_byte()?;
+        if parse_type(header) == TYPE_NUMBER && parse_subtype(header) == NUM_FLOAT {
+            let byte_code = parse_byte_count_code(header);
+            let matches = match kind {
+                HalfKind::Bf16 => byte_code == 0,
+                HalfKind::F16 => byte_code == 1,
+            };
+            if matches {
+                self.read_byte()?; // consume header
+                let bits = match kind {
+                    HalfKind::Bf16 => self.parse_bf16_bits()?,
+                    HalfKind::F16 => self.parse_f16_bits()?,
+                };
+                let deser = HalfBitsDeserializer { kind, bits };
+                return visitor.visit_newtype_struct(deser);
+            }
+        }
+        serde::Deserializer::deserialize_any(self, visitor)
     }
 
     fn parse_string_borrowed(&mut self) -> Result<&'de str> {
@@ -220,11 +293,19 @@ impl<'de> Deserializer<'de> {
                 let bc = parse_byte_count_code(header);
                 match class {
                     NUM_FLOAT => match bc {
+                        0 => {
+                            let bits = self.parse_bf16_bits()?;
+                            let v = bf16::from_bits(bits).to_f32();
+                            visitor.visit_f32(v)
+                        }
+                        1 => {
+                            let bits = self.parse_f16_bits()?;
+                            let v = f16::from_bits(bits).to_f32();
+                            visitor.visit_f32(v)
+                        }
                         2 => visitor.visit_f32(self.parse_f32()?),
                         3 => visitor.visit_f64(self.parse_f64()?),
-                        0 | 1 | 4 => Err(Error::Unsupported(
-                            "float16/bfloat16/float128 not supported for direct deserialization",
-                        )),
+                        4 => Err(Error::Unsupported("float128 not supported")),
                         _ => Err(Error::InvalidHeader(header)),
                     },
                     NUM_SIGNED => {
@@ -300,10 +381,12 @@ impl<'de> Deserializer<'de> {
                 let len = read_size(self.input, &mut self.pos)? as usize;
                 match cat {
                     ARRAY_FLOAT => match bc {
+                        0 => visitor.visit_seq(make_seq_half(self, len, HalfKind::Bf16)?),
+                        1 => visitor.visit_seq(make_seq_half(self, len, HalfKind::F16)?),
                         2 => visitor.visit_seq(make_seq_float32(self, len)?),
                         3 => visitor.visit_seq(make_seq_float64(self, len)?),
                         _ => Err(Error::Unsupported(
-                            "typed float arrays supported only for f32/f64",
+                            "typed float arrays supported only for bf16/f16/f32/f64",
                         )),
                     },
                     ARRAY_SIGNED => visitor.visit_seq(make_seq_signed(self, len, bc)?),
@@ -311,7 +394,7 @@ impl<'de> Deserializer<'de> {
                     ARRAY_BOOL_OR_STRING => {
                         if (header & 0b0010_0000) == 0 {
                             // boolean array
-                            let packed_len = (len + 7) / 8;
+                            let packed_len = len.div_ceil(8);
                             let data = self.read_exact(packed_len)?;
                             visitor.visit_seq(SeqAccessBool {
                                 data,
@@ -389,7 +472,7 @@ impl<'de> Deserializer<'de> {
     }
 }
 
-impl<'de, 'a> serde::Deserializer<'de> for &'a mut Deserializer<'de> {
+impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
     type Error = Error;
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
@@ -486,10 +569,14 @@ impl<'de, 'a> serde::Deserializer<'de> for &'a mut Deserializer<'de> {
 
     fn deserialize_newtype_struct<V: Visitor<'de>>(
         self,
-        _name: &'static str,
+        name: &'static str,
         visitor: V,
     ) -> Result<V::Value> {
-        self.deserialize_any(visitor)
+        match name {
+            "bf16" => self.deserialize_half_newtype(visitor, HalfKind::Bf16),
+            "f16" => self.deserialize_half_newtype(visitor, HalfKind::F16),
+            _ => self.deserialize_any(visitor),
+        }
     }
 
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
@@ -662,6 +749,34 @@ impl<'de> de::SeqAccess<'de> for SeqAccessSigned<'de> {
         }
         let v = i128::from_le_bytes(buf);
         let deser = NumDe::Signed(v);
+        seed.deserialize(deser).map(Some)
+    }
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.remaining)
+    }
+}
+
+struct SeqAccessHalf<'de> {
+    data: &'de [u8],
+    remaining: usize,
+    offset: usize,
+    kind: HalfKind,
+}
+impl<'de> de::SeqAccess<'de> for SeqAccessHalf<'de> {
+    type Error = Error;
+    fn next_element_seed<T: de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<Option<T::Value>> {
+        if self.remaining == 0 {
+            return Ok(None);
+        }
+        self.remaining -= 1;
+        debug_assert!(self.offset + 2 <= self.data.len());
+        let chunk = &self.data[self.offset..self.offset + 2];
+        self.offset += 2;
+        let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+        let deser = NumDe::Half(self.kind, bits);
         seed.deserialize(deser).map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
@@ -1168,6 +1283,7 @@ enum NumDe {
     Signed(i128),
     F32(f32),
     F64(f64),
+    Half(HalfKind, u16),
 }
 impl<'de> de::Deserializer<'de> for NumDe {
     type Error = Error;
@@ -1201,6 +1317,7 @@ impl<'de> de::Deserializer<'de> for NumDe {
             }
             NumDe::F32(f) => visitor.visit_f32(f),
             NumDe::F64(f) => visitor.visit_f64(f),
+            NumDe::Half(kind, bits) => visitor.visit_f32(kind.to_f32(bits)),
         }
     }
     fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
@@ -1214,6 +1331,7 @@ impl<'de> de::Deserializer<'de> for NumDe {
         match self {
             NumDe::Unsigned(u) if u <= u16::MAX as u128 => visitor.visit_u16(u as u16),
             NumDe::Signed(i) if i >= 0 && i <= u16::MAX as i128 => visitor.visit_u16(i as u16),
+            NumDe::Half(_, bits) => visitor.visit_u16(bits),
             _ => Err(Error::Mismatch("expected u16")),
         }
     }
@@ -1287,6 +1405,7 @@ impl<'de> de::Deserializer<'de> for NumDe {
             NumDe::F64(f) => visitor.visit_f32(f as f32),
             NumDe::Signed(i) => visitor.visit_f32(i as f32),
             NumDe::Unsigned(u) => visitor.visit_f32(u as f32),
+            NumDe::Half(kind, bits) => visitor.visit_f32(kind.to_f32(bits)),
         }
     }
     fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
@@ -1295,11 +1414,66 @@ impl<'de> de::Deserializer<'de> for NumDe {
             NumDe::F32(f) => visitor.visit_f64(f as f64),
             NumDe::Signed(i) => visitor.visit_f64(i as f64),
             NumDe::Unsigned(u) => visitor.visit_f64(u as f64),
+            NumDe::Half(kind, bits) => visitor.visit_f64(kind.to_f64(bits)),
+        }
+    }
+
+    fn deserialize_newtype_struct<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value> {
+        match self {
+            NumDe::Half(kind, bits) => {
+                let deser = HalfBitsDeserializer { kind, bits };
+                visitor.visit_newtype_struct(deser)
+            }
+            _ => self.deserialize_any(visitor),
         }
     }
 
     forward_to_deserialize_any! {
-        bool char str string bytes byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct map struct enum identifier ignored_any
+        bool char str string bytes byte_buf option unit unit_struct seq tuple tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+struct HalfBitsDeserializer {
+    kind: HalfKind,
+    bits: u16,
+}
+impl<'de> de::Deserializer<'de> for HalfBitsDeserializer {
+    type Error = Error;
+
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        visitor.visit_f32(self.kind.to_f32(self.bits))
+    }
+
+    fn deserialize_u16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        visitor.visit_u16(self.bits)
+    }
+
+    fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        visitor.visit_f32(self.kind.to_f32(self.bits))
+    }
+
+    fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        visitor.visit_f64(self.kind.to_f64(self.bits))
+    }
+
+    fn deserialize_newtype_struct<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value> {
+        visitor.visit_newtype_struct(self)
+    }
+
+    forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u32 u64 u128 char str string bytes byte_buf option unit unit_struct seq tuple tuple_struct map struct enum identifier ignored_any
+    }
+
+    fn is_human_readable(&self) -> bool {
+        false
     }
 }
 

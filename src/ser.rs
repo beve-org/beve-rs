@@ -1,5 +1,173 @@
 use serde::ser::{self, Serialize};
 
+// Helper serializer used to extract raw u16 bits from half-precision newtypes.
+struct U16Extractor;
+
+impl ser::Serializer for U16Extractor {
+    type Ok = u16;
+    type Error = Error;
+
+    type SerializeSeq = ser::Impossible<u16, Error>;
+    type SerializeTuple = ser::Impossible<u16, Error>;
+    type SerializeTupleStruct = ser::Impossible<u16, Error>;
+    type SerializeTupleVariant = ser::Impossible<u16, Error>;
+    type SerializeMap = ser::Impossible<u16, Error>;
+    type SerializeStruct = ser::Impossible<u16, Error>;
+    type SerializeStructVariant = ser::Impossible<u16, Error>;
+
+    #[inline]
+    fn serialize_u16(self, v: u16) -> Result<u16> {
+        Ok(v)
+    }
+
+    #[inline]
+    fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<u16> {
+        value.serialize(self)
+    }
+
+    #[inline]
+    fn serialize_newtype_struct<T: ?Sized + Serialize>(
+        self,
+        _name: &'static str,
+        value: &T,
+    ) -> Result<u16> {
+        value.serialize(self)
+    }
+
+    #[inline]
+    fn serialize_none(self) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+
+    #[inline]
+    fn serialize_unit(self) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+
+    #[inline]
+    fn serialize_bool(self, _v: bool) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_i8(self, _v: i8) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_i16(self, _v: i16) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_i32(self, _v: i32) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_i64(self, _v: i64) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_i128(self, _v: i128) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_u8(self, _v: u8) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_u32(self, _v: u32) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_u64(self, _v: u64) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_u128(self, _v: u128) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_f32(self, _v: f32) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_f64(self, _v: f64) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_char(self, _v: char) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_str(self, _v: &str) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    #[inline]
+    fn serialize_bytes(self, _v: &[u8]) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<u16> {
+        self.serialize_unit()
+    }
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+    ) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    fn serialize_newtype_variant<T: ?Sized + Serialize>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _value: &T,
+    ) -> Result<u16> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleStruct> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleVariant> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant> {
+        Err(Error::Mismatch("expected 16-bit payload"))
+    }
+
+    fn is_human_readable(&self) -> bool {
+        false
+    }
+}
+
 use crate::error::{Error, Result};
 use crate::header::*;
 use crate::size::{encode_size_to_array, write_size};
@@ -27,6 +195,12 @@ impl Default for SerializerOptions {
 pub struct Serializer {
     pub(crate) buf: Vec<u8>,
     pub(crate) opts: SerializerOptions,
+}
+
+impl Default for Serializer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Serializer {
@@ -145,6 +319,18 @@ impl Serializer {
         self.extend_from_slice(&v.to_le_bytes());
     }
 
+    fn write_bfloat16_bits(&mut self, bits: u16) {
+        let header = make_header(TYPE_NUMBER, NUM_FLOAT, 0);
+        self.push(header);
+        self.extend_from_slice(&bits.to_le_bytes());
+    }
+
+    fn write_float16_bits(&mut self, bits: u16) {
+        let header = make_header(TYPE_NUMBER, NUM_FLOAT, 1);
+        self.push(header);
+        self.extend_from_slice(&bits.to_le_bytes());
+    }
+
     fn write_str_value(&mut self, s: &str) {
         self.push(TYPE_STRING);
         write_size(s.len() as u64, &mut self.buf);
@@ -155,7 +341,7 @@ impl Serializer {
         match self.opts.enum_encoding {
             EnumEncoding::Number => {
                 // Match Glaze behavior: emit 32-bit unsigned discriminant.
-                self.write_unsigned_value::<4, _>(variant_index as u32);
+                self.write_unsigned_value::<4, _>(variant_index);
             }
             EnumEncoding::String => {
                 self.write_str_value(variant_name);
@@ -390,10 +576,22 @@ impl<'a> ser::Serializer for &'a mut Serializer {
 
     fn serialize_newtype_struct<T: ?Sized + Serialize>(
         self,
-        _name: &'static str,
+        name: &'static str,
         value: &T,
     ) -> Result<()> {
-        value.serialize(self)
+        match name {
+            "bf16" => {
+                let bits = value.serialize(U16Extractor)?;
+                self.write_bfloat16_bits(bits);
+                Ok(())
+            }
+            "f16" => {
+                let bits = value.serialize(U16Extractor)?;
+                self.write_float16_bits(bits);
+                Ok(())
+            }
+            _ => value.serialize(self),
+        }
     }
 
     // Note: No `serialize_enum`; enum variants dispatch through variant helpers.
@@ -646,10 +844,22 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
 
     fn serialize_newtype_struct<T: ?Sized + Serialize>(
         self,
-        _name: &'static str,
+        name: &'static str,
         value: &T,
     ) -> Result<()> {
-        value.serialize(self)
+        match name {
+            "bf16" => {
+                let bits = value.serialize(U16Extractor)?;
+                let bytes = bits.to_le_bytes();
+                self.serialize_float_by(bytes.as_slice(), 0)
+            }
+            "f16" => {
+                let bits = value.serialize(U16Extractor)?;
+                let bytes = bits.to_le_bytes();
+                self.serialize_float_by(bytes.as_slice(), 1)
+            }
+            _ => value.serialize(self),
+        }
     }
 
     fn serialize_newtype_variant<T: ?Sized + Serialize>(

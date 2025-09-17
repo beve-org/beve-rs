@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ae1b9d66190fc91839a7f9f6112904a6c3c07987ef90a6f9f0c78bf3f395c68b # shrinks to message = Message { id: 0, payload: Snapshot { label: "a", counters: [] } }
+cc e94933966f3a40d73a4d0ad2947ae22c737ea1fc0b2f346fee40a5dce46fa76c # shrinks to message = Message { id: 0, payload: MetaOnly(Codes([])) }
+cc f9cdd49c30520f765d90951dfde479bbf9d321e870dd60e37912d03ce72895a8 # shrinks to message = Message { id: 0, payload: Telemetry([]) }

@@ -1,5 +1,6 @@
 #![deny(warnings)]
 
+use beve::{Complex, Matrix, MatrixLayout};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +37,88 @@ fn sample_records(count: usize) -> Vec<Record> {
                     "odd".into()
                 },
             ],
+        })
+        .collect()
+}
+
+#[derive(Deserialize)]
+struct OwnedMatrix {
+    layout: MatrixLayout,
+    extents: Vec<usize>,
+    value: Vec<f64>,
+}
+
+fn sample_matrix(rows: usize, cols: usize) -> (Vec<usize>, Vec<f64>) {
+    let extents = vec![rows, cols];
+    let data = (0..rows * cols)
+        .map(|i| ((i as f64 * 0.03125).sin() + (i as f64 * 0.015625).cos()) * 0.5)
+        .collect();
+    (extents, data)
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct MixedFrame {
+    id: u64,
+    scalars: Vec<f64>,
+    counts: Vec<u32>,
+    complex: Vec<Complex<f64>>,
+    notes: String,
+    status: Status,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+enum Status {
+    Idle,
+    Running {
+        stage: u16,
+        gains: Vec<f32>,
+    },
+    Error {
+        code: i32,
+        tags: Vec<String>,
+        retry: bool,
+    },
+}
+
+fn mixed_frames(count: usize) -> Vec<MixedFrame> {
+    (0..count)
+        .map(|i| {
+            let scalars = (0..32)
+                .map(|j| ((i as f64 * 0.5 + j as f64).sin() * 0.25) + j as f64)
+                .collect();
+            let counts = (0..32).map(|j| (j as u32) ^ (i as u32)).collect();
+            let complex = (0..16)
+                .map(|j| Complex {
+                    re: (i as f64 * 0.25 + j as f64).cos(),
+                    im: (i as f64 * 0.125 + j as f64).sin(),
+                })
+                .collect();
+            let notes = format!("frame-{i:05}");
+            let status = match i % 3 {
+                0 => Status::Idle,
+                1 => Status::Running {
+                    stage: (i % 8) as u16,
+                    gains: (0..12)
+                        .map(|j| (j as f32 * 0.03125).sin() + (i as f32 * 0.0625))
+                        .collect(),
+                },
+                _ => Status::Error {
+                    code: -((i % 11) as i32),
+                    tags: vec![
+                        format!("sensor-{}", WORDS[i % WORDS.len()]),
+                        format!("batch-{}", i / 64),
+                    ],
+                    retry: i % 2 == 0,
+                },
+            };
+            MixedFrame {
+                id: i as u64,
+                scalars,
+                counts,
+                complex,
+                notes,
+                status,
+            }
         })
         .collect()
 }
@@ -161,11 +244,78 @@ fn bench_string_arrays(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_matrix_payloads(c: &mut Criterion) {
+    let (extents, data) = sample_matrix(64, 64);
+    let matrix = Matrix {
+        layout: MatrixLayout::Right,
+        extents: &extents,
+        data: &data,
+    };
+    let encoded = beve::to_vec(&matrix).expect("serialize matrix");
+
+    let mut group = c.benchmark_group("matrix_payloads");
+    group.bench_function("to_vec", move |b| {
+        let extents = extents.clone();
+        let data = data.clone();
+        b.iter(move || {
+            let matrix = Matrix {
+                layout: MatrixLayout::Right,
+                extents: &extents,
+                data: &data,
+            };
+            let bytes = beve::to_vec(black_box(&matrix)).expect("matrix encode");
+            black_box(bytes);
+        });
+    });
+    group.bench_function("from_slice", move |b| {
+        let encoded = encoded.clone();
+        b.iter(move || {
+            let OwnedMatrix {
+                layout,
+                extents,
+                value,
+            } = beve::from_slice(black_box(&encoded)).expect("matrix decode");
+            black_box(layout);
+            black_box(extents);
+            black_box(value);
+        });
+    });
+    group.finish();
+}
+
+fn bench_mixed_structs(c: &mut Criterion) {
+    let frames = mixed_frames(256);
+    let encoded = beve::to_vec(&frames).expect("serialize mixed frames");
+
+    let mut group = c.benchmark_group("mixed_structs");
+    group.bench_with_input(
+        BenchmarkId::new("to_vec", frames.len()),
+        &frames,
+        |b, data| {
+            b.iter(|| {
+                let bytes = beve::to_vec(black_box(data)).expect("serialize mixed");
+                black_box(bytes);
+            });
+        },
+    );
+    group.bench_function(BenchmarkId::new("from_slice", frames.len()), |b| {
+        let encoded = encoded.clone();
+        b.iter(move || {
+            let decoded: Vec<MixedFrame> =
+                beve::from_slice(black_box(&encoded)).expect("decode mixed");
+            black_box(decoded);
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_struct_roundtrip,
     bench_numeric_arrays,
     bench_bool_arrays,
-    bench_string_arrays
+    bench_string_arrays,
+    bench_matrix_payloads,
+    bench_mixed_structs
 );
 criterion_main!(benches);

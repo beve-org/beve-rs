@@ -14,8 +14,8 @@ serde = { version = "1", features = ["derive"] }
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
 criterion = "0.5"
+proptest = "1.4"
 
 [[bench]]
 name = "serialization"
 harness = false
-

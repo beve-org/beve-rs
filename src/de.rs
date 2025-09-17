@@ -7,6 +7,74 @@ use crate::error::{Error, Result};
 use crate::header::*;
 use crate::size::read_size;
 
+#[inline]
+fn byte_count_to_bytes(code: u8) -> Result<usize> {
+    match code {
+        0 => Ok(1),
+        1 => Ok(2),
+        2 => Ok(4),
+        3 => Ok(8),
+        4 => Ok(16),
+        _ => Err(Error::Unsupported("byte width > 16 not supported")),
+    }
+}
+
+#[inline]
+fn make_seq_unsigned<'de>(
+    de: &mut Deserializer<'de>,
+    len: usize,
+    byte_code: u8,
+) -> Result<SeqAccessUnsigned<'de>> {
+    let elem_size = byte_count_to_bytes(byte_code)?;
+    let total = elem_size.checked_mul(len).ok_or(Error::InvalidSize)?;
+    let data = de.read_exact(total)?;
+    Ok(SeqAccessUnsigned {
+        data,
+        remaining: len,
+        elem_size,
+        offset: 0,
+    })
+}
+
+#[inline]
+fn make_seq_signed<'de>(
+    de: &mut Deserializer<'de>,
+    len: usize,
+    byte_code: u8,
+) -> Result<SeqAccessSigned<'de>> {
+    let elem_size = byte_count_to_bytes(byte_code)?;
+    let total = elem_size.checked_mul(len).ok_or(Error::InvalidSize)?;
+    let data = de.read_exact(total)?;
+    Ok(SeqAccessSigned {
+        data,
+        remaining: len,
+        elem_size,
+        offset: 0,
+    })
+}
+
+#[inline]
+fn make_seq_float32<'de>(de: &mut Deserializer<'de>, len: usize) -> Result<SeqAccessFloat32<'de>> {
+    let total = 4usize.checked_mul(len).ok_or(Error::InvalidSize)?;
+    let data = de.read_exact(total)?;
+    Ok(SeqAccessFloat32 {
+        data,
+        remaining: len,
+        offset: 0,
+    })
+}
+
+#[inline]
+fn make_seq_float64<'de>(de: &mut Deserializer<'de>, len: usize) -> Result<SeqAccessFloat64<'de>> {
+    let total = 8usize.checked_mul(len).ok_or(Error::InvalidSize)?;
+    let data = de.read_exact(total)?;
+    Ok(SeqAccessFloat64 {
+        data,
+        remaining: len,
+        offset: 0,
+    })
+}
+
 pub struct Deserializer<'de> {
     input: &'de [u8],
     pos: usize,
@@ -232,28 +300,14 @@ impl<'de> Deserializer<'de> {
                 let len = read_size(self.input, &mut self.pos)? as usize;
                 match cat {
                     ARRAY_FLOAT => match bc {
-                        2 => visitor.visit_seq(SeqAccessFloat32 {
-                            de: self,
-                            remaining: len,
-                        }),
-                        3 => visitor.visit_seq(SeqAccessFloat64 {
-                            de: self,
-                            remaining: len,
-                        }),
+                        2 => visitor.visit_seq(make_seq_float32(self, len)?),
+                        3 => visitor.visit_seq(make_seq_float64(self, len)?),
                         _ => Err(Error::Unsupported(
                             "typed float arrays supported only for f32/f64",
                         )),
                     },
-                    ARRAY_SIGNED => visitor.visit_seq(SeqAccessSigned {
-                        de: self,
-                        remaining: len,
-                        byte_code: bc,
-                    }),
-                    ARRAY_UNSIGNED => visitor.visit_seq(SeqAccessUnsigned {
-                        de: self,
-                        remaining: len,
-                        byte_code: bc,
-                    }),
+                    ARRAY_SIGNED => visitor.visit_seq(make_seq_signed(self, len, bc)?),
+                    ARRAY_UNSIGNED => visitor.visit_seq(make_seq_unsigned(self, len, bc)?),
                     ARRAY_BOOL_OR_STRING => {
                         if (header & 0b0010_0000) == 0 {
                             // boolean array
@@ -550,12 +604,13 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessGeneric<'a, 'de> {
     }
 }
 
-struct SeqAccessUnsigned<'a, 'de> {
-    de: &'a mut Deserializer<'de>,
+struct SeqAccessUnsigned<'de> {
+    data: &'de [u8],
     remaining: usize,
-    byte_code: u8,
+    elem_size: usize,
+    offset: usize,
 }
-impl<'de, 'a> de::SeqAccess<'de> for SeqAccessUnsigned<'a, 'de> {
+impl<'de> de::SeqAccess<'de> for SeqAccessUnsigned<'de> {
     type Error = Error;
     fn next_element_seed<T: de::DeserializeSeed<'de>>(
         &mut self,
@@ -565,7 +620,12 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessUnsigned<'a, 'de> {
             return Ok(None);
         }
         self.remaining -= 1;
-        let v = self.de.parse_unsigned(self.byte_code)?;
+        debug_assert!(self.offset + self.elem_size <= self.data.len());
+        let chunk = &self.data[self.offset..self.offset + self.elem_size];
+        self.offset += self.elem_size;
+        let mut buf = [0u8; 16];
+        buf[..self.elem_size].copy_from_slice(chunk);
+        let v = u128::from_le_bytes(buf);
         let deser = NumDe::Unsigned(v);
         seed.deserialize(deser).map(Some)
     }
@@ -574,12 +634,13 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessUnsigned<'a, 'de> {
     }
 }
 
-struct SeqAccessSigned<'a, 'de> {
-    de: &'a mut Deserializer<'de>,
+struct SeqAccessSigned<'de> {
+    data: &'de [u8],
     remaining: usize,
-    byte_code: u8,
+    elem_size: usize,
+    offset: usize,
 }
-impl<'de, 'a> de::SeqAccess<'de> for SeqAccessSigned<'a, 'de> {
+impl<'de> de::SeqAccess<'de> for SeqAccessSigned<'de> {
     type Error = Error;
     fn next_element_seed<T: de::DeserializeSeed<'de>>(
         &mut self,
@@ -589,7 +650,17 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessSigned<'a, 'de> {
             return Ok(None);
         }
         self.remaining -= 1;
-        let v = self.de.parse_signed(self.byte_code)?;
+        debug_assert!(self.offset + self.elem_size <= self.data.len());
+        let chunk = &self.data[self.offset..self.offset + self.elem_size];
+        self.offset += self.elem_size;
+        let mut buf = [0u8; 16];
+        buf[..self.elem_size].copy_from_slice(chunk);
+        if self.elem_size < 16 && (chunk[self.elem_size - 1] & 0x80) != 0 {
+            for b in &mut buf[self.elem_size..] {
+                *b = 0xFF;
+            }
+        }
+        let v = i128::from_le_bytes(buf);
         let deser = NumDe::Signed(v);
         seed.deserialize(deser).map(Some)
     }
@@ -598,11 +669,12 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessSigned<'a, 'de> {
     }
 }
 
-struct SeqAccessFloat32<'a, 'de> {
-    de: &'a mut Deserializer<'de>,
+struct SeqAccessFloat32<'de> {
+    data: &'de [u8],
     remaining: usize,
+    offset: usize,
 }
-impl<'de, 'a> de::SeqAccess<'de> for SeqAccessFloat32<'a, 'de> {
+impl<'de> de::SeqAccess<'de> for SeqAccessFloat32<'de> {
     type Error = Error;
     fn next_element_seed<T: de::DeserializeSeed<'de>>(
         &mut self,
@@ -612,7 +684,11 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessFloat32<'a, 'de> {
             return Ok(None);
         }
         self.remaining -= 1;
-        let v = self.de.parse_f32()?;
+        debug_assert!(self.offset + 4 <= self.data.len());
+        let mut buf = [0u8; 4];
+        buf.copy_from_slice(&self.data[self.offset..self.offset + 4]);
+        self.offset += 4;
+        let v = f32::from_le_bytes(buf);
         let deser = NumDe::F32(v);
         seed.deserialize(deser).map(Some)
     }
@@ -621,11 +697,12 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessFloat32<'a, 'de> {
     }
 }
 
-struct SeqAccessFloat64<'a, 'de> {
-    de: &'a mut Deserializer<'de>,
+struct SeqAccessFloat64<'de> {
+    data: &'de [u8],
     remaining: usize,
+    offset: usize,
 }
-impl<'de, 'a> de::SeqAccess<'de> for SeqAccessFloat64<'a, 'de> {
+impl<'de> de::SeqAccess<'de> for SeqAccessFloat64<'de> {
     type Error = Error;
     fn next_element_seed<T: de::DeserializeSeed<'de>>(
         &mut self,
@@ -635,7 +712,11 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessFloat64<'a, 'de> {
             return Ok(None);
         }
         self.remaining -= 1;
-        let v = self.de.parse_f64()?;
+        debug_assert!(self.offset + 8 <= self.data.len());
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&self.data[self.offset..self.offset + 8]);
+        self.offset += 8;
+        let v = f64::from_le_bytes(buf);
         let deser = NumDe::F64(v);
         seed.deserialize(deser).map(Some)
     }
@@ -903,11 +984,8 @@ struct SeqArrayDeUnsigned<'a, 'de> {
 impl<'de, 'a> de::Deserializer<'de> for SeqArrayDeUnsigned<'a, 'de> {
     type Error = Error;
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_seq(SeqAccessUnsigned {
-            de: self.de,
-            remaining: self.len,
-            byte_code: self.byte_code,
-        })
+        let access = make_seq_unsigned(self.de, self.len, self.byte_code)?;
+        visitor.visit_seq(access)
     }
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         self.deserialize_any(visitor)
@@ -923,11 +1001,8 @@ struct SeqArrayDeSigned<'a, 'de> {
 impl<'de, 'a> de::Deserializer<'de> for SeqArrayDeSigned<'a, 'de> {
     type Error = Error;
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_seq(SeqAccessSigned {
-            de: self.de,
-            remaining: self.len,
-            byte_code: self.byte_code,
-        })
+        let access = make_seq_signed(self.de, self.len, self.byte_code)?;
+        visitor.visit_seq(access)
     }
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         self.deserialize_any(visitor)

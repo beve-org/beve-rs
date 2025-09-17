@@ -1,3 +1,5 @@
+#![deny(warnings)]
+
 use serde::{Deserialize, Serialize};
 
 // Minimal SIZE encoder for tests (matches src/size.rs behavior)
@@ -86,32 +88,6 @@ fn fast_bool_in_struct_vs_serde() {
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
     struct S {
         flags: Vec<bool>,
-    }
-
-    fn write_size_test(mut n: u64, out: &mut Vec<u8>) {
-        if n < (1 << 6) {
-            out.push((n as u8) << 2);
-            return;
-        }
-        if n < (1 << 14) {
-            out.push((((n & 0x3f) as u8) << 2) | 0b01);
-            n >>= 6;
-            out.push(n as u8);
-            return;
-        }
-        if n < (1 << 30) {
-            out.push((((n & 0x3f) as u8) << 2) | 0b10);
-            n >>= 6;
-            out.push(n as u8);
-            out.push((n >> 8) as u8);
-            out.push((n >> 16) as u8);
-            return;
-        }
-        out.push((((n & 0x3f) as u8) << 2) | 0b11);
-        n >>= 6;
-        for i in 0..7 {
-            out.push((n >> (i * 8)) as u8);
-        }
     }
 
     let v = vec![true, false, true, true, false, false, true, false, true];

@@ -1,4 +1,6 @@
-use beve::{to_vec_complex64, to_vec_complex64_slice, Complex, Matrix, MatrixLayout};
+#![deny(warnings)]
+
+use beve::{to_vec_complex64, to_vec_complex64_slice, Complex};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::process::{Command, Stdio};

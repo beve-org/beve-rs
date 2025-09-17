@@ -1,3 +1,5 @@
+#![deny(warnings)]
+
 use serde::{Deserialize, Serialize};
 
 #[test]

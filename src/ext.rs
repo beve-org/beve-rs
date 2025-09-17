@@ -1,5 +1,6 @@
 use serde::{ser, Deserialize, Serialize};
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Complex<T> {
     pub re: T,

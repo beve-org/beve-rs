@@ -1,6 +1,7 @@
 use crate::ext::Complex;
 use crate::header::*;
 use crate::size::write_size;
+use core::ptr;
 
 /// Write a typed array header and length for numeric arrays.
 #[inline]
@@ -86,17 +87,21 @@ impl BeveTypedSlice for f64 {
 
 /// Write a typed numeric array directly to `out` without serde.
 pub fn write_typed_slice<T: BeveTypedSlice>(out: &mut Vec<u8>, slice: &[T]) {
+    let payload = slice.len() * T::ELEM_SIZE;
+    // Reserve for header byte, size prefix (<=8 bytes), and payload.
+    out.reserve(1 + 8 + payload);
     write_typed_array_header_numeric(out, T::CLASS, T::BYTE_CODE, slice.len());
     if slice.is_empty() {
         return;
     }
-    // Fast path for little-endian platforms: copy contiguous bytes for POD numeric types
     #[cfg(target_endian = "little")]
-    unsafe {
-        let ptr = slice.as_ptr() as *const u8;
-        let len = slice.len() * T::ELEM_SIZE;
-        let bytes = core::slice::from_raw_parts(ptr, len);
-        out.extend_from_slice(bytes);
+    {
+        let start = out.len();
+        unsafe {
+            let dst = out.as_mut_ptr().add(start);
+            ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, dst, payload);
+            out.set_len(start + payload);
+        }
         return;
     }
     #[cfg(not(target_endian = "little"))]
@@ -109,7 +114,8 @@ pub fn write_typed_slice<T: BeveTypedSlice>(out: &mut Vec<u8>, slice: &[T]) {
 
 /// Encode a typed numeric slice to a new Vec<u8> (BEVE typed array).
 pub fn to_vec_typed_slice<T: BeveTypedSlice>(slice: &[T]) -> Vec<u8> {
-    let mut out = Vec::new();
+    let payload = slice.len() * T::ELEM_SIZE;
+    let mut out = Vec::with_capacity(1 + 8 + payload);
     write_typed_slice(&mut out, slice);
     out
 }
@@ -202,25 +208,63 @@ pub fn to_vec_complex32(re: f32, im: f32) -> Vec<u8> {
 }
 
 pub fn to_vec_complex64_slice(slice: &[Complex<f64>]) -> Vec<u8> {
-    let mut out = Vec::new();
+    let elem_size = core::mem::size_of::<Complex<f64>>();
+    let payload = slice.len() * elem_size;
+    let mut out = Vec::with_capacity(2 + 8 + payload);
     write_complex_header(&mut out, true, 3);
     write_size(slice.len() as u64, &mut out);
-    for c in slice {
-        out.extend_from_slice(&c.re.to_le_bytes());
-        out.extend_from_slice(&c.im.to_le_bytes());
+    if slice.is_empty() {
+        return out;
     }
-    out
+    #[cfg(target_endian = "little")]
+    {
+        let start = out.len();
+        unsafe {
+            let dst = out.as_mut_ptr().add(start);
+            ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, dst, payload);
+            out.set_len(start + payload);
+        }
+        return out;
+    }
+    #[cfg(not(target_endian = "little"))]
+    {
+        out.reserve(payload);
+        for c in slice {
+            out.extend_from_slice(&c.re.to_le_bytes());
+            out.extend_from_slice(&c.im.to_le_bytes());
+        }
+        return out;
+    }
 }
 
 pub fn to_vec_complex32_slice(slice: &[Complex<f32>]) -> Vec<u8> {
-    let mut out = Vec::new();
+    let elem_size = core::mem::size_of::<Complex<f32>>();
+    let payload = slice.len() * elem_size;
+    let mut out = Vec::with_capacity(2 + 8 + payload);
     write_complex_header(&mut out, true, 2);
     write_size(slice.len() as u64, &mut out);
-    for c in slice {
-        out.extend_from_slice(&c.re.to_le_bytes());
-        out.extend_from_slice(&c.im.to_le_bytes());
+    if slice.is_empty() {
+        return out;
     }
-    out
+    #[cfg(target_endian = "little")]
+    {
+        let start = out.len();
+        unsafe {
+            let dst = out.as_mut_ptr().add(start);
+            ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, dst, payload);
+            out.set_len(start + payload);
+        }
+        return out;
+    }
+    #[cfg(not(target_endian = "little"))]
+    {
+        out.reserve(payload);
+        for c in slice {
+            out.extend_from_slice(&c.re.to_le_bytes());
+            out.extend_from_slice(&c.im.to_le_bytes());
+        }
+        return out;
+    }
 }
 
 // -------- Matrices (extension) --------

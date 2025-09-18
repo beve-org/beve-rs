@@ -11,12 +11,18 @@ readme = "README.md"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 half = { version = "2.4", features = ["serde"] }
+simdutf8 = "0.1"
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
 criterion = "0.5"
 proptest = "1.4"
+serde-beve = { path = "serde-beve-1.0.0-alpha.7" }
 
 [[bench]]
 name = "serialization"
+harness = false
+
+[[bench]]
+name = "comparison"
 harness = false

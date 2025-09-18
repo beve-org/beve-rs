@@ -1,5 +1,5 @@
 use half::{bf16, f16};
-use serde::de::value::BoolDeserializer;
+use serde::de::value::{BoolDeserializer, BorrowedStrDeserializer};
 use serde::de::{self, DeserializeOwned, Visitor};
 use serde::forward_to_deserialize_any;
 use std::string::String;
@@ -7,6 +7,12 @@ use std::string::String;
 use crate::error::{Error, Result};
 use crate::header::*;
 use crate::size::read_size;
+use simdutf8::basic::from_utf8;
+
+#[inline]
+fn decode_utf8<'de>(bytes: &'de [u8], context: &'static str) -> Result<&'de str> {
+    from_utf8(bytes).map_err(|_| Error::InvalidType(context))
+}
 
 #[inline]
 fn byte_count_to_bytes(code: u8) -> Result<usize> {
@@ -247,7 +253,7 @@ impl<'de> Deserializer<'de> {
     fn parse_string_borrowed(&mut self) -> Result<&'de str> {
         let len = read_size(self.input, &mut self.pos)? as usize;
         let s = self.read_exact(len)?;
-        core::str::from_utf8(s).map_err(|_| Error::InvalidType("invalid utf-8"))
+        decode_utf8(s, "invalid utf-8")
     }
 
     fn read_enum_tag(&mut self) -> Result<EnumTag> {
@@ -649,9 +655,8 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
                 if self.pos + len > self.input.len() {
                     return Err(Error::Eof);
                 }
-                let s = core::str::from_utf8(&self.input[self.pos..self.pos + len])
-                    .map_err(|_| Error::InvalidType("invalid utf-8"))?
-                    .to_owned();
+                let s =
+                    decode_utf8(&self.input[self.pos..self.pos + len], "invalid utf-8")?.to_owned();
                 self.pos += len;
                 visitor.visit_enum(EnumStrAccess { name: s })
             }
@@ -886,7 +891,7 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessString<'a, 'de> {
         }
         let s = self.de.parse_string_borrowed()?;
         self.remaining -= 1;
-        seed.deserialize(StrRefDe(s)).map(Some)
+        seed.deserialize(BorrowedStrDeserializer::new(s)).map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
         Some(self.remaining)
@@ -907,10 +912,9 @@ impl<'de, 'a> de::MapAccess<'de> for MapAccessString<'a, 'de> {
         }
         let key_len = read_size(self.de.input, &mut self.de.pos)? as usize;
         let key_bytes = self.de.read_exact(key_len)?;
-        let key = core::str::from_utf8(key_bytes)
-            .map_err(|_| Error::InvalidType("invalid utf-8 in key"))?;
-        let key_de = StrRefDe(key);
-        seed.deserialize(key_de).map(Some)
+        let key = decode_utf8(key_bytes, "invalid utf-8 in key")?;
+        seed.deserialize(BorrowedStrDeserializer::new(key))
+            .map(Some)
     }
     fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
         self.remaining -= 1;
@@ -1020,7 +1024,8 @@ impl<'de, 'a> de::MapAccess<'de> for MatrixAccess<'a, 'de> {
             _ => return Ok(None),
         };
         self.step += 1;
-        seed.deserialize(StrRefDe(key)).map(Some)
+        seed.deserialize(BorrowedStrDeserializer::new(key))
+            .map(Some)
     }
     fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
         match self.step - 1 {
@@ -1030,7 +1035,7 @@ impl<'de, 'a> de::MapAccess<'de> for MatrixAccess<'a, 'de> {
                 } else {
                     "layout_left"
                 };
-                seed.deserialize(StrRefDe(layout))
+                seed.deserialize(BorrowedStrDeserializer::new(layout))
             }
             1 => {
                 // extents as typed integer array (signed or unsigned)
@@ -1491,25 +1496,5 @@ impl<'de> de::Deserializer<'de> for StrDe {
     }
     forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char bytes byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct map struct enum identifier ignored_any
-    }
-}
-
-struct StrRefDe<'a>(&'a str);
-impl<'de, 'a: 'de> de::Deserializer<'de> for StrRefDe<'a> {
-    type Error = Error;
-    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_borrowed_str(self.0)
-    }
-    fn deserialize_identifier<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_borrowed_str(self.0)
-    }
-    fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_borrowed_str(self.0)
-    }
-    fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_string(self.0.to_owned())
-    }
-    forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char bytes byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct map struct enum ignored_any
     }
 }

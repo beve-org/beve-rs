@@ -75,6 +75,10 @@ fn encode_science() -> beve::Result<()> {
 ```
 Matrices serialize as `{ layout, extents, value }` maps for easy consumption by other languages.
 
+## Examples
+- `cargo run --example emit_bool` writes a short boolean stream to stdout so you can inspect the raw bytes.
+- `cargo run --example emit_color` demonstrates encoding a struct with enums and typed arrays.
+
 ## Enum Configuration
 By default enums emit numeric discriminants for compatibility with the reference C++ encoder. Switch to string variants when coordinating with serde-first consumers:
 ```rust

@@ -7,7 +7,7 @@ Add the crate to your project with `cargo add beve` or by editing `Cargo.toml`:
 [dependencies]
 beve = "0.1"
 ```
-The library only depends on `serde` and works on stable Rust 1.72+.
+The library only depends on `serde` and requires Rust 1.87 or newer.
 
 ## Encode & Decode with Serde
 Use `beve::to_vec` and `beve::from_slice` for idiomatic serde round-trips:

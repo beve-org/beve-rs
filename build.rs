@@ -30,7 +30,7 @@ fn main() {
             println!("cargo:rustc-env=GLAZE_INTEROP_BIN={}", bin_path.display());
         }
         _ => {
-            println!("cargo:warning=Failed to build Glaze interop helper; set CXX or install a C++20 compiler to enable interop tests.");
+            println!("cargo:warning=Failed to build Glaze interop helper; set CXX or install a C++23 compiler to enable interop tests.");
         }
     }
 }

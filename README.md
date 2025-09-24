@@ -7,7 +7,7 @@ Add the crate to your project with `cargo add beve` or by editing `Cargo.toml`:
 [dependencies]
 beve = "0.1"
 ```
-The library only depends on `serde` and requires Rust 1.87 or newer.
+The library only depends on `serde` and requires Rust 1.87 or newer. Half-precision floats via `half::f16` are supported alongside the standard numeric types.
 
 ## Encode & Decode with Serde
 Use `beve::to_vec` and `beve::from_slice` for idiomatic serde round-trips:
@@ -48,6 +48,45 @@ let names = ["alpha", "beta", "gamma"];
 let encoded = beve::to_vec_str_slice(&names);
 ```
 The resulting payloads match serde output, so `beve::from_slice::<Vec<T>>` continues to work.
+
+### Typed Arrays Inside Structs
+Struct fields automatically use the packed typed-array fast paths, so you get compact encodings without custom serializers:
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Frame {
+    ticks: Vec<u64>,
+    flags: Vec<bool>,
+}
+
+fn frame_roundtrip() -> beve::Result<()> {
+    let frame = Frame {
+        ticks: vec![1, 2, 4, 8],
+        flags: vec![true, false, true, true],
+    };
+    let bytes = beve::to_vec(&frame)?;
+    let back: Frame = beve::from_slice(&bytes)?;
+    assert_eq!(frame, back);
+    Ok(())
+}
+```
+
+### Integer Map Keys
+Maps with integer keys serialize deterministically and read back into ordered maps:
+```rust
+use std::collections::BTreeMap;
+
+fn integer_keys() -> beve::Result<()> {
+    let mut m = BTreeMap::new();
+    m.insert(1u32, -1i32);
+    m.insert(2u32, 4i32);
+    let bytes = beve::to_vec(&m)?;
+    let back: BTreeMap<u32, i32> = beve::from_slice(&bytes)?;
+    assert_eq!(m, back);
+    Ok(())
+}
+```
 
 ## Complex Numbers and Matrices
 The crate exposes helpers for common scientific types:
@@ -97,6 +136,25 @@ let bytes = beve::to_vec_with_options(&MyEnum::Struct { a: 1, b: 2 }, opts)?;
 - Collections: typed arrays (numeric, bool, string), generic sequences, maps with string or integer keys, and nested structs/enums
 - Streaming: `to_writer`, `to_writer_with_options`, and `from_reader` for IO-bound workflows
 - Interop: payloads align with `reference/glaze` and `reference/BEVE.jl`; spec resides in `reference/beve/README.md`
+
+### Half & BFloat16 Scalars
+Half-precision (`f16`) and bfloat16 (`bf16`) values round-trip like any other scalar:
+```rust
+use half::{bf16, f16};
+
+fn store_halves() -> beve::Result<()> {
+    let h = f16::from_f32(-3.5);
+    let bytes = beve::to_vec(&h)?;
+    let back: f16 = beve::from_slice(&bytes)?;
+    assert_eq!(h, back);
+
+    let brain = bf16::from_f32(1.0);
+    let brain_bytes = beve::to_vec(&brain)?;
+    let brain_back: bf16 = beve::from_slice(&brain_bytes)?;
+    assert_eq!(brain, brain_back);
+    Ok(())
+}
+```
 
 ## Checking Your Work
 Run the usual cargo commands before sending a change:

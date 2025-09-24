@@ -2,7 +2,7 @@
 Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specification with serde support. The crate targets cross-language interoperability, predictable layout, and zero-copy fast paths for scientific and analytics workloads.
 
 ## Getting Started
-Add the crate to your project with `cargo add beve` or by editing `Cargo.toml`:
+Grab the crate from [crates.io](https://crates.io/crates/beve) and add it to your project with `cargo add beve` or by editing `Cargo.toml`:
 ```toml
 [dependencies]
 beve = "0.1"
@@ -135,7 +135,7 @@ let bytes = beve::to_vec_with_options(&MyEnum::Struct { a: 1, b: 2 }, opts)?;
 - Scalars: signed/unsigned integers up to 128-bit, f32/f64, null, bool, and UTF-8 strings
 - Collections: typed arrays (numeric, bool, string), generic sequences, maps with string or integer keys, and nested structs/enums
 - Streaming: `to_writer`, `to_writer_with_options`, and `from_reader` for IO-bound workflows
-- Interop: payloads align with `reference/glaze` and `reference/BEVE.jl`; spec resides in `reference/beve/README.md`
+- Interop: payloads align with `reference/glaze` and `reference/BEVE.jl`; spec resides in `reference/beve/README.md` and the upstream [BEVE specification](https://github.com/beve-org/beve)
 
 ### Half & BFloat16 Scalars
 Half-precision (`f16`) and bfloat16 (`bf16`) values round-trip like any other scalar:

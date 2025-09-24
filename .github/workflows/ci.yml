@@ -31,10 +31,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: cargo test
-        run: cargo test --all --all-features
+        run: cargo test --locked --all --all-features
 
   msrv:
     name: Check MSRV (1.72)
@@ -50,4 +50,4 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: cargo check
-        run: cargo check --all-targets --all-features
+        run: cargo check --locked --all-targets --all-features

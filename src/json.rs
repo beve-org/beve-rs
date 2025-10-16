@@ -884,11 +884,7 @@ fn parse_complex_header_byte(header: u8) -> Result<(bool, ComplexNumeric, u8)> {
     let is_array = match form {
         0 => false,
         1 => true,
-        _ => {
-            return Err(Error::Unsupported(
-                "complex extension form not supported",
-            ))
-        }
+        _ => return Err(Error::Unsupported("complex extension form not supported")),
     };
     let numeric = match (header >> 3) & 0x03 {
         NUM_FLOAT => ComplexNumeric::Float,

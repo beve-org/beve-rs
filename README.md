@@ -35,6 +35,20 @@ fn write_point(p: &Point) -> beve::Result<()> {
 }
 ```
 
+## JSON Interoperability
+Convert between JSON payloads and BEVE without allocating an intermediate `serde_json::Value`. These helpers stream bytes on both sides, so large documents never build an in-memory tree and typed arrays stay in their native BEVE representation.
+```rust
+let json = r#"{"name":"delta","values":[1,2,3]}"#;
+let beve_bytes = beve::json_str_to_beve(json)?;
+
+let json_back = beve::beve_slice_to_json_string(&beve_bytes)?;
+assert_eq!(
+    serde_json::from_str::<serde_json::Value>(json)?,
+    serde_json::from_str(&json_back)?
+);
+```
+JSON arrays are always encoded as BEVE generic arrays (we do not attempt to detect homogeneous typed arrays), which avoids backtracking mid-stream. Non-finite floating-point literals (`NaN`, `Infinity`) are rejected because standard JSON cannot express them.
+
 ## Typed Array Fast Paths
 BEVE bakes in typed arrays for numeric, boolean, and string sequences. Skip serde overhead by calling the dedicated helpers:
 ```rust

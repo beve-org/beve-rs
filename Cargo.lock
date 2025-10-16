@@ -37,6 +37,7 @@ dependencies = [
  "half",
  "proptest",
  "serde",
+ "serde_json",
  "simdutf8",
 ]
 

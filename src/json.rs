@@ -797,7 +797,7 @@ fn write_typed_float_array(
 
 fn write_typed_bool_array(reader: &mut BeveReader<'_>, out: &mut Vec<u8>) -> Result<()> {
     let len = reader.read_size()? as usize;
-    let packed = (len + 7) / 8;
+    let packed = len.div_ceil(8);
     let bytes = reader.read_exact(packed)?;
     for idx in 0..len {
         if idx > 0 {
@@ -1022,7 +1022,7 @@ fn skip_value(reader: &mut BeveReader<'_>, depth: usize) -> Result<()> {
                 ARRAY_BOOL_OR_STRING => {
                     if byte_code == 0 {
                         let len = reader.read_size()? as usize;
-                        let packed = (len + 7) / 8;
+                        let packed = len.div_ceil(8);
                         reader.read_exact(packed)?;
                     } else {
                         let len = reader.read_size()? as usize;
@@ -1054,9 +1054,7 @@ fn skip_value(reader: &mut BeveReader<'_>, depth: usize) -> Result<()> {
                         _ => return Err(Error::Unsupported("complex width not supported")),
                     };
                     if !is_array {
-                        let total = elem_bytes
-                            .checked_mul(2usize)
-                            .ok_or(Error::InvalidSize)?;
+                        let total = elem_bytes.checked_mul(2usize).ok_or(Error::InvalidSize)?;
                         reader.read_exact(total)?;
                     } else {
                         let len = reader.read_size()? as usize;

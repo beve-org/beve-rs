@@ -206,8 +206,5 @@ fn beve_matrix_extension_to_json() {
         serde_json::Value::String("layout_right".into())
     );
     assert_eq!(value["extents"], serde_json::json!([2, 3]));
-    assert_eq!(
-        value["value"],
-        serde_json::json!([1, 2, 3, 4, 5, 6])
-    );
+    assert_eq!(value["value"], serde_json::json!([1, 2, 3, 4, 5, 6]));
 }

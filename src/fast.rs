@@ -141,12 +141,12 @@ pub fn to_vec_typed_slice<T: BeveTypedSlice>(slice: &[T]) -> Vec<u8> {
 /// Write a boolean typed array (bit-packed) to `out`.
 pub fn write_bool_slice(out: &mut Vec<u8>, slice: &[bool]) {
     write_typed_array_header_bool(out, slice.len());
-    // Pack MSB-first per Glaze/BEVE interop: first element -> bit7
+    // Pack LSB-first per BEVE spec: bit0 holds the first element
     let mut acc: u8 = 0;
     let mut idx: u8 = 0; // counts elements within the current byte
     for &b in slice {
         if b {
-            acc |= 1 << (7 - idx);
+            acc |= 1 << idx;
         }
         idx += 1;
         if idx == 8 {

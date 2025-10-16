@@ -804,7 +804,7 @@ fn write_typed_bool_array(reader: &mut BeveReader<'_>, out: &mut Vec<u8>) -> Res
             out.push(b',');
         }
         let byte = bytes[idx / 8];
-        let bit = 7 - (idx % 8);
+        let bit = idx % 8;
         if (byte & (1 << bit)) != 0 {
             out.extend_from_slice(b"true");
         } else {
@@ -856,23 +856,83 @@ fn write_extension(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum ComplexNumeric {
+    Float,
+    Signed,
+    Unsigned,
+}
+
+enum ComplexValue {
+    Float(f64),
+    Signed(i128),
+    Unsigned(u128),
+}
+
+impl ComplexValue {
+    fn write_json(&self, out: &mut Vec<u8>) {
+        match self {
+            ComplexValue::Float(v) => out.extend_from_slice(v.to_string().as_bytes()),
+            ComplexValue::Signed(v) => out.extend_from_slice(v.to_string().as_bytes()),
+            ComplexValue::Unsigned(v) => out.extend_from_slice(v.to_string().as_bytes()),
+        }
+    }
+}
+
+fn parse_complex_header_byte(header: u8) -> Result<(bool, ComplexNumeric, u8)> {
+    let form = header & 0x07;
+    let is_array = match form {
+        0 => false,
+        1 => true,
+        _ => {
+            return Err(Error::Unsupported(
+                "complex extension form not supported",
+            ))
+        }
+    };
+    let numeric = match (header >> 3) & 0x03 {
+        NUM_FLOAT => ComplexNumeric::Float,
+        NUM_SIGNED => ComplexNumeric::Signed,
+        NUM_UNSIGNED => ComplexNumeric::Unsigned,
+        _ => {
+            return Err(Error::Unsupported(
+                "complex extension numeric type not supported",
+            ))
+        }
+    };
+    let byte_code = (header >> 5) & 0x07;
+    Ok((is_array, numeric, byte_code))
+}
+
+fn complex_elem_len(kind: ComplexNumeric, byte_code: u8) -> Result<usize> {
+    match kind {
+        ComplexNumeric::Float => match byte_code {
+            0 | 1 => Ok(2),
+            2 => Ok(4),
+            3 => Ok(8),
+            _ => Err(Error::Unsupported("complex float width unsupported")),
+        },
+        ComplexNumeric::Signed | ComplexNumeric::Unsigned => match byte_code {
+            0 => Ok(1),
+            1 => Ok(2),
+            2 => Ok(4),
+            3 => Ok(8),
+            4 => Ok(16),
+            _ => Err(Error::Unsupported("complex width not supported")),
+        },
+    }
+}
+
 fn write_complex_extension(reader: &mut BeveReader<'_>, out: &mut Vec<u8>) -> Result<()> {
     let header = reader.read_byte()?;
-    let is_array = (header & 0x01) != 0;
-    let byte_code = (header >> 5) & 0x07;
-    let elem_bytes = match byte_code {
-        0 | 1 => 2usize,
-        2 => 4usize,
-        3 => 8usize,
-        _ => return Err(Error::Unsupported("complex float width unsupported")),
-    };
+    let (is_array, numeric, byte_code) = parse_complex_header_byte(header)?;
     if !is_array {
-        let re = read_complex_component(reader, elem_bytes, byte_code)?;
-        let im = read_complex_component(reader, elem_bytes, byte_code)?;
+        let re = read_complex_component(reader, numeric, byte_code)?;
+        let im = read_complex_component(reader, numeric, byte_code)?;
         out.push(b'[');
-        out.extend_from_slice(re.to_string().as_bytes());
+        re.write_json(out);
         out.push(b',');
-        out.extend_from_slice(im.to_string().as_bytes());
+        im.write_json(out);
         out.push(b']');
     } else {
         let len = reader.read_size()? as usize;
@@ -881,12 +941,12 @@ fn write_complex_extension(reader: &mut BeveReader<'_>, out: &mut Vec<u8>) -> Re
             if i > 0 {
                 out.push(b',');
             }
-            let re = read_complex_component(reader, elem_bytes, byte_code)?;
-            let im = read_complex_component(reader, elem_bytes, byte_code)?;
+            let re = read_complex_component(reader, numeric, byte_code)?;
+            let im = read_complex_component(reader, numeric, byte_code)?;
             out.push(b'[');
-            out.extend_from_slice(re.to_string().as_bytes());
+            re.write_json(out);
             out.push(b',');
-            out.extend_from_slice(im.to_string().as_bytes());
+            im.write_json(out);
             out.push(b']');
         }
         out.push(b']');
@@ -896,31 +956,60 @@ fn write_complex_extension(reader: &mut BeveReader<'_>, out: &mut Vec<u8>) -> Re
 
 fn read_complex_component(
     reader: &mut BeveReader<'_>,
-    elem_bytes: usize,
+    kind: ComplexNumeric,
     byte_code: u8,
-) -> Result<f64> {
-    let raw = reader.read_exact(elem_bytes)?;
-    Ok(match byte_code {
-        0 => {
-            let bits = u16::from_le_bytes([raw[0], raw[1]]);
-            bf16::from_bits(bits).to_f32() as f64
+) -> Result<ComplexValue> {
+    match kind {
+        ComplexNumeric::Float => {
+            let value = match byte_code {
+                0 => {
+                    let raw = reader.read_exact(2)?;
+                    let bits = u16::from_le_bytes([raw[0], raw[1]]);
+                    bf16::from_bits(bits).to_f32() as f64
+                }
+                1 => {
+                    let raw = reader.read_exact(2)?;
+                    let bits = u16::from_le_bytes([raw[0], raw[1]]);
+                    f16::from_bits(bits).to_f32() as f64
+                }
+                2 => {
+                    let raw = reader.read_exact(4)?;
+                    let mut arr = [0u8; 4];
+                    arr.copy_from_slice(raw);
+                    f32::from_le_bytes(arr) as f64
+                }
+                3 => {
+                    let raw = reader.read_exact(8)?;
+                    let mut arr = [0u8; 8];
+                    arr.copy_from_slice(raw);
+                    f64::from_le_bytes(arr)
+                }
+                _ => return Err(Error::Unsupported("complex float width unsupported")),
+            };
+            Ok(ComplexValue::Float(value))
         }
-        1 => {
-            let bits = u16::from_le_bytes([raw[0], raw[1]]);
-            f16::from_bits(bits).to_f32() as f64
+        ComplexNumeric::Signed => {
+            let elem_bytes = complex_elem_len(kind, byte_code)?;
+            let raw = reader.read_exact(elem_bytes)?;
+            let mut buf = [0u8; 16];
+            buf[..elem_bytes].copy_from_slice(raw);
+            if elem_bytes < 16 && (raw[elem_bytes - 1] & 0x80) != 0 {
+                for b in &mut buf[elem_bytes..] {
+                    *b = 0xFF;
+                }
+            }
+            let value = i128::from_le_bytes(buf);
+            Ok(ComplexValue::Signed(value))
         }
-        2 => {
-            let mut arr = [0u8; 4];
-            arr.copy_from_slice(raw);
-            f32::from_le_bytes(arr) as f64
+        ComplexNumeric::Unsigned => {
+            let elem_bytes = complex_elem_len(kind, byte_code)?;
+            let raw = reader.read_exact(elem_bytes)?;
+            let mut buf = [0u8; 16];
+            buf[..elem_bytes].copy_from_slice(raw);
+            let value = u128::from_le_bytes(buf);
+            Ok(ComplexValue::Unsigned(value))
         }
-        3 => {
-            let mut arr = [0u8; 8];
-            arr.copy_from_slice(raw);
-            f64::from_le_bytes(arr)
-        }
-        _ => unreachable!(),
-    })
+    }
 }
 
 fn write_matrix_extension(
@@ -1045,14 +1134,8 @@ fn skip_value(reader: &mut BeveReader<'_>, depth: usize) -> Result<()> {
                 }
                 EXT_COMPLEX => {
                     let ch = reader.read_byte()?;
-                    let is_array = (ch & 0x01) != 0;
-                    let byte_code = (ch >> 5) & 0x07;
-                    let elem_bytes: usize = match byte_code {
-                        0 | 1 => 2usize,
-                        2 => 4usize,
-                        3 => 8usize,
-                        _ => return Err(Error::Unsupported("complex width not supported")),
-                    };
+                    let (is_array, numeric, byte_code) = parse_complex_header_byte(ch)?;
+                    let elem_bytes = complex_elem_len(numeric, byte_code)?;
                     if !is_array {
                         let total = elem_bytes.checked_mul(2usize).ok_or(Error::InvalidSize)?;
                         reader.read_exact(total)?;

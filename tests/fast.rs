@@ -71,6 +71,12 @@ fn fast_bool_vs_serde() {
 }
 
 #[test]
+fn bool_packing_uses_lsb_order() {
+    let bytes = beve::to_vec_bool_slice(&[true, false, true]);
+    assert_eq!(bytes, vec![0x1c, 0x0c, 0x05]);
+}
+
+#[test]
 fn fast_string_vs_serde() {
     let v = vec!["a".to_string(), "bb".to_string(), "ccc".to_string()];
     let fast = beve::to_vec_string_slice(&v);

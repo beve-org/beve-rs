@@ -770,7 +770,7 @@ impl<'a> SeqSerializer<'a> {
                 if produced == count {
                     break;
                 }
-                values.push((byte & (1 << (7 - bit))) != 0);
+                values.push((byte & (1 << bit)) != 0);
                 produced += 1;
             }
         }
@@ -779,7 +779,7 @@ impl<'a> SeqSerializer<'a> {
                 if produced == count {
                     break;
                 }
-                values.push((byte_acc & (1 << (7 - bit))) != 0);
+                values.push((byte_acc & (1 << bit)) != 0);
                 produced += 1;
             }
         }
@@ -981,7 +981,7 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
             } = &mut self.seq.mode
             {
                 if v {
-                    *byte_acc |= 1 << (7 - *bit_idx);
+                    *byte_acc |= 1 << *bit_idx;
                 }
                 *bit_idx += 1;
                 if *bit_idx == 8 {

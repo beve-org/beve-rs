@@ -208,3 +208,16 @@ fn beve_matrix_extension_to_json() {
     assert_eq!(value["extents"], serde_json::json!([2, 3]));
     assert_eq!(value["value"], serde_json::json!([1, 2, 3, 4, 5, 6]));
 }
+
+#[test]
+fn beve_complex_integer_extensions_to_json() {
+    // Signed 16-bit complex value: (-2, 5)
+    let signed = vec![0x1e, 0x28, 0xfe, 0xff, 0x05, 0x00];
+    let json = beve::beve_slice_to_json_string(&signed).unwrap();
+    assert_eq!(json, "[-2,5]");
+
+    // Unsigned 8-bit complex array: [(1,2), (3,4)]
+    let unsigned = vec![0x1e, 0x11, 0x08, 0x01, 0x02, 0x03, 0x04];
+    let json = beve::beve_slice_to_json_string(&unsigned).unwrap();
+    assert_eq!(json, "[[1,2],[3,4]]");
+}

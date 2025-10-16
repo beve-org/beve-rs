@@ -860,9 +860,9 @@ impl<'de> de::SeqAccess<'de> for SeqAccessBool<'de> {
         if self.remaining == 0 {
             return Ok(None);
         }
-        // MSB-first: read bit7, then bit6, ... to bit0
         let current = self.data[self.byte_idx];
-        let bit = (current >> (7 - self.bit_idx)) & 1;
+        // LSB-first: bit 0 maps to the first element in the byte
+        let bit = (current >> self.bit_idx) & 1;
         self.bit_idx += 1;
         if self.bit_idx == 8 {
             self.bit_idx = 0;

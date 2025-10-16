@@ -170,7 +170,7 @@ impl ser::Serializer for U16Extractor {
 
 use crate::error::{Error, Result};
 use crate::header::*;
-use crate::size::{encode_size_to_array, write_size};
+use crate::size::{encode_size_to_array, read_size, write_size};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnumEncoding {
@@ -611,22 +611,27 @@ enum SeqMode {
     TypedUnsigned {
         byte_code: u8,
         patch: Option<SizePatch>,
+        start_pos: usize,
     },
     TypedSigned {
         byte_code: u8,
         patch: Option<SizePatch>,
+        start_pos: usize,
     },
     TypedFloat {
         byte_code: u8,
         patch: Option<SizePatch>,
+        start_pos: usize,
     },
     TypedBool {
         byte_acc: u8,
         bit_idx: u8,
         patch: Option<SizePatch>,
+        start_pos: usize,
     },
     TypedString {
         patch: Option<SizePatch>,
+        start_pos: usize,
     },
 }
 
@@ -665,6 +670,7 @@ impl<'a> SeqSerializer<'a> {
 
     fn start_typed_bool_if_needed(&mut self) {
         if !matches!(self.mode, SeqMode::TypedBool { .. }) {
+            let start_pos = self.ser.buf.len();
             match self.len {
                 Some(n) => {
                     self.ser.write_typed_array_header_bool(n);
@@ -672,6 +678,7 @@ impl<'a> SeqSerializer<'a> {
                         byte_acc: 0,
                         bit_idx: 0,
                         patch: None,
+                        start_pos,
                     };
                 }
                 None => {
@@ -682,6 +689,7 @@ impl<'a> SeqSerializer<'a> {
                         byte_acc: 0,
                         bit_idx: 0,
                         patch: Some(p),
+                        start_pos,
                     };
                 }
             }
@@ -690,19 +698,262 @@ impl<'a> SeqSerializer<'a> {
 
     fn start_typed_string_if_needed(&mut self) {
         if !matches!(self.mode, SeqMode::TypedString { .. }) {
+            let start_pos = self.ser.buf.len();
             match self.len {
                 Some(n) => {
                     self.ser.write_typed_array_header_string(n);
-                    self.mode = SeqMode::TypedString { patch: None };
+                    self.mode = SeqMode::TypedString {
+                        patch: None,
+                        start_pos,
+                    };
                 }
                 None => {
                     let header = make_header(TYPE_TYPED_ARRAY, ARRAY_BOOL_OR_STRING, 1);
                     self.ser.push(header);
                     let p = self.ser.reserve_size_patch();
-                    self.mode = SeqMode::TypedString { patch: Some(p) };
+                    self.mode = SeqMode::TypedString {
+                        patch: Some(p),
+                        start_pos,
+                    };
                 }
             }
         }
+    }
+
+    fn ensure_generic_mode(&mut self) -> Result<()> {
+        match self.mode {
+            SeqMode::Generic { .. } => Ok(()),
+            SeqMode::Unknown => {
+                self.start_generic_if_needed();
+                Ok(())
+            }
+            SeqMode::TypedBool { .. } => self.convert_typed_bool_to_generic(),
+            SeqMode::TypedUnsigned { .. } => self.convert_typed_unsigned_to_generic(),
+            SeqMode::TypedSigned { .. } => self.convert_typed_signed_to_generic(),
+            SeqMode::TypedFloat { .. } => self.convert_typed_float_to_generic(),
+            SeqMode::TypedString { .. } => self.convert_typed_string_to_generic(),
+        }
+    }
+
+    fn header_len_for_typed(&self, patch: Option<SizePatch>) -> usize {
+        if patch.is_some() {
+            1 + 8
+        } else {
+            let len = self
+                .len
+                .expect("typed array without patch must have known length");
+            let mut tmp = [0u8; 8];
+            let used = encode_size_to_array(len as u64, &mut tmp);
+            1 + used
+        }
+    }
+
+    fn convert_typed_bool_to_generic(&mut self) -> Result<()> {
+        let (byte_acc, bit_idx, patch, start_pos) = match self.mode {
+            SeqMode::TypedBool {
+                byte_acc,
+                bit_idx,
+                patch,
+                start_pos,
+            } => (byte_acc, bit_idx, patch, start_pos),
+            _ => return Ok(()),
+        };
+        let count = self.count;
+        let header_len = self.header_len_for_typed(patch);
+        let data_start = start_pos + header_len;
+        let full_bytes = count / 8;
+        let data_bytes = self.ser.buf[data_start..data_start + full_bytes].to_vec();
+        let mut values = Vec::with_capacity(count);
+        let mut produced = 0usize;
+        for byte in data_bytes {
+            for bit in 0..8 {
+                if produced == count {
+                    break;
+                }
+                values.push((byte & (1 << (7 - bit))) != 0);
+                produced += 1;
+            }
+        }
+        if produced < count {
+            for bit in 0..bit_idx as usize {
+                if produced == count {
+                    break;
+                }
+                values.push((byte_acc & (1 << (7 - bit))) != 0);
+                produced += 1;
+            }
+        }
+        debug_assert_eq!(produced, count);
+        self.ser.buf.truncate(start_pos);
+        self.mode = SeqMode::Unknown;
+        self.count = 0;
+        self.start_generic_if_needed();
+        for v in values {
+            self.ser.write_bool_value(v);
+            self.count += 1;
+        }
+        Ok(())
+    }
+
+    fn convert_typed_unsigned_to_generic(&mut self) -> Result<()> {
+        let (byte_code, patch, start_pos) = match self.mode {
+            SeqMode::TypedUnsigned {
+                byte_code,
+                patch,
+                start_pos,
+            } => (byte_code, patch, start_pos),
+            _ => return Ok(()),
+        };
+        let bytes_per = 1usize << byte_code;
+        let header_len = self.header_len_for_typed(patch);
+        let data_start = start_pos + header_len;
+        let total_bytes = bytes_per * self.count;
+        let data = self.ser.buf[data_start..data_start + total_bytes].to_vec();
+        self.ser.buf.truncate(start_pos);
+        self.mode = SeqMode::Unknown;
+        self.count = 0;
+        self.start_generic_if_needed();
+        for chunk in data.chunks(bytes_per) {
+            let mut tmp = [0u8; 16];
+            tmp[..bytes_per].copy_from_slice(chunk);
+            let value = u128::from_le_bytes(tmp);
+            match bytes_per {
+                1 => self.ser.write_unsigned_value::<1, _>(value as u8),
+                2 => self.ser.write_unsigned_value::<2, _>(value as u16),
+                4 => self.ser.write_unsigned_value::<4, _>(value as u32),
+                8 => self.ser.write_unsigned_value::<8, _>(value as u64),
+                16 => self.ser.write_unsigned_value::<16, _>(value),
+                _ => return Err(Error::Unsupported("unsupported unsigned width")),
+            }
+            self.count += 1;
+        }
+        Ok(())
+    }
+
+    fn convert_typed_signed_to_generic(&mut self) -> Result<()> {
+        let (byte_code, patch, start_pos) = match self.mode {
+            SeqMode::TypedSigned {
+                byte_code,
+                patch,
+                start_pos,
+            } => (byte_code, patch, start_pos),
+            _ => return Ok(()),
+        };
+        let bytes_per = 1usize << byte_code;
+        let header_len = self.header_len_for_typed(patch);
+        let data_start = start_pos + header_len;
+        let total_bytes = bytes_per * self.count;
+        let data = self.ser.buf[data_start..data_start + total_bytes].to_vec();
+        self.ser.buf.truncate(start_pos);
+        self.mode = SeqMode::Unknown;
+        self.count = 0;
+        self.start_generic_if_needed();
+        for chunk in data.chunks(bytes_per) {
+            let mut tmp = [0u8; 16];
+            let negative = (chunk[bytes_per - 1] & 0x80) != 0;
+            tmp[..bytes_per].copy_from_slice(chunk);
+            if negative {
+                for b in &mut tmp[bytes_per..] {
+                    *b = 0xff;
+                }
+            }
+            let value = i128::from_le_bytes(tmp);
+            match bytes_per {
+                1 => self.ser.write_signed_value::<1, _>(value as i8),
+                2 => self.ser.write_signed_value::<2, _>(value as i16),
+                4 => self.ser.write_signed_value::<4, _>(value as i32),
+                8 => self.ser.write_signed_value::<8, _>(value as i64),
+                16 => self.ser.write_signed_value::<16, _>(value),
+                _ => return Err(Error::Unsupported("unsupported signed width")),
+            }
+            self.count += 1;
+        }
+        Ok(())
+    }
+
+    fn convert_typed_float_to_generic(&mut self) -> Result<()> {
+        let (byte_code, patch, start_pos) = match self.mode {
+            SeqMode::TypedFloat {
+                byte_code,
+                patch,
+                start_pos,
+            } => (byte_code, patch, start_pos),
+            _ => return Ok(()),
+        };
+        let bytes_per = match byte_code {
+            0 | 1 => 2,
+            2 => 4,
+            3 => 8,
+            _ => return Err(Error::Unsupported("unsupported float width")),
+        };
+        let header_len = self.header_len_for_typed(patch);
+        let data_start = start_pos + header_len;
+        let total_bytes = bytes_per * self.count;
+        let data = self.ser.buf[data_start..data_start + total_bytes].to_vec();
+        self.ser.buf.truncate(start_pos);
+        self.mode = SeqMode::Unknown;
+        self.count = 0;
+        self.start_generic_if_needed();
+        for chunk in data.chunks(bytes_per) {
+            match byte_code {
+                0 => {
+                    let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+                    self.ser.write_bfloat16_bits(bits);
+                }
+                1 => {
+                    let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+                    self.ser.write_float16_bits(bits);
+                }
+                2 => {
+                    let mut arr = [0u8; 4];
+                    arr.copy_from_slice(chunk);
+                    self.ser.write_float32_value(f32::from_le_bytes(arr));
+                }
+                3 => {
+                    let mut arr = [0u8; 8];
+                    arr.copy_from_slice(chunk);
+                    self.ser.write_float64_value(f64::from_le_bytes(arr));
+                }
+                _ => unreachable!(),
+            }
+            self.count += 1;
+        }
+        Ok(())
+    }
+
+    fn convert_typed_string_to_generic(&mut self) -> Result<()> {
+        let (patch, start_pos) = match self.mode {
+            SeqMode::TypedString { patch, start_pos } => (patch, start_pos),
+            _ => return Ok(()),
+        };
+        let header_len = self.header_len_for_typed(patch);
+        let data_start = start_pos + header_len;
+        let tail = self.ser.buf[data_start..].to_vec();
+        let mut cursor = 0usize;
+        let mut strings = Vec::with_capacity(self.count);
+        for _ in 0..self.count {
+            let mut pos = cursor;
+            let len = read_size(&tail, &mut pos)? as usize;
+            let start = pos;
+            let end = start + len;
+            if end > tail.len() {
+                return Err(Error::Eof);
+            }
+            let slice = &tail[start..end];
+            let s = std::str::from_utf8(slice)
+                .map_err(|_| Error::InvalidType("invalid utf-8 in typed string array"))?;
+            strings.push(s.to_owned());
+            cursor = end;
+        }
+        self.ser.buf.truncate(start_pos);
+        self.mode = SeqMode::Unknown;
+        self.count = 0;
+        self.start_generic_if_needed();
+        for s in strings {
+            self.ser.write_str_value(&s);
+            self.count += 1;
+        }
+        Ok(())
     }
 }
 
@@ -723,25 +974,31 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
     type SerializeStructVariant = VariantStructSerializer<'b>;
 
     fn serialize_bool(self, v: bool) -> Result<()> {
-        self.seq.start_typed_bool_if_needed();
-        if let SeqMode::TypedBool {
-            byte_acc, bit_idx, ..
-        } = &mut self.seq.mode
-        {
-            // MSB-first packing: first element goes to bit7
-            if v {
-                *byte_acc |= 1 << (7 - *bit_idx);
+        if matches!(self.seq.mode, SeqMode::Unknown | SeqMode::TypedBool { .. }) {
+            self.seq.start_typed_bool_if_needed();
+            if let SeqMode::TypedBool {
+                byte_acc, bit_idx, ..
+            } = &mut self.seq.mode
+            {
+                if v {
+                    *byte_acc |= 1 << (7 - *bit_idx);
+                }
+                *bit_idx += 1;
+                if *bit_idx == 8 {
+                    self.seq.ser.push(*byte_acc);
+                    *byte_acc = 0;
+                    *bit_idx = 0;
+                }
+                self.seq.count += 1;
+                Ok(())
+            } else {
+                unreachable!()
             }
-            *bit_idx += 1;
-            if *bit_idx == 8 {
-                self.seq.ser.push(*byte_acc);
-                *byte_acc = 0;
-                *bit_idx = 0;
-            }
+        } else {
+            self.seq.ensure_generic_mode()?;
+            self.seq.ser.write_bool_value(v);
             self.seq.count += 1;
             Ok(())
-        } else {
-            unreachable!()
         }
     }
 
@@ -790,16 +1047,26 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
     }
 
     fn serialize_str(self, v: &str) -> Result<()> {
-        self.seq.start_typed_string_if_needed();
-        write_size(v.len() as u64, &mut self.seq.ser.buf);
-        self.seq.ser.extend_from_slice(v.as_bytes());
-        self.seq.count += 1;
-        Ok(())
+        if matches!(
+            self.seq.mode,
+            SeqMode::Unknown | SeqMode::TypedString { .. }
+        ) {
+            self.seq.start_typed_string_if_needed();
+            write_size(v.len() as u64, &mut self.seq.ser.buf);
+            self.seq.ser.extend_from_slice(v.as_bytes());
+            self.seq.count += 1;
+            Ok(())
+        } else {
+            self.seq.ensure_generic_mode()?;
+            self.seq.ser.write_str_value(v);
+            self.seq.count += 1;
+            Ok(())
+        }
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<()> {
         // Treat as unsigned typed array of u8 nested sequence-of-bytes: fallback to generic element
-        self.seq.start_generic_if_needed();
+        self.seq.ensure_generic_mode()?;
         // Write full VALUE for bytes as a typed array of u8
         let header = make_header(TYPE_TYPED_ARRAY, ARRAY_UNSIGNED, 0);
         self.seq.ser.push(header);
@@ -816,7 +1083,7 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
         v.serialize(self)
     }
     fn serialize_unit(self) -> Result<()> {
-        self.seq.start_generic_if_needed();
+        self.seq.ensure_generic_mode()?;
         self.seq.ser.write_null();
         self.seq.count += 1;
         Ok(())
@@ -833,7 +1100,7 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
         variant: &'static str,
     ) -> Result<()> {
         // As a generic element: extension type-tag with null value
-        self.seq.start_generic_if_needed();
+        self.seq.ensure_generic_mode()?;
         let h = make_extension_header(EXT_TYPE_TAG);
         self.seq.ser.push(h);
         self.seq.ser.write_enum_tag(variant_index, variant);
@@ -869,7 +1136,7 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
         variant: &'static str,
         value: &T,
     ) -> Result<()> {
-        self.seq.start_generic_if_needed();
+        self.seq.ensure_generic_mode()?;
         let h = make_extension_header(EXT_TYPE_TAG);
         self.seq.ser.push(h);
         self.seq.ser.write_enum_tag(variant_index, variant);
@@ -879,12 +1146,12 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
     }
 
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq> {
-        self.seq.start_generic_if_needed();
+        self.seq.ensure_generic_mode()?;
         self.seq.count += 1;
         Ok(SeqSerializer::new(self.seq.ser, len))
     }
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple> {
-        self.seq.start_generic_if_needed();
+        self.seq.ensure_generic_mode()?;
         self.seq.count += 1;
         Ok(SeqSerializer::new(self.seq.ser, Some(len)))
     }
@@ -893,7 +1160,7 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
         _name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleStruct> {
-        self.seq.start_generic_if_needed();
+        self.seq.ensure_generic_mode()?;
         self.seq.count += 1;
         Ok(SeqSerializer::new(self.seq.ser, Some(len)))
     }
@@ -904,7 +1171,7 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
-        self.seq.start_generic_if_needed();
+        self.seq.ensure_generic_mode()?;
         self.seq.count += 1;
         let h = make_extension_header(EXT_TYPE_TAG);
         self.seq.ser.push(h);
@@ -912,12 +1179,12 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
         Ok(VariantSeqSerializer::new(self.seq.ser, len))
     }
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap> {
-        self.seq.start_generic_if_needed();
+        self.seq.ensure_generic_mode()?;
         self.seq.count += 1;
         Ok(MapSerializer::new(self.seq.ser, len))
     }
     fn serialize_struct(self, _name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
-        self.seq.start_generic_if_needed();
+        self.seq.ensure_generic_mode()?;
         self.seq.count += 1;
         Ok(StructSerializer::new(self.seq.ser, len))
     }
@@ -928,7 +1195,7 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStructVariant> {
-        self.seq.start_generic_if_needed();
+        self.seq.ensure_generic_mode()?;
         self.seq.count += 1;
         let h = make_extension_header(EXT_TYPE_TAG);
         self.seq.ser.push(h);
@@ -942,36 +1209,48 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
 impl<'a, 'b> SeqElemSer<'a, 'b> {
     fn serialize_signed<T: Into<i128>>(&mut self, v: T, bytes: usize) -> Result<()> {
         let byte_code = Serializer::code_for_bytes(bytes);
+        let value: i128 = v.into();
         match self.seq.mode {
             SeqMode::Unknown => match self.seq.len {
                 Some(n) => {
+                    let start_pos = self.seq.ser.buf.len();
                     self.seq
                         .ser
                         .write_typed_array_header_numeric(ARRAY_SIGNED, byte_code, n);
                     self.seq.mode = SeqMode::TypedSigned {
                         byte_code,
                         patch: None,
+                        start_pos,
                     };
                 }
                 None => {
+                    let start_pos = self.seq.ser.buf.len();
                     let header = make_header(TYPE_TYPED_ARRAY, ARRAY_SIGNED, byte_code);
                     self.seq.ser.push(header);
                     let p = self.seq.ser.reserve_size_patch();
                     self.seq.mode = SeqMode::TypedSigned {
                         byte_code,
                         patch: Some(p),
+                        start_pos,
                     };
                 }
             },
             SeqMode::TypedSigned { byte_code: bc, .. } if bc == byte_code => {}
             _ => {
-                return Err(Error::Mismatch(
-                    "heterogeneous sequence types (signed integer mix)",
-                ))
+                self.seq.ensure_generic_mode()?;
+                match bytes {
+                    1 => self.seq.ser.write_signed_value::<1, _>(value as i8),
+                    2 => self.seq.ser.write_signed_value::<2, _>(value as i16),
+                    4 => self.seq.ser.write_signed_value::<4, _>(value as i32),
+                    8 => self.seq.ser.write_signed_value::<8, _>(value as i64),
+                    16 => self.seq.ser.write_signed_value::<16, _>(value),
+                    _ => return Err(Error::Unsupported("unsupported signed width")),
+                }
+                self.seq.count += 1;
+                return Ok(());
             }
         }
-        let x: i128 = v.into();
-        let bytes_le = x.to_le_bytes();
+        let bytes_le = value.to_le_bytes();
         // Stream directly into output; unknown-length arrays use backpatching
         self.seq.ser.extend_from_slice(&bytes_le[..bytes]);
         self.seq.count += 1;
@@ -980,36 +1259,48 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
 
     fn serialize_unsigned<T: Into<u128>>(&mut self, v: T, bytes: usize) -> Result<()> {
         let byte_code = Serializer::code_for_bytes(bytes);
+        let value: u128 = v.into();
         match self.seq.mode {
             SeqMode::Unknown => match self.seq.len {
                 Some(n) => {
+                    let start_pos = self.seq.ser.buf.len();
                     self.seq
                         .ser
                         .write_typed_array_header_numeric(ARRAY_UNSIGNED, byte_code, n);
                     self.seq.mode = SeqMode::TypedUnsigned {
                         byte_code,
                         patch: None,
+                        start_pos,
                     };
                 }
                 None => {
+                    let start_pos = self.seq.ser.buf.len();
                     let header = make_header(TYPE_TYPED_ARRAY, ARRAY_UNSIGNED, byte_code);
                     self.seq.ser.push(header);
                     let p = self.seq.ser.reserve_size_patch();
                     self.seq.mode = SeqMode::TypedUnsigned {
                         byte_code,
                         patch: Some(p),
+                        start_pos,
                     };
                 }
             },
             SeqMode::TypedUnsigned { byte_code: bc, .. } if bc == byte_code => {}
             _ => {
-                return Err(Error::Mismatch(
-                    "heterogeneous sequence types (unsigned integer mix)",
-                ))
+                self.seq.ensure_generic_mode()?;
+                match bytes {
+                    1 => self.seq.ser.write_unsigned_value::<1, _>(value as u8),
+                    2 => self.seq.ser.write_unsigned_value::<2, _>(value as u16),
+                    4 => self.seq.ser.write_unsigned_value::<4, _>(value as u32),
+                    8 => self.seq.ser.write_unsigned_value::<8, _>(value as u64),
+                    16 => self.seq.ser.write_unsigned_value::<16, _>(value),
+                    _ => return Err(Error::Unsupported("unsupported unsigned width")),
+                }
+                self.seq.count += 1;
+                return Ok(());
             }
         }
-        let x: u128 = v.into();
-        let bytes_le = x.to_le_bytes();
+        let bytes_le = value.to_le_bytes();
         self.seq.ser.extend_from_slice(&bytes_le[..bytes]);
         self.seq.count += 1;
         Ok(())
@@ -1019,26 +1310,55 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
         match self.seq.mode {
             SeqMode::Unknown => match self.seq.len {
                 Some(n) => {
+                    let start_pos = self.seq.ser.buf.len();
                     self.seq
                         .ser
                         .write_typed_array_header_numeric(ARRAY_FLOAT, byte_code, n);
                     self.seq.mode = SeqMode::TypedFloat {
                         byte_code,
                         patch: None,
+                        start_pos,
                     };
                 }
                 None => {
+                    let start_pos = self.seq.ser.buf.len();
                     let header = make_header(TYPE_TYPED_ARRAY, ARRAY_FLOAT, byte_code);
                     self.seq.ser.push(header);
                     let p = self.seq.ser.reserve_size_patch();
                     self.seq.mode = SeqMode::TypedFloat {
                         byte_code,
                         patch: Some(p),
+                        start_pos,
                     };
                 }
             },
             SeqMode::TypedFloat { byte_code: bc, .. } if bc == byte_code => {}
-            _ => return Err(Error::Mismatch("heterogeneous sequence types (float mix)")),
+            _ => {
+                self.seq.ensure_generic_mode()?;
+                match byte_code {
+                    0 => {
+                        let bits = u16::from_le_bytes([raw[0], raw[1]]);
+                        self.seq.ser.write_bfloat16_bits(bits);
+                    }
+                    1 => {
+                        let bits = u16::from_le_bytes([raw[0], raw[1]]);
+                        self.seq.ser.write_float16_bits(bits);
+                    }
+                    2 => {
+                        let mut arr = [0u8; 4];
+                        arr.copy_from_slice(raw);
+                        self.seq.ser.write_float32_value(f32::from_le_bytes(arr));
+                    }
+                    3 => {
+                        let mut arr = [0u8; 8];
+                        arr.copy_from_slice(raw);
+                        self.seq.ser.write_float64_value(f64::from_le_bytes(arr));
+                    }
+                    _ => return Err(Error::Unsupported("unsupported float width")),
+                }
+                self.seq.count += 1;
+                return Ok(());
+            }
         }
         self.seq.ser.extend_from_slice(raw);
         self.seq.count += 1;
@@ -1101,7 +1421,7 @@ impl<'a> ser::SerializeSeq for SeqSerializer<'a> {
                 SeqMode::TypedBool { patch: Some(p), .. } => {
                     self.ser.finalize_size_patch(p, self.count)
                 }
-                SeqMode::TypedString { patch: Some(p) } => {
+                SeqMode::TypedString { patch: Some(p), .. } => {
                     self.ser.finalize_size_patch(p, self.count)
                 }
                 _ => {}

@@ -140,3 +140,71 @@ fn roundtrip_enum() {
     let back: MyEnum = beve::from_slice(&bytes).unwrap();
     assert_eq!(v, back);
 }
+
+#[test]
+fn json_bytes_to_beve_and_back() {
+    let json_input = br#"
+        {
+            "name": "widget",
+            "count": 5,
+            "flags": [true, false, null],
+            "nested": { "value": -12.5 }
+        }
+    "#;
+    let expected: serde_json::Value = serde_json::from_slice(json_input).unwrap();
+
+    let beve_bytes = beve::json_slice_to_beve(json_input).unwrap();
+    let json_bytes = beve::beve_slice_to_json(&beve_bytes).unwrap();
+    let roundtrip: serde_json::Value = serde_json::from_slice(&json_bytes).unwrap();
+
+    assert_eq!(expected, roundtrip);
+}
+
+#[test]
+fn json_string_to_beve_and_back() {
+    let json_input = r#"{"message":"hello","scale":1.5,"items":[1,2,3,null]}"#;
+    let expected: serde_json::Value = serde_json::from_str(json_input).unwrap();
+
+    let beve_bytes = beve::json_str_to_beve(json_input).unwrap();
+    let json_text = beve::beve_slice_to_json_string(&beve_bytes).unwrap();
+    let roundtrip: serde_json::Value = serde_json::from_str(&json_text).unwrap();
+
+    assert_eq!(expected, roundtrip);
+}
+
+#[test]
+fn beve_typed_arrays_to_json() {
+    let numbers = beve::fast::to_vec_typed_slice(&[1u32, 2, 3, 10]);
+    let json = beve::beve_slice_to_json_string(&numbers).unwrap();
+    assert_eq!(json, "[1,2,3,10]");
+
+    let floats = beve::fast::to_vec_typed_slice(&[1.5f64, -2.25, 3.0]);
+    let json = beve::beve_slice_to_json_string(&floats).unwrap();
+    assert_eq!(json, "[1.5,-2.25,3]");
+
+    let mut bools = Vec::new();
+    beve::fast::write_bool_slice(&mut bools, &[true, false, true, true, false]);
+    let json = beve::beve_slice_to_json_string(&bools).unwrap();
+    assert_eq!(json, "[true,false,true,true,false]");
+
+    let strings = beve::fast::to_vec_str_slice(&["a", "bb", "ccc"]);
+    let json = beve::beve_slice_to_json_string(&strings).unwrap();
+    assert_eq!(json, "[\"a\",\"bb\",\"ccc\"]");
+}
+
+#[test]
+fn beve_matrix_extension_to_json() {
+    let bytes = beve::fast::to_vec_matrix_f64(
+        beve::fast::MatrixLayoutFast::Right,
+        &[2, 3],
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+    );
+    let json = beve::beve_slice_to_json_string(&bytes).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        value["layout"],
+        serde_json::Value::String("layout_right".into())
+    );
+    assert_eq!(value["extents"], serde_json::json!([2, 3]));
+    assert_eq!(value["value"], serde_json::json!([1, 2, 3, 4, 5, 6]));
+}

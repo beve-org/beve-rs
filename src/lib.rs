@@ -31,6 +31,7 @@ mod header;
 mod json;
 mod ser;
 mod size;
+mod value;
 
 pub use crate::de::{from_slice, Deserializer};
 pub use crate::error::{Error, Result};
@@ -45,6 +46,7 @@ pub use crate::json::{
     beve_slice_to_json, beve_slice_to_json_string, json_slice_to_beve, json_str_to_beve,
 };
 pub use crate::ser::{to_vec, to_vec_with_options, EnumEncoding, Serializer, SerializerOptions};
+pub use crate::value::{Key, Number, Object, Value};
 
 /// BEVE-specific utilities and helper types.
 pub mod util {

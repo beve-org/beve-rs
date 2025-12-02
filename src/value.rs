@@ -838,13 +838,76 @@ impl Serialize for Key {
 
 // ============ Value as Deserializer (for from_value) ============
 
-/// Error type for Value deserialization
-#[derive(Debug)]
-pub struct ValueError(String);
+/// Error type for Value deserialization.
+///
+/// Uses an enum to avoid allocation for common error cases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueError {
+    // Type expectation errors
+    ExpectedBool,
+    ExpectedInteger,
+    ExpectedUnsignedInteger,
+    ExpectedNumber,
+    ExpectedString,
+    ExpectedChar,
+    ExpectedArray,
+    ExpectedObject,
+    ExpectedNull,
+    ExpectedBytes,
+
+    // Integer range errors
+    IntegerOverflow,
+    IntegerOutOfRange(&'static str),
+
+    // Enum errors
+    ExpectedEnumSingleKey,
+    ExpectedEnumStringKey,
+    ExpectedEnumStringOrObject,
+    ExpectedUnitVariant,
+    ExpectedNewtypeVariant,
+    ExpectedTupleVariant,
+    ExpectedStructVariant,
+
+    // Map/sequence errors
+    MissingValue,
+    ExpectedStringKey,
+    UnexpectedElements(usize),
+
+    // Escape hatch for dynamic messages
+    Custom(String),
+}
 
 impl std::fmt::Display for ValueError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        match self {
+            ValueError::ExpectedBool => write!(f, "expected bool"),
+            ValueError::ExpectedInteger => write!(f, "expected integer"),
+            ValueError::ExpectedUnsignedInteger => write!(f, "expected unsigned integer"),
+            ValueError::ExpectedNumber => write!(f, "expected number"),
+            ValueError::ExpectedString => write!(f, "expected string"),
+            ValueError::ExpectedChar => write!(f, "expected single character"),
+            ValueError::ExpectedArray => write!(f, "expected array"),
+            ValueError::ExpectedObject => write!(f, "expected object"),
+            ValueError::ExpectedNull => write!(f, "expected null"),
+            ValueError::ExpectedBytes => write!(f, "expected byte array"),
+            ValueError::IntegerOverflow => write!(f, "integer overflow"),
+            ValueError::IntegerOutOfRange(ty) => write!(f, "integer out of range for {}", ty),
+            ValueError::ExpectedEnumSingleKey => write!(f, "expected enum with single key"),
+            ValueError::ExpectedEnumStringKey => write!(f, "expected string key for enum"),
+            ValueError::ExpectedEnumStringOrObject => {
+                write!(f, "expected string or object for enum")
+            }
+            ValueError::ExpectedUnitVariant => write!(f, "expected unit variant"),
+            ValueError::ExpectedNewtypeVariant => write!(f, "expected newtype variant"),
+            ValueError::ExpectedTupleVariant => write!(f, "expected tuple variant"),
+            ValueError::ExpectedStructVariant => write!(f, "expected struct variant"),
+            ValueError::MissingValue => write!(f, "missing value"),
+            ValueError::ExpectedStringKey => write!(f, "expected string key"),
+            ValueError::UnexpectedElements(expected) => {
+                write!(f, "expected {} elements, got more", expected)
+            }
+            ValueError::Custom(msg) => write!(f, "{}", msg),
+        }
     }
 }
 
@@ -852,7 +915,7 @@ impl std::error::Error for ValueError {}
 
 impl de::Error for ValueError {
     fn custom<T: fmt::Display>(msg: T) -> Self {
-        ValueError(msg.to_string())
+        ValueError::Custom(msg.to_string())
     }
 }
 
@@ -868,11 +931,11 @@ impl Value {
                     if *u <= i128::MAX as u128 {
                         Ok(*u as i128)
                     } else {
-                        Err(ValueError("integer overflow".to_string()))
+                        Err(ValueError::IntegerOverflow)
                     }
                 }
             },
-            _ => Err(ValueError("expected integer".to_string())),
+            _ => Err(ValueError::ExpectedInteger),
         }
     }
 
@@ -883,7 +946,7 @@ impl Value {
                 if *i >= 0 {
                     Ok(*i as u128)
                 } else {
-                    Err(ValueError("expected unsigned integer".to_string()))
+                    Err(ValueError::ExpectedUnsignedInteger)
                 }
             }
             Value::Number(Number::Big(big)) => match big.as_ref() {
@@ -892,11 +955,11 @@ impl Value {
                     if *i >= 0 {
                         Ok(*i as u128)
                     } else {
-                        Err(ValueError("expected unsigned integer".to_string()))
+                        Err(ValueError::ExpectedUnsignedInteger)
                     }
                 }
             },
-            _ => Err(ValueError("expected integer".to_string())),
+            _ => Err(ValueError::ExpectedInteger),
         }
     }
 }
@@ -979,10 +1042,7 @@ impl<'de> Deserializer<'de> for Value {
                 };
                 let result = visitor.visit_seq(&mut seq)?;
                 if seq.iter.len() != 0 {
-                    return Err(de::Error::custom(format!(
-                        "expected {} elements, got more",
-                        len
-                    )));
+                    return Err(ValueError::UnexpectedElements(len));
                 }
                 Ok(result)
             }
@@ -1000,7 +1060,7 @@ impl<'de> Deserializer<'de> for Value {
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self {
             Value::Bool(b) => visitor.visit_bool(b),
-            _ => Err(de::Error::custom("expected bool")),
+            _ => Err(ValueError::ExpectedBool),
         }
     }
 
@@ -1009,7 +1069,7 @@ impl<'de> Deserializer<'de> for Value {
         if i >= i8::MIN as i128 && i <= i8::MAX as i128 {
             visitor.visit_i8(i as i8)
         } else {
-            Err(de::Error::custom("integer out of range for i8"))
+            Err(ValueError::IntegerOutOfRange("i8"))
         }
     }
 
@@ -1018,7 +1078,7 @@ impl<'de> Deserializer<'de> for Value {
         if i >= i16::MIN as i128 && i <= i16::MAX as i128 {
             visitor.visit_i16(i as i16)
         } else {
-            Err(de::Error::custom("integer out of range for i16"))
+            Err(ValueError::IntegerOutOfRange("i16"))
         }
     }
 
@@ -1027,7 +1087,7 @@ impl<'de> Deserializer<'de> for Value {
         if i >= i32::MIN as i128 && i <= i32::MAX as i128 {
             visitor.visit_i32(i as i32)
         } else {
-            Err(de::Error::custom("integer out of range for i32"))
+            Err(ValueError::IntegerOutOfRange("i32"))
         }
     }
 
@@ -1036,7 +1096,7 @@ impl<'de> Deserializer<'de> for Value {
         if i >= i64::MIN as i128 && i <= i64::MAX as i128 {
             visitor.visit_i64(i as i64)
         } else {
-            Err(de::Error::custom("integer out of range for i64"))
+            Err(ValueError::IntegerOutOfRange("i64"))
         }
     }
 
@@ -1049,7 +1109,7 @@ impl<'de> Deserializer<'de> for Value {
         if u <= u8::MAX as u128 {
             visitor.visit_u8(u as u8)
         } else {
-            Err(de::Error::custom("integer out of range for u8"))
+            Err(ValueError::IntegerOutOfRange("u8"))
         }
     }
 
@@ -1058,7 +1118,7 @@ impl<'de> Deserializer<'de> for Value {
         if u <= u16::MAX as u128 {
             visitor.visit_u16(u as u16)
         } else {
-            Err(de::Error::custom("integer out of range for u16"))
+            Err(ValueError::IntegerOutOfRange("u16"))
         }
     }
 
@@ -1067,7 +1127,7 @@ impl<'de> Deserializer<'de> for Value {
         if u <= u32::MAX as u128 {
             visitor.visit_u32(u as u32)
         } else {
-            Err(de::Error::custom("integer out of range for u32"))
+            Err(ValueError::IntegerOutOfRange("u32"))
         }
     }
 
@@ -1076,7 +1136,7 @@ impl<'de> Deserializer<'de> for Value {
         if u <= u64::MAX as u128 {
             visitor.visit_u64(u as u64)
         } else {
-            Err(de::Error::custom("integer out of range for u64"))
+            Err(ValueError::IntegerOutOfRange("u64"))
         }
     }
 
@@ -1097,7 +1157,7 @@ impl<'de> Deserializer<'de> for Value {
                 BigInt::I128(i) => visitor.visit_f64(i as f64),
                 BigInt::U128(u) => visitor.visit_f64(u as f64),
             },
-            _ => Err(de::Error::custom("expected number")),
+            _ => Err(ValueError::ExpectedNumber),
         }
     }
 
@@ -1110,16 +1170,16 @@ impl<'de> Deserializer<'de> for Value {
                         return visitor.visit_char(c);
                     }
                 }
-                Err(de::Error::custom("expected single character"))
+                Err(ValueError::ExpectedChar)
             }
-            _ => Err(de::Error::custom("expected string")),
+            _ => Err(ValueError::ExpectedString),
         }
     }
 
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self {
             Value::String(s) => visitor.visit_string(s),
-            _ => Err(de::Error::custom("expected string")),
+            _ => Err(ValueError::ExpectedString),
         }
     }
 
@@ -1135,12 +1195,12 @@ impl<'de> Deserializer<'de> for Value {
                     .map(|v| match v {
                         Value::Number(Number::U64(u)) if u <= 255 => Ok(u as u8),
                         Value::Number(Number::I64(i)) if (0..=255).contains(&i) => Ok(i as u8),
-                        _ => Err(de::Error::custom("expected byte array")),
+                        _ => Err(ValueError::ExpectedBytes),
                     })
                     .collect();
                 visitor.visit_byte_buf(bytes?)
             }
-            _ => Err(de::Error::custom("expected array")),
+            _ => Err(ValueError::ExpectedArray),
         }
     }
 
@@ -1158,7 +1218,7 @@ impl<'de> Deserializer<'de> for Value {
     fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self {
             Value::Null => visitor.visit_unit(),
-            _ => Err(de::Error::custom("expected null")),
+            _ => Err(ValueError::ExpectedNull),
         }
     }
 
@@ -1186,7 +1246,7 @@ impl<'de> Deserializer<'de> for Value {
                 };
                 visitor.visit_seq(&mut seq)
             }
-            _ => Err(de::Error::custom("expected array")),
+            _ => Err(ValueError::ExpectedArray),
         }
     }
 
@@ -1216,7 +1276,7 @@ impl<'de> Deserializer<'de> for Value {
                 };
                 visitor.visit_map(&mut map)
             }
-            _ => Err(de::Error::custom("expected object")),
+            _ => Err(ValueError::ExpectedObject),
         }
     }
 
@@ -1239,15 +1299,15 @@ impl<'de> Deserializer<'de> for Value {
             Value::String(s) => visitor.visit_enum(ValueEnumAccess::Unit(s)),
             Value::Object(obj) => {
                 if obj.len() != 1 {
-                    return Err(de::Error::custom("expected enum with single key"));
+                    return Err(ValueError::ExpectedEnumSingleKey);
                 }
                 let (key, value) = obj.into_iter().next().unwrap();
                 match key {
                     Key::String(s) => visitor.visit_enum(ValueEnumAccess::WithValue(s, value)),
-                    _ => Err(de::Error::custom("expected string key for enum")),
+                    _ => Err(ValueError::ExpectedEnumStringKey),
                 }
             }
-            _ => Err(de::Error::custom("expected string or object for enum")),
+            _ => Err(ValueError::ExpectedEnumStringOrObject),
         }
     }
 
@@ -1317,7 +1377,7 @@ impl<'de> Deserializer<'de> for &'de Value {
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self {
             Value::Bool(b) => visitor.visit_bool(*b),
-            _ => Err(de::Error::custom("expected bool")),
+            _ => Err(ValueError::ExpectedBool),
         }
     }
 
@@ -1326,7 +1386,7 @@ impl<'de> Deserializer<'de> for &'de Value {
         if i >= i8::MIN as i128 && i <= i8::MAX as i128 {
             visitor.visit_i8(i as i8)
         } else {
-            Err(de::Error::custom("integer out of range for i8"))
+            Err(ValueError::IntegerOutOfRange("i8"))
         }
     }
 
@@ -1335,7 +1395,7 @@ impl<'de> Deserializer<'de> for &'de Value {
         if i >= i16::MIN as i128 && i <= i16::MAX as i128 {
             visitor.visit_i16(i as i16)
         } else {
-            Err(de::Error::custom("integer out of range for i16"))
+            Err(ValueError::IntegerOutOfRange("i16"))
         }
     }
 
@@ -1344,7 +1404,7 @@ impl<'de> Deserializer<'de> for &'de Value {
         if i >= i32::MIN as i128 && i <= i32::MAX as i128 {
             visitor.visit_i32(i as i32)
         } else {
-            Err(de::Error::custom("integer out of range for i32"))
+            Err(ValueError::IntegerOutOfRange("i32"))
         }
     }
 
@@ -1353,7 +1413,7 @@ impl<'de> Deserializer<'de> for &'de Value {
         if i >= i64::MIN as i128 && i <= i64::MAX as i128 {
             visitor.visit_i64(i as i64)
         } else {
-            Err(de::Error::custom("integer out of range for i64"))
+            Err(ValueError::IntegerOutOfRange("i64"))
         }
     }
 
@@ -1366,7 +1426,7 @@ impl<'de> Deserializer<'de> for &'de Value {
         if u <= u8::MAX as u128 {
             visitor.visit_u8(u as u8)
         } else {
-            Err(de::Error::custom("integer out of range for u8"))
+            Err(ValueError::IntegerOutOfRange("u8"))
         }
     }
 
@@ -1375,7 +1435,7 @@ impl<'de> Deserializer<'de> for &'de Value {
         if u <= u16::MAX as u128 {
             visitor.visit_u16(u as u16)
         } else {
-            Err(de::Error::custom("integer out of range for u16"))
+            Err(ValueError::IntegerOutOfRange("u16"))
         }
     }
 
@@ -1384,7 +1444,7 @@ impl<'de> Deserializer<'de> for &'de Value {
         if u <= u32::MAX as u128 {
             visitor.visit_u32(u as u32)
         } else {
-            Err(de::Error::custom("integer out of range for u32"))
+            Err(ValueError::IntegerOutOfRange("u32"))
         }
     }
 
@@ -1393,7 +1453,7 @@ impl<'de> Deserializer<'de> for &'de Value {
         if u <= u64::MAX as u128 {
             visitor.visit_u64(u as u64)
         } else {
-            Err(de::Error::custom("integer out of range for u64"))
+            Err(ValueError::IntegerOutOfRange("u64"))
         }
     }
 
@@ -1414,7 +1474,7 @@ impl<'de> Deserializer<'de> for &'de Value {
                 BigInt::I128(i) => visitor.visit_f64(*i as f64),
                 BigInt::U128(u) => visitor.visit_f64(*u as f64),
             },
-            _ => Err(de::Error::custom("expected number")),
+            _ => Err(ValueError::ExpectedNumber),
         }
     }
 
@@ -1427,16 +1487,16 @@ impl<'de> Deserializer<'de> for &'de Value {
                         return visitor.visit_char(c);
                     }
                 }
-                Err(de::Error::custom("expected single character"))
+                Err(ValueError::ExpectedChar)
             }
-            _ => Err(de::Error::custom("expected string")),
+            _ => Err(ValueError::ExpectedString),
         }
     }
 
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self {
             Value::String(s) => visitor.visit_borrowed_str(s),
-            _ => Err(de::Error::custom("expected string")),
+            _ => Err(ValueError::ExpectedString),
         }
     }
 
@@ -1452,12 +1512,12 @@ impl<'de> Deserializer<'de> for &'de Value {
                     .map(|v| match v {
                         Value::Number(Number::U64(u)) if *u <= 255 => Ok(*u as u8),
                         Value::Number(Number::I64(i)) if (0..=255).contains(i) => Ok(*i as u8),
-                        _ => Err(de::Error::custom("expected byte array")),
+                        _ => Err(ValueError::ExpectedBytes),
                     })
                     .collect();
                 visitor.visit_byte_buf(bytes?)
             }
-            _ => Err(de::Error::custom("expected array")),
+            _ => Err(ValueError::ExpectedArray),
         }
     }
 
@@ -1475,7 +1535,7 @@ impl<'de> Deserializer<'de> for &'de Value {
     fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self {
             Value::Null => visitor.visit_unit(),
-            _ => Err(de::Error::custom("expected null")),
+            _ => Err(ValueError::ExpectedNull),
         }
     }
 
@@ -1501,7 +1561,7 @@ impl<'de> Deserializer<'de> for &'de Value {
                 let mut seq = ValueSeqAccessRef { iter: arr.iter() };
                 visitor.visit_seq(&mut seq)
             }
-            _ => Err(de::Error::custom("expected array")),
+            _ => Err(ValueError::ExpectedArray),
         }
     }
 
@@ -1531,7 +1591,7 @@ impl<'de> Deserializer<'de> for &'de Value {
                 };
                 visitor.visit_map(&mut map)
             }
-            _ => Err(de::Error::custom("expected object")),
+            _ => Err(ValueError::ExpectedObject),
         }
     }
 
@@ -1554,15 +1614,15 @@ impl<'de> Deserializer<'de> for &'de Value {
             Value::String(s) => visitor.visit_enum(ValueEnumAccessRef::Unit(s)),
             Value::Object(obj) => {
                 if obj.len() != 1 {
-                    return Err(de::Error::custom("expected enum with single key"));
+                    return Err(ValueError::ExpectedEnumSingleKey);
                 }
                 let (key, value) = obj.iter().next().unwrap();
                 match key {
                     Key::String(s) => visitor.visit_enum(ValueEnumAccessRef::WithValue(s, value)),
-                    _ => Err(de::Error::custom("expected string key for enum")),
+                    _ => Err(ValueError::ExpectedEnumStringKey),
                 }
             }
-            _ => Err(de::Error::custom("expected string or object for enum")),
+            _ => Err(ValueError::ExpectedEnumStringOrObject),
         }
     }
 
@@ -1654,7 +1714,7 @@ impl<'de> MapAccess<'de> for ValueMapAccess {
     ) -> Result<V::Value, Self::Error> {
         match self.pending_value.take() {
             Some(value) => seed.deserialize(value),
-            None => Err(de::Error::custom("missing value")),
+            None => Err(ValueError::MissingValue),
         }
     }
 
@@ -1691,7 +1751,7 @@ impl<'de> MapAccess<'de> for ValueMapAccessRef<'de> {
     ) -> Result<V::Value, Self::Error> {
         match self.pending_value.take() {
             Some(value) => seed.deserialize(value),
-            None => Err(de::Error::custom("missing value")),
+            None => Err(ValueError::MissingValue),
         }
     }
 
@@ -1717,7 +1777,7 @@ impl<'de> Deserializer<'de> for KeyAsDeserializer<'de> {
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self.0 {
             Key::String(s) => visitor.visit_borrowed_str(s),
-            _ => Err(de::Error::custom("expected string key")),
+            _ => Err(ValueError::ExpectedStringKey),
         }
     }
 
@@ -1771,7 +1831,7 @@ impl<'de> de::VariantAccess<'de> for ValueVariantAccess {
         match self {
             ValueVariantAccess::Unit => Ok(()),
             ValueVariantAccess::WithValue(Value::Null) => Ok(()),
-            _ => Err(de::Error::custom("expected unit variant")),
+            _ => Err(ValueError::ExpectedUnitVariant),
         }
     }
 
@@ -1781,7 +1841,7 @@ impl<'de> de::VariantAccess<'de> for ValueVariantAccess {
     ) -> Result<T::Value, Self::Error> {
         match self {
             ValueVariantAccess::WithValue(v) => seed.deserialize(v),
-            ValueVariantAccess::Unit => Err(de::Error::custom("expected newtype variant")),
+            ValueVariantAccess::Unit => Err(ValueError::ExpectedNewtypeVariant),
         }
     }
 
@@ -1792,7 +1852,7 @@ impl<'de> de::VariantAccess<'de> for ValueVariantAccess {
     ) -> Result<V::Value, Self::Error> {
         match self {
             ValueVariantAccess::WithValue(v) => v.deserialize_seq(visitor),
-            ValueVariantAccess::Unit => Err(de::Error::custom("expected tuple variant")),
+            ValueVariantAccess::Unit => Err(ValueError::ExpectedTupleVariant),
         }
     }
 
@@ -1803,7 +1863,7 @@ impl<'de> de::VariantAccess<'de> for ValueVariantAccess {
     ) -> Result<V::Value, Self::Error> {
         match self {
             ValueVariantAccess::WithValue(v) => v.deserialize_map(visitor),
-            ValueVariantAccess::Unit => Err(de::Error::custom("expected struct variant")),
+            ValueVariantAccess::Unit => Err(ValueError::ExpectedStructVariant),
         }
     }
 }
@@ -1847,7 +1907,7 @@ impl<'de> de::VariantAccess<'de> for ValueVariantAccessRef<'de> {
         match self {
             ValueVariantAccessRef::Unit => Ok(()),
             ValueVariantAccessRef::WithValue(Value::Null) => Ok(()),
-            _ => Err(de::Error::custom("expected unit variant")),
+            _ => Err(ValueError::ExpectedUnitVariant),
         }
     }
 
@@ -1857,7 +1917,7 @@ impl<'de> de::VariantAccess<'de> for ValueVariantAccessRef<'de> {
     ) -> Result<T::Value, Self::Error> {
         match self {
             ValueVariantAccessRef::WithValue(v) => seed.deserialize(v),
-            ValueVariantAccessRef::Unit => Err(de::Error::custom("expected newtype variant")),
+            ValueVariantAccessRef::Unit => Err(ValueError::ExpectedNewtypeVariant),
         }
     }
 
@@ -1868,7 +1928,7 @@ impl<'de> de::VariantAccess<'de> for ValueVariantAccessRef<'de> {
     ) -> Result<V::Value, Self::Error> {
         match self {
             ValueVariantAccessRef::WithValue(v) => v.deserialize_seq(visitor),
-            ValueVariantAccessRef::Unit => Err(de::Error::custom("expected tuple variant")),
+            ValueVariantAccessRef::Unit => Err(ValueError::ExpectedTupleVariant),
         }
     }
 
@@ -1879,7 +1939,7 @@ impl<'de> de::VariantAccess<'de> for ValueVariantAccessRef<'de> {
     ) -> Result<V::Value, Self::Error> {
         match self {
             ValueVariantAccessRef::WithValue(v) => v.deserialize_map(visitor),
-            ValueVariantAccessRef::Unit => Err(de::Error::custom("expected struct variant")),
+            ValueVariantAccessRef::Unit => Err(ValueError::ExpectedStructVariant),
         }
     }
 }

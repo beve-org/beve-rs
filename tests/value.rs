@@ -632,7 +632,7 @@ fn from_value_option_some() {
 
 #[test]
 fn from_value_primitives() {
-    assert_eq!(from_value::<bool>(Value::Bool(true)).unwrap(), true);
+    assert!(from_value::<bool>(Value::Bool(true)).unwrap());
     assert_eq!(from_value::<i32>(Value::Number(Number::Signed(-42))).unwrap(), -42);
     assert_eq!(from_value::<u64>(Value::Number(Number::Unsigned(100))).unwrap(), 100);
     assert_eq!(from_value::<f64>(Value::Number(Number::Float(2.5))).unwrap(), 2.5);

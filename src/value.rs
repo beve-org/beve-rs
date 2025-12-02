@@ -21,87 +21,129 @@ use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use std::collections::BTreeMap;
 use std::fmt;
 
+/// Large integer that doesn't fit in 64 bits.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BigInt {
+    /// Signed 128-bit integer
+    I128(i128),
+    /// Unsigned 128-bit integer
+    U128(u128),
+}
+
 /// A BEVE number, which can be signed, unsigned, or floating-point.
+///
+/// Common cases (64-bit integers and floats) are stored inline for efficiency.
+/// Rare 128-bit integers are boxed to keep the enum size small (16 bytes).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Number {
-    /// Signed integer (up to 128-bit)
-    Signed(i128),
-    /// Unsigned integer (up to 128-bit)
-    Unsigned(u128),
-    /// Floating-point number (stored as f64)
-    Float(f64),
+    /// Signed 64-bit integer (common case)
+    I64(i64),
+    /// Unsigned 64-bit integer (common case)
+    U64(u64),
+    /// Floating-point number
+    F64(f64),
+    /// Large integer that doesn't fit in 64 bits (rare)
+    Big(Box<BigInt>),
 }
 
 impl Number {
     /// Returns `true` if the number is signed.
     pub fn is_signed(&self) -> bool {
-        matches!(self, Number::Signed(_))
+        match self {
+            Number::I64(_) => true,
+            Number::Big(b) => matches!(b.as_ref(), BigInt::I128(_)),
+            _ => false,
+        }
     }
 
     /// Returns `true` if the number is unsigned.
     pub fn is_unsigned(&self) -> bool {
-        matches!(self, Number::Unsigned(_))
+        match self {
+            Number::U64(_) => true,
+            Number::Big(b) => matches!(b.as_ref(), BigInt::U128(_)),
+            _ => false,
+        }
     }
 
     /// Returns `true` if the number is a float.
     pub fn is_float(&self) -> bool {
-        matches!(self, Number::Float(_))
+        matches!(self, Number::F64(_))
     }
 
     /// Returns the number as an i64, if it fits.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
-            Number::Signed(n) => i64::try_from(*n).ok(),
-            Number::Unsigned(n) => i64::try_from(*n).ok(),
-            Number::Float(f) => {
+            Number::I64(n) => Some(*n),
+            Number::U64(n) => i64::try_from(*n).ok(),
+            Number::F64(f) => {
                 if f.fract() == 0.0 && *f >= i64::MIN as f64 && *f <= i64::MAX as f64 {
                     Some(*f as i64)
                 } else {
                     None
                 }
             }
+            Number::Big(big) => match big.as_ref() {
+                BigInt::I128(n) => i64::try_from(*n).ok(),
+                BigInt::U128(n) => i64::try_from(*n).ok(),
+            },
         }
     }
 
     /// Returns the number as a u64, if it fits.
     pub fn as_u64(&self) -> Option<u64> {
         match self {
-            Number::Signed(n) => u64::try_from(*n).ok(),
-            Number::Unsigned(n) => u64::try_from(*n).ok(),
-            Number::Float(f) => {
+            Number::I64(n) => u64::try_from(*n).ok(),
+            Number::U64(n) => Some(*n),
+            Number::F64(f) => {
                 if f.fract() == 0.0 && *f >= 0.0 && *f <= u64::MAX as f64 {
                     Some(*f as u64)
                 } else {
                     None
                 }
             }
+            Number::Big(big) => match big.as_ref() {
+                BigInt::I128(n) => u64::try_from(*n).ok(),
+                BigInt::U128(n) => u64::try_from(*n).ok(),
+            },
         }
     }
 
     /// Returns the number as an i128.
     pub fn as_i128(&self) -> Option<i128> {
         match self {
-            Number::Signed(n) => Some(*n),
-            Number::Unsigned(n) => i128::try_from(*n).ok(),
-            Number::Float(_) => None,
+            Number::I64(n) => Some(*n as i128),
+            Number::U64(n) => Some(*n as i128),
+            Number::F64(_) => None,
+            Number::Big(big) => match big.as_ref() {
+                BigInt::I128(n) => Some(*n),
+                BigInt::U128(n) => i128::try_from(*n).ok(),
+            },
         }
     }
 
     /// Returns the number as a u128.
     pub fn as_u128(&self) -> Option<u128> {
         match self {
-            Number::Signed(n) => u128::try_from(*n).ok(),
-            Number::Unsigned(n) => Some(*n),
-            Number::Float(_) => None,
+            Number::I64(n) => u128::try_from(*n).ok(),
+            Number::U64(n) => Some(*n as u128),
+            Number::F64(_) => None,
+            Number::Big(big) => match big.as_ref() {
+                BigInt::I128(n) => u128::try_from(*n).ok(),
+                BigInt::U128(n) => Some(*n),
+            },
         }
     }
 
     /// Returns the number as an f64.
     pub fn as_f64(&self) -> f64 {
         match self {
-            Number::Signed(n) => *n as f64,
-            Number::Unsigned(n) => *n as f64,
-            Number::Float(f) => *f,
+            Number::I64(n) => *n as f64,
+            Number::U64(n) => *n as f64,
+            Number::F64(f) => *f,
+            Number::Big(big) => match big.as_ref() {
+                BigInt::I128(n) => *n as f64,
+                BigInt::U128(n) => *n as f64,
+            },
         }
     }
 }
@@ -109,9 +151,13 @@ impl Number {
 impl fmt::Display for Number {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Number::Signed(n) => write!(f, "{}", n),
-            Number::Unsigned(n) => write!(f, "{}", n),
-            Number::Float(n) => write!(f, "{}", n),
+            Number::I64(n) => write!(f, "{}", n),
+            Number::U64(n) => write!(f, "{}", n),
+            Number::F64(n) => write!(f, "{}", n),
+            Number::Big(big) => match big.as_ref() {
+                BigInt::I128(n) => write!(f, "{}", n),
+                BigInt::U128(n) => write!(f, "{}", n),
+            },
         }
     }
 }
@@ -386,73 +432,81 @@ impl From<bool> for Value {
 
 impl From<i8> for Value {
     fn from(n: i8) -> Self {
-        Value::Number(Number::Signed(n as i128))
+        Value::Number(Number::I64(n as i64))
     }
 }
 
 impl From<i16> for Value {
     fn from(n: i16) -> Self {
-        Value::Number(Number::Signed(n as i128))
+        Value::Number(Number::I64(n as i64))
     }
 }
 
 impl From<i32> for Value {
     fn from(n: i32) -> Self {
-        Value::Number(Number::Signed(n as i128))
+        Value::Number(Number::I64(n as i64))
     }
 }
 
 impl From<i64> for Value {
     fn from(n: i64) -> Self {
-        Value::Number(Number::Signed(n as i128))
+        Value::Number(Number::I64(n))
     }
 }
 
 impl From<i128> for Value {
     fn from(n: i128) -> Self {
-        Value::Number(Number::Signed(n))
+        if let Ok(small) = i64::try_from(n) {
+            Value::Number(Number::I64(small))
+        } else {
+            Value::Number(Number::Big(Box::new(BigInt::I128(n))))
+        }
     }
 }
 
 impl From<u8> for Value {
     fn from(n: u8) -> Self {
-        Value::Number(Number::Unsigned(n as u128))
+        Value::Number(Number::U64(n as u64))
     }
 }
 
 impl From<u16> for Value {
     fn from(n: u16) -> Self {
-        Value::Number(Number::Unsigned(n as u128))
+        Value::Number(Number::U64(n as u64))
     }
 }
 
 impl From<u32> for Value {
     fn from(n: u32) -> Self {
-        Value::Number(Number::Unsigned(n as u128))
+        Value::Number(Number::U64(n as u64))
     }
 }
 
 impl From<u64> for Value {
     fn from(n: u64) -> Self {
-        Value::Number(Number::Unsigned(n as u128))
+        Value::Number(Number::U64(n))
     }
 }
 
 impl From<u128> for Value {
     fn from(n: u128) -> Self {
-        Value::Number(Number::Unsigned(n))
+        if let Ok(small) = u64::try_from(n) {
+            Value::Number(Number::U64(small))
+        } else {
+            Value::Number(Number::Big(Box::new(BigInt::U128(n))))
+        }
     }
 }
 
 impl From<f32> for Value {
     fn from(n: f32) -> Self {
-        Value::Number(Number::Float(n as f64))
+        Value::Number(Number::F64(n as f64))
     }
 }
 
 impl From<f64> for Value {
     fn from(n: f64) -> Self {
-        Value::Number(Number::Float(n))
+        Value::Number(Number::F64(n))
     }
 }
 
@@ -517,51 +571,51 @@ impl<'de> Visitor<'de> for ValueVisitor {
     }
 
     fn visit_i8<E: de::Error>(self, v: i8) -> Result<Value, E> {
-        Ok(Value::Number(Number::Signed(v as i128)))
+        Ok(Value::Number(Number::I64(v as i64)))
     }
 
     fn visit_i16<E: de::Error>(self, v: i16) -> Result<Value, E> {
-        Ok(Value::Number(Number::Signed(v as i128)))
+        Ok(Value::Number(Number::I64(v as i64)))
     }
 
     fn visit_i32<E: de::Error>(self, v: i32) -> Result<Value, E> {
-        Ok(Value::Number(Number::Signed(v as i128)))
+        Ok(Value::Number(Number::I64(v as i64)))
     }
 
     fn visit_i64<E: de::Error>(self, v: i64) -> Result<Value, E> {
-        Ok(Value::Number(Number::Signed(v as i128)))
+        Ok(Value::Number(Number::I64(v)))
     }
 
     fn visit_i128<E: de::Error>(self, v: i128) -> Result<Value, E> {
-        Ok(Value::Number(Number::Signed(v)))
+        Ok(Value::from(v))
     }
 
     fn visit_u8<E: de::Error>(self, v: u8) -> Result<Value, E> {
-        Ok(Value::Number(Number::Unsigned(v as u128)))
+        Ok(Value::Number(Number::U64(v as u64)))
     }
 
     fn visit_u16<E: de::Error>(self, v: u16) -> Result<Value, E> {
-        Ok(Value::Number(Number::Unsigned(v as u128)))
+        Ok(Value::Number(Number::U64(v as u64)))
     }
 
     fn visit_u32<E: de::Error>(self, v: u32) -> Result<Value, E> {
-        Ok(Value::Number(Number::Unsigned(v as u128)))
+        Ok(Value::Number(Number::U64(v as u64)))
     }
 
     fn visit_u64<E: de::Error>(self, v: u64) -> Result<Value, E> {
-        Ok(Value::Number(Number::Unsigned(v as u128)))
+        Ok(Value::Number(Number::U64(v)))
     }
 
     fn visit_u128<E: de::Error>(self, v: u128) -> Result<Value, E> {
-        Ok(Value::Number(Number::Unsigned(v)))
+        Ok(Value::from(v))
     }
 
     fn visit_f32<E: de::Error>(self, v: f32) -> Result<Value, E> {
-        Ok(Value::Number(Number::Float(v as f64)))
+        Ok(Value::Number(Number::F64(v as f64)))
     }
 
     fn visit_f64<E: de::Error>(self, v: f64) -> Result<Value, E> {
-        Ok(Value::Number(Number::Float(v)))
+        Ok(Value::Number(Number::F64(v)))
     }
 
     fn visit_str<E: de::Error>(self, v: &str) -> Result<Value, E> {
@@ -580,7 +634,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
         // Represent bytes as an array of unsigned integers
         Ok(Value::Array(
             v.iter()
-                .map(|&b| Value::Number(Number::Unsigned(b as u128)))
+                .map(|&b| Value::Number(Number::U64(b as u64)))
                 .collect(),
         ))
     }
@@ -715,33 +769,35 @@ impl Serialize for Number {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             // Choose smallest fitting type for better BEVE encoding
-            Number::Signed(n) => {
-                if *n >= i8::MIN as i128 && *n <= i8::MAX as i128 {
-                    serializer.serialize_i8(*n as i8)
-                } else if *n >= i16::MIN as i128 && *n <= i16::MAX as i128 {
-                    serializer.serialize_i16(*n as i16)
-                } else if *n >= i32::MIN as i128 && *n <= i32::MAX as i128 {
-                    serializer.serialize_i32(*n as i32)
-                } else if *n >= i64::MIN as i128 && *n <= i64::MAX as i128 {
-                    serializer.serialize_i64(*n as i64)
+            Number::I64(n) => {
+                let n = *n;
+                if n >= i8::MIN as i64 && n <= i8::MAX as i64 {
+                    serializer.serialize_i8(n as i8)
+                } else if n >= i16::MIN as i64 && n <= i16::MAX as i64 {
+                    serializer.serialize_i16(n as i16)
+                } else if n >= i32::MIN as i64 && n <= i32::MAX as i64 {
+                    serializer.serialize_i32(n as i32)
                 } else {
-                    serializer.serialize_i128(*n)
+                    serializer.serialize_i64(n)
                 }
             }
-            Number::Unsigned(n) => {
-                if *n <= u8::MAX as u128 {
-                    serializer.serialize_u8(*n as u8)
-                } else if *n <= u16::MAX as u128 {
-                    serializer.serialize_u16(*n as u16)
-                } else if *n <= u32::MAX as u128 {
-                    serializer.serialize_u32(*n as u32)
-                } else if *n <= u64::MAX as u128 {
-                    serializer.serialize_u64(*n as u64)
+            Number::U64(n) => {
+                let n = *n;
+                if n <= u8::MAX as u64 {
+                    serializer.serialize_u8(n as u8)
+                } else if n <= u16::MAX as u64 {
+                    serializer.serialize_u16(n as u16)
+                } else if n <= u32::MAX as u64 {
+                    serializer.serialize_u32(n as u32)
                 } else {
-                    serializer.serialize_u128(*n)
+                    serializer.serialize_u64(n)
                 }
             }
-            Number::Float(f) => serializer.serialize_f64(*f),
+            Number::F64(f) => serializer.serialize_f64(*f),
+            Number::Big(big) => match big.as_ref() {
+                BigInt::I128(n) => serializer.serialize_i128(*n),
+                BigInt::U128(n) => serializer.serialize_u128(*n),
+            },
         }
     }
 }
@@ -804,28 +860,42 @@ impl de::Error for ValueError {
 impl Value {
     fn to_i128(&self) -> Result<i128, ValueError> {
         match self {
-            Value::Number(Number::Signed(i)) => Ok(*i),
-            Value::Number(Number::Unsigned(u)) => {
-                if *u <= i128::MAX as u128 {
-                    Ok(*u as i128)
-                } else {
-                    Err(ValueError("integer overflow".to_string()))
+            Value::Number(Number::I64(i)) => Ok(*i as i128),
+            Value::Number(Number::U64(u)) => Ok(*u as i128),
+            Value::Number(Number::Big(big)) => match big.as_ref() {
+                BigInt::I128(i) => Ok(*i),
+                BigInt::U128(u) => {
+                    if *u <= i128::MAX as u128 {
+                        Ok(*u as i128)
+                    } else {
+                        Err(ValueError("integer overflow".to_string()))
+                    }
                 }
-            }
+            },
             _ => Err(ValueError("expected integer".to_string())),
         }
     }
 
     fn to_u128(&self) -> Result<u128, ValueError> {
         match self {
-            Value::Number(Number::Unsigned(u)) => Ok(*u),
-            Value::Number(Number::Signed(i)) => {
+            Value::Number(Number::U64(u)) => Ok(*u as u128),
+            Value::Number(Number::I64(i)) => {
                 if *i >= 0 {
                     Ok(*i as u128)
                 } else {
                     Err(ValueError("expected unsigned integer".to_string()))
                 }
             }
+            Value::Number(Number::Big(big)) => match big.as_ref() {
+                BigInt::U128(u) => Ok(*u),
+                BigInt::I128(i) => {
+                    if *i >= 0 {
+                        Ok(*i as u128)
+                    } else {
+                        Err(ValueError("expected unsigned integer".to_string()))
+                    }
+                }
+            },
             _ => Err(ValueError("expected integer".to_string())),
         }
     }
@@ -846,8 +916,8 @@ impl Value {
 /// struct Point { x: f64, y: f64 }
 ///
 /// let mut obj = Object::new();
-/// obj.insert(Key::String("x".to_string()), Value::Number(Number::Float(1.0)));
-/// obj.insert(Key::String("y".to_string()), Value::Number(Number::Float(2.0)));
+/// obj.insert(Key::String("x".to_string()), Value::Number(Number::F64(1.0)));
+/// obj.insert(Key::String("y".to_string()), Value::Number(Number::F64(2.0)));
 /// let value = Value::Object(obj);
 ///
 /// let point: Point = from_value(value).unwrap();
@@ -872,34 +942,34 @@ impl<'de> Deserializer<'de> for Value {
             Value::Null => visitor.visit_unit(),
             Value::Bool(b) => visitor.visit_bool(b),
             Value::Number(n) => match n {
-                Number::Signed(i) => {
+                Number::I64(i) => {
                     // Use smallest fitting type for better compatibility
-                    if i >= i8::MIN as i128 && i <= i8::MAX as i128 {
+                    if i >= i8::MIN as i64 && i <= i8::MAX as i64 {
                         visitor.visit_i8(i as i8)
-                    } else if i >= i16::MIN as i128 && i <= i16::MAX as i128 {
+                    } else if i >= i16::MIN as i64 && i <= i16::MAX as i64 {
                         visitor.visit_i16(i as i16)
-                    } else if i >= i32::MIN as i128 && i <= i32::MAX as i128 {
+                    } else if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
                         visitor.visit_i32(i as i32)
-                    } else if i >= i64::MIN as i128 && i <= i64::MAX as i128 {
-                        visitor.visit_i64(i as i64)
                     } else {
-                        visitor.visit_i128(i)
+                        visitor.visit_i64(i)
                     }
                 }
-                Number::Unsigned(u) => {
-                    if u <= u8::MAX as u128 {
+                Number::U64(u) => {
+                    if u <= u8::MAX as u64 {
                         visitor.visit_u8(u as u8)
-                    } else if u <= u16::MAX as u128 {
+                    } else if u <= u16::MAX as u64 {
                         visitor.visit_u16(u as u16)
-                    } else if u <= u32::MAX as u128 {
+                    } else if u <= u32::MAX as u64 {
                         visitor.visit_u32(u as u32)
-                    } else if u <= u64::MAX as u128 {
-                        visitor.visit_u64(u as u64)
                     } else {
-                        visitor.visit_u128(u)
+                        visitor.visit_u64(u)
                     }
                 }
-                Number::Float(f) => visitor.visit_f64(f),
+                Number::F64(f) => visitor.visit_f64(f),
+                Number::Big(big) => match *big {
+                    BigInt::I128(i) => visitor.visit_i128(i),
+                    BigInt::U128(u) => visitor.visit_u128(u),
+                },
             },
             Value::String(s) => visitor.visit_string(s),
             Value::Array(arr) => {
@@ -1020,9 +1090,13 @@ impl<'de> Deserializer<'de> for Value {
 
     fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self {
-            Value::Number(Number::Float(f)) => visitor.visit_f64(f),
-            Value::Number(Number::Signed(i)) => visitor.visit_f64(i as f64),
-            Value::Number(Number::Unsigned(u)) => visitor.visit_f64(u as f64),
+            Value::Number(Number::F64(f)) => visitor.visit_f64(f),
+            Value::Number(Number::I64(i)) => visitor.visit_f64(i as f64),
+            Value::Number(Number::U64(u)) => visitor.visit_f64(u as f64),
+            Value::Number(Number::Big(big)) => match *big {
+                BigInt::I128(i) => visitor.visit_f64(i as f64),
+                BigInt::U128(u) => visitor.visit_f64(u as f64),
+            },
             _ => Err(de::Error::custom("expected number")),
         }
     }
@@ -1059,8 +1133,8 @@ impl<'de> Deserializer<'de> for Value {
                 let bytes: Result<Vec<u8>, _> = arr
                     .into_iter()
                     .map(|v| match v {
-                        Value::Number(Number::Unsigned(u)) if u <= 255 => Ok(u as u8),
-                        Value::Number(Number::Signed(i)) if (0..=255).contains(&i) => Ok(i as u8),
+                        Value::Number(Number::U64(u)) if u <= 255 => Ok(u as u8),
+                        Value::Number(Number::I64(i)) if (0..=255).contains(&i) => Ok(i as u8),
                         _ => Err(de::Error::custom("expected byte array")),
                     })
                     .collect();
@@ -1195,35 +1269,35 @@ impl<'de> Deserializer<'de> for &'de Value {
             Value::Null => visitor.visit_unit(),
             Value::Bool(b) => visitor.visit_bool(*b),
             Value::Number(n) => match n {
-                Number::Signed(i) => {
+                Number::I64(i) => {
                     let i = *i;
-                    if i >= i8::MIN as i128 && i <= i8::MAX as i128 {
+                    if i >= i8::MIN as i64 && i <= i8::MAX as i64 {
                         visitor.visit_i8(i as i8)
-                    } else if i >= i16::MIN as i128 && i <= i16::MAX as i128 {
+                    } else if i >= i16::MIN as i64 && i <= i16::MAX as i64 {
                         visitor.visit_i16(i as i16)
-                    } else if i >= i32::MIN as i128 && i <= i32::MAX as i128 {
+                    } else if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
                         visitor.visit_i32(i as i32)
-                    } else if i >= i64::MIN as i128 && i <= i64::MAX as i128 {
-                        visitor.visit_i64(i as i64)
                     } else {
-                        visitor.visit_i128(i)
+                        visitor.visit_i64(i)
                     }
                 }
-                Number::Unsigned(u) => {
+                Number::U64(u) => {
                     let u = *u;
-                    if u <= u8::MAX as u128 {
+                    if u <= u8::MAX as u64 {
                         visitor.visit_u8(u as u8)
-                    } else if u <= u16::MAX as u128 {
+                    } else if u <= u16::MAX as u64 {
                         visitor.visit_u16(u as u16)
-                    } else if u <= u32::MAX as u128 {
+                    } else if u <= u32::MAX as u64 {
                         visitor.visit_u32(u as u32)
-                    } else if u <= u64::MAX as u128 {
-                        visitor.visit_u64(u as u64)
                     } else {
-                        visitor.visit_u128(u)
+                        visitor.visit_u64(u)
                     }
                 }
-                Number::Float(f) => visitor.visit_f64(*f),
+                Number::F64(f) => visitor.visit_f64(*f),
+                Number::Big(big) => match big.as_ref() {
+                    BigInt::I128(i) => visitor.visit_i128(*i),
+                    BigInt::U128(u) => visitor.visit_u128(*u),
+                },
             },
             Value::String(s) => visitor.visit_borrowed_str(s),
             Value::Array(arr) => {
@@ -1333,9 +1407,13 @@ impl<'de> Deserializer<'de> for &'de Value {
 
     fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self {
-            Value::Number(Number::Float(f)) => visitor.visit_f64(*f),
-            Value::Number(Number::Signed(i)) => visitor.visit_f64(*i as f64),
-            Value::Number(Number::Unsigned(u)) => visitor.visit_f64(*u as f64),
+            Value::Number(Number::F64(f)) => visitor.visit_f64(*f),
+            Value::Number(Number::I64(i)) => visitor.visit_f64(*i as f64),
+            Value::Number(Number::U64(u)) => visitor.visit_f64(*u as f64),
+            Value::Number(Number::Big(big)) => match big.as_ref() {
+                BigInt::I128(i) => visitor.visit_f64(*i as f64),
+                BigInt::U128(u) => visitor.visit_f64(*u as f64),
+            },
             _ => Err(de::Error::custom("expected number")),
         }
     }
@@ -1372,8 +1450,8 @@ impl<'de> Deserializer<'de> for &'de Value {
                 let bytes: Result<Vec<u8>, _> = arr
                     .iter()
                     .map(|v| match v {
-                        Value::Number(Number::Unsigned(u)) if *u <= 255 => Ok(*u as u8),
-                        Value::Number(Number::Signed(i)) if (0..=255).contains(i) => Ok(*i as u8),
+                        Value::Number(Number::U64(u)) if *u <= 255 => Ok(*u as u8),
+                        Value::Number(Number::I64(i)) if (0..=255).contains(i) => Ok(*i as u8),
                         _ => Err(de::Error::custom("expected byte array")),
                     })
                     .collect();
@@ -1561,8 +1639,8 @@ impl<'de> MapAccess<'de> for ValueMapAccess {
                 self.pending_value = Some(value);
                 let key_value = match key {
                     Key::String(s) => Value::String(s),
-                    Key::Signed(i) => Value::Number(Number::Signed(i)),
-                    Key::Unsigned(u) => Value::Number(Number::Unsigned(u)),
+                    Key::Signed(i) => Value::from(i),
+                    Key::Unsigned(u) => Value::from(u),
                 };
                 seed.deserialize(key_value).map(Some)
             }
@@ -1841,16 +1919,16 @@ mod tests {
 
     #[test]
     fn test_number_conversions() {
-        let num = Number::Signed(42);
+        let num = Number::I64(42);
         assert_eq!(num.as_i64(), Some(42));
         assert_eq!(num.as_u64(), Some(42));
         assert_eq!(num.as_f64(), 42.0);
 
-        let num = Number::Unsigned(100);
+        let num = Number::U64(100);
         assert_eq!(num.as_i64(), Some(100));
         assert_eq!(num.as_u64(), Some(100));
 
-        let num = Number::Float(2.5);
+        let num = Number::F64(2.5);
         assert_eq!(num.as_i64(), None); // Has fractional part
         assert!((num.as_f64() - 2.5).abs() < f64::EPSILON);
     }
@@ -1872,7 +1950,7 @@ mod tests {
     fn test_display() {
         assert_eq!(format!("{}", Value::Null), "null");
         assert_eq!(format!("{}", Value::Bool(true)), "true");
-        assert_eq!(format!("{}", Value::Number(Number::Signed(42))), "42");
+        assert_eq!(format!("{}", Value::Number(Number::I64(42))), "42");
         assert_eq!(format!("{}", Value::String("hi".into())), "\"hi\"");
     }
 }

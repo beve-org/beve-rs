@@ -26,28 +26,28 @@ fn roundtrip_bool() {
 
 #[test]
 fn roundtrip_signed_integers() {
-    let values: Vec<i128> = vec![
+    let values: Vec<i64> = vec![
         0,
         1,
         -1,
-        i8::MIN as i128,
-        i8::MAX as i128,
-        i16::MIN as i128,
-        i16::MAX as i128,
-        i32::MIN as i128,
-        i32::MAX as i128,
-        i64::MIN as i128,
-        i64::MAX as i128,
+        i8::MIN as i64,
+        i8::MAX as i64,
+        i16::MIN as i64,
+        i16::MAX as i64,
+        i32::MIN as i64,
+        i32::MAX as i64,
+        i64::MIN,
+        i64::MAX,
     ];
 
     for n in values {
-        let v = Value::Number(Number::Signed(n));
+        let v = Value::Number(Number::I64(n));
         let bytes = beve::to_vec(&v).unwrap();
         let back: Value = beve::from_slice(&bytes).unwrap();
         // Note: small positive values may come back as unsigned
         match back.as_number() {
-            Some(Number::Signed(m)) => assert_eq!(*m, n),
-            Some(Number::Unsigned(m)) => assert_eq!(*m as i128, n),
+            Some(Number::I64(m)) => assert_eq!(*m, n),
+            Some(Number::U64(m)) => assert_eq!(*m as i64, n),
             _ => panic!("Expected number, got {:?}", back),
         }
     }
@@ -55,20 +55,20 @@ fn roundtrip_signed_integers() {
 
 #[test]
 fn roundtrip_unsigned_integers() {
-    let values: Vec<u128> = vec![
+    let values: Vec<u64> = vec![
         0,
         1,
-        u8::MAX as u128,
-        u16::MAX as u128,
-        u32::MAX as u128,
-        u64::MAX as u128,
+        u8::MAX as u64,
+        u16::MAX as u64,
+        u32::MAX as u64,
+        u64::MAX,
     ];
 
     for n in values {
-        let v = Value::Number(Number::Unsigned(n));
+        let v = Value::Number(Number::U64(n));
         let bytes = beve::to_vec(&v).unwrap();
         let back: Value = beve::from_slice(&bytes).unwrap();
-        assert_eq!(back.as_number().unwrap().as_u128(), Some(n));
+        assert_eq!(back.as_number().unwrap().as_u64(), Some(n));
     }
 }
 
@@ -85,7 +85,7 @@ fn roundtrip_floats() {
     ];
 
     for n in values {
-        let v = Value::Number(Number::Float(n));
+        let v = Value::Number(Number::F64(n));
         let bytes = beve::to_vec(&v).unwrap();
         let back: Value = beve::from_slice(&bytes).unwrap();
         assert_eq!(back.as_f64(), Some(n));
@@ -107,9 +107,9 @@ fn roundtrip_string() {
 #[test]
 fn roundtrip_array() {
     let v = Value::Array(vec![
-        Value::Number(Number::Signed(1)),
-        Value::Number(Number::Signed(2)),
-        Value::Number(Number::Signed(3)),
+        Value::Number(Number::I64(1)),
+        Value::Number(Number::I64(2)),
+        Value::Number(Number::I64(3)),
     ]);
     let bytes = beve::to_vec(&v).unwrap();
     let back: Value = beve::from_slice(&bytes).unwrap();
@@ -122,7 +122,7 @@ fn roundtrip_mixed_array() {
     let v = Value::Array(vec![
         Value::Null,
         Value::Bool(true),
-        Value::Number(Number::Signed(42)),
+        Value::Number(Number::I64(42)),
         Value::String("hello".to_string()),
     ]);
     let bytes = beve::to_vec(&v).unwrap();
@@ -143,7 +143,7 @@ fn roundtrip_object_string_keys() {
     );
     obj.insert(
         Key::String("age".to_string()),
-        Value::Number(Number::Unsigned(30)),
+        Value::Number(Number::U64(30)),
     );
 
     let v = Value::Object(obj);
@@ -164,11 +164,11 @@ fn roundtrip_nested_structure() {
     let mut inner = Object::new();
     inner.insert(
         Key::String("x".to_string()),
-        Value::Number(Number::Float(1.5)),
+        Value::Number(Number::F64(1.5)),
     );
     inner.insert(
         Key::String("y".to_string()),
-        Value::Number(Number::Float(2.5)),
+        Value::Number(Number::F64(2.5)),
     );
 
     let mut outer = Object::new();
@@ -176,8 +176,8 @@ fn roundtrip_nested_structure() {
     outer.insert(
         Key::String("values".to_string()),
         Value::Array(vec![
-            Value::Number(Number::Signed(1)),
-            Value::Number(Number::Signed(2)),
+            Value::Number(Number::I64(1)),
+            Value::Number(Number::I64(2)),
         ]),
     );
 
@@ -242,7 +242,7 @@ fn value_to_struct() {
     );
     obj.insert(
         Key::String("age".to_string()),
-        Value::Number(Number::Unsigned(30)),
+        Value::Number(Number::U64(30)),
     );
     obj.insert(Key::String("active".to_string()), Value::Bool(true));
     let value = Value::Object(obj);
@@ -394,9 +394,9 @@ fn deserialize_integer_keyed_map_as_value() {
 #[test]
 fn test_index_operators() {
     let v = Value::Array(vec![
-        Value::Number(Number::Signed(10)),
-        Value::Number(Number::Signed(20)),
-        Value::Number(Number::Signed(30)),
+        Value::Number(Number::I64(10)),
+        Value::Number(Number::I64(20)),
+        Value::Number(Number::I64(30)),
     ]);
 
     assert_eq!(v[0].as_i64(), Some(10));
@@ -441,24 +441,24 @@ fn test_from_impls() {
 
 #[test]
 fn test_number_methods() {
-    let n = Number::Signed(-42);
+    let n = Number::I64(-42);
     assert!(n.is_signed());
     assert!(!n.is_unsigned());
     assert!(!n.is_float());
     assert_eq!(n.as_i64(), Some(-42));
     assert_eq!(n.as_u64(), None); // Negative can't be u64
 
-    let n = Number::Unsigned(100);
+    let n = Number::U64(100);
     assert!(!n.is_signed());
     assert!(n.is_unsigned());
     assert_eq!(n.as_i64(), Some(100));
     assert_eq!(n.as_u64(), Some(100));
 
-    let n = Number::Float(2.5);
+    let n = Number::F64(2.5);
     assert!(n.is_float());
     assert_eq!(n.as_i64(), None); // Has fractional part
 
-    let n = Number::Float(42.0);
+    let n = Number::F64(42.0);
     assert_eq!(n.as_i64(), Some(42)); // Whole number float
 }
 
@@ -469,13 +469,13 @@ fn test_display() {
     assert_eq!(Value::Null.to_string(), "null");
     assert_eq!(Value::Bool(true).to_string(), "true");
     assert_eq!(Value::Bool(false).to_string(), "false");
-    assert_eq!(Value::Number(Number::Signed(42)).to_string(), "42");
-    assert_eq!(Value::Number(Number::Float(2.5)).to_string(), "2.5");
+    assert_eq!(Value::Number(Number::I64(42)).to_string(), "42");
+    assert_eq!(Value::Number(Number::F64(2.5)).to_string(), "2.5");
     assert_eq!(Value::String("hello".to_string()).to_string(), "\"hello\"");
 
     let arr = Value::Array(vec![
-        Value::Number(Number::Signed(1)),
-        Value::Number(Number::Signed(2)),
+        Value::Number(Number::I64(1)),
+        Value::Number(Number::I64(2)),
     ]);
     assert_eq!(arr.to_string(), "[1, 2]");
 }
@@ -576,11 +576,11 @@ fn from_value_struct() {
     let mut obj = Object::new();
     obj.insert(
         Key::String("x".to_string()),
-        Value::Number(Number::Float(1.5)),
+        Value::Number(Number::F64(1.5)),
     );
     obj.insert(
         Key::String("y".to_string()),
-        Value::Number(Number::Float(-2.5)),
+        Value::Number(Number::F64(-2.5)),
     );
     let value = Value::Object(obj);
 
@@ -599,7 +599,7 @@ fn from_value_ref_struct() {
     );
     obj.insert(
         Key::String("age".to_string()),
-        Value::Number(Number::Unsigned(25)),
+        Value::Number(Number::U64(25)),
     );
     obj.insert(Key::String("active".to_string()), Value::Bool(false));
     let value = Value::Object(obj);
@@ -616,9 +616,9 @@ fn from_value_ref_struct() {
 #[test]
 fn from_value_vec() {
     let value = Value::Array(vec![
-        Value::Number(Number::Signed(10)),
-        Value::Number(Number::Signed(20)),
-        Value::Number(Number::Signed(30)),
+        Value::Number(Number::I64(10)),
+        Value::Number(Number::I64(20)),
+        Value::Number(Number::I64(30)),
     ]);
 
     let vec: Vec<i32> = from_value(value).unwrap();
@@ -628,14 +628,8 @@ fn from_value_vec() {
 #[test]
 fn from_value_btreemap() {
     let mut obj = Object::new();
-    obj.insert(
-        Key::String("a".to_string()),
-        Value::Number(Number::Signed(1)),
-    );
-    obj.insert(
-        Key::String("b".to_string()),
-        Value::Number(Number::Signed(2)),
-    );
+    obj.insert(Key::String("a".to_string()), Value::Number(Number::I64(1)));
+    obj.insert(Key::String("b".to_string()), Value::Number(Number::I64(2)));
     let value = Value::Object(obj);
 
     let map: BTreeMap<String, i32> = from_value(value).unwrap();
@@ -653,9 +647,9 @@ fn from_value_nested_struct() {
     obj.insert(
         Key::String("values".to_string()),
         Value::Array(vec![
-            Value::Number(Number::Signed(1)),
-            Value::Number(Number::Signed(2)),
-            Value::Number(Number::Signed(3)),
+            Value::Number(Number::I64(1)),
+            Value::Number(Number::I64(2)),
+            Value::Number(Number::I64(3)),
         ]),
     );
     obj.insert(
@@ -679,7 +673,7 @@ fn from_value_option_none() {
 
 #[test]
 fn from_value_option_some() {
-    let value = Value::Number(Number::Signed(42));
+    let value = Value::Number(Number::I64(42));
     let opt: Option<i32> = from_value(value).unwrap();
     assert_eq!(opt, Some(42));
 }
@@ -688,15 +682,15 @@ fn from_value_option_some() {
 fn from_value_primitives() {
     assert!(from_value::<bool>(Value::Bool(true)).unwrap());
     assert_eq!(
-        from_value::<i32>(Value::Number(Number::Signed(-42))).unwrap(),
+        from_value::<i32>(Value::Number(Number::I64(-42))).unwrap(),
         -42
     );
     assert_eq!(
-        from_value::<u64>(Value::Number(Number::Unsigned(100))).unwrap(),
+        from_value::<u64>(Value::Number(Number::U64(100))).unwrap(),
         100
     );
     assert_eq!(
-        from_value::<f64>(Value::Number(Number::Float(2.5))).unwrap(),
+        from_value::<f64>(Value::Number(Number::F64(2.5))).unwrap(),
         2.5
     );
     assert_eq!(
@@ -722,7 +716,7 @@ fn from_value_enum() {
 #[test]
 fn from_value_tuple() {
     let value = Value::Array(vec![
-        Value::Number(Number::Signed(1)),
+        Value::Number(Number::I64(1)),
         Value::String("hello".to_string()),
         Value::Bool(true),
     ]);

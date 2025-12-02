@@ -162,15 +162,29 @@ impl fmt::Display for Number {
     }
 }
 
+/// Large integer key that doesn't fit in 64 bits.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BigIntKey {
+    /// Signed 128-bit integer key
+    I128(i128),
+    /// Unsigned 128-bit integer key
+    U128(u128),
+}
+
 /// A map key that can be a string or integer.
+///
+/// Common cases (64-bit integers) are stored inline for efficiency.
+/// Rare 128-bit integers are boxed to keep the enum size small (24 bytes).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Key {
     /// String key
     String(String),
-    /// Signed integer key
-    Signed(i128),
-    /// Unsigned integer key
-    Unsigned(u128),
+    /// Signed 64-bit integer key (common case)
+    I64(i64),
+    /// Unsigned 64-bit integer key (common case)
+    U64(u64),
+    /// Large integer key that doesn't fit in 64 bits (rare)
+    Big(Box<BigIntKey>),
 }
 
 impl Key {
@@ -182,19 +196,29 @@ impl Key {
         }
     }
 
-    /// Returns the key as an i128, if it is a signed integer.
+    /// Returns the key as an i128, if it is an integer key.
     pub fn as_i128(&self) -> Option<i128> {
         match self {
-            Key::Signed(n) => Some(*n),
-            _ => None,
+            Key::I64(n) => Some(*n as i128),
+            Key::U64(n) => Some(*n as i128),
+            Key::Big(big) => match big.as_ref() {
+                BigIntKey::I128(n) => Some(*n),
+                BigIntKey::U128(n) => i128::try_from(*n).ok(),
+            },
+            Key::String(_) => None,
         }
     }
 
-    /// Returns the key as a u128, if it is an unsigned integer.
+    /// Returns the key as a u128, if it is an unsigned integer key.
     pub fn as_u128(&self) -> Option<u128> {
         match self {
-            Key::Unsigned(n) => Some(*n),
-            _ => None,
+            Key::U64(n) => Some(*n as u128),
+            Key::I64(n) => u128::try_from(*n).ok(),
+            Key::Big(big) => match big.as_ref() {
+                BigIntKey::U128(n) => Some(*n),
+                BigIntKey::I128(n) => u128::try_from(*n).ok(),
+            },
+            Key::String(_) => None,
         }
     }
 }
@@ -203,8 +227,12 @@ impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Key::String(s) => write!(f, "{}", s),
-            Key::Signed(n) => write!(f, "{}", n),
-            Key::Unsigned(n) => write!(f, "{}", n),
+            Key::I64(n) => write!(f, "{}", n),
+            Key::U64(n) => write!(f, "{}", n),
+            Key::Big(big) => match big.as_ref() {
+                BigIntKey::I128(n) => write!(f, "{}", n),
+                BigIntKey::U128(n) => write!(f, "{}", n),
+            },
         }
     }
 }
@@ -223,13 +251,21 @@ impl From<&str> for Key {
 
 impl From<i128> for Key {
     fn from(n: i128) -> Self {
-        Key::Signed(n)
+        if let Ok(small) = i64::try_from(n) {
+            Key::I64(small)
+        } else {
+            Key::Big(Box::new(BigIntKey::I128(n)))
+        }
     }
 }
 
 impl From<u128> for Key {
     fn from(n: u128) -> Self {
-        Key::Unsigned(n)
+        if let Ok(small) = u64::try_from(n) {
+            Key::U64(small)
+        } else {
+            Key::Big(Box::new(BigIntKey::U128(n)))
+        }
     }
 }
 
@@ -375,13 +411,12 @@ impl Value {
 
     /// Index into an object by integer key. Returns `None` if not an object or key not found.
     pub fn get_int_key(&self, key: i128) -> Option<&Value> {
-        self.as_object().and_then(|obj| obj.get(&Key::Signed(key)))
+        self.as_object().and_then(|obj| obj.get(&Key::from(key)))
     }
 
     /// Index into an object by unsigned integer key. Returns `None` if not an object or key not found.
     pub fn get_uint_key(&self, key: u128) -> Option<&Value> {
-        self.as_object()
-            .and_then(|obj| obj.get(&Key::Unsigned(key)))
+        self.as_object().and_then(|obj| obj.get(&Key::from(key)))
     }
 }
 
@@ -698,43 +733,43 @@ impl<'de> Visitor<'de> for KeyVisitor {
     }
 
     fn visit_i8<E: de::Error>(self, v: i8) -> Result<KeyDeserialize, E> {
-        Ok(KeyDeserialize(Key::Signed(v as i128)))
+        Ok(KeyDeserialize(Key::I64(v as i64)))
     }
 
     fn visit_i16<E: de::Error>(self, v: i16) -> Result<KeyDeserialize, E> {
-        Ok(KeyDeserialize(Key::Signed(v as i128)))
+        Ok(KeyDeserialize(Key::I64(v as i64)))
     }
 
     fn visit_i32<E: de::Error>(self, v: i32) -> Result<KeyDeserialize, E> {
-        Ok(KeyDeserialize(Key::Signed(v as i128)))
+        Ok(KeyDeserialize(Key::I64(v as i64)))
     }
 
     fn visit_i64<E: de::Error>(self, v: i64) -> Result<KeyDeserialize, E> {
-        Ok(KeyDeserialize(Key::Signed(v as i128)))
+        Ok(KeyDeserialize(Key::I64(v)))
     }
 
     fn visit_i128<E: de::Error>(self, v: i128) -> Result<KeyDeserialize, E> {
-        Ok(KeyDeserialize(Key::Signed(v)))
+        Ok(KeyDeserialize(Key::from(v)))
     }
 
     fn visit_u8<E: de::Error>(self, v: u8) -> Result<KeyDeserialize, E> {
-        Ok(KeyDeserialize(Key::Unsigned(v as u128)))
+        Ok(KeyDeserialize(Key::U64(v as u64)))
     }
 
     fn visit_u16<E: de::Error>(self, v: u16) -> Result<KeyDeserialize, E> {
-        Ok(KeyDeserialize(Key::Unsigned(v as u128)))
+        Ok(KeyDeserialize(Key::U64(v as u64)))
     }
 
     fn visit_u32<E: de::Error>(self, v: u32) -> Result<KeyDeserialize, E> {
-        Ok(KeyDeserialize(Key::Unsigned(v as u128)))
+        Ok(KeyDeserialize(Key::U64(v as u64)))
     }
 
     fn visit_u64<E: de::Error>(self, v: u64) -> Result<KeyDeserialize, E> {
-        Ok(KeyDeserialize(Key::Unsigned(v as u128)))
+        Ok(KeyDeserialize(Key::U64(v)))
     }
 
     fn visit_u128<E: de::Error>(self, v: u128) -> Result<KeyDeserialize, E> {
-        Ok(KeyDeserialize(Key::Unsigned(v)))
+        Ok(KeyDeserialize(Key::from(v)))
     }
 }
 
@@ -806,32 +841,34 @@ impl Serialize for Key {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Key::String(s) => serializer.serialize_str(s),
-            Key::Signed(n) => {
-                if *n >= i8::MIN as i128 && *n <= i8::MAX as i128 {
-                    serializer.serialize_i8(*n as i8)
-                } else if *n >= i16::MIN as i128 && *n <= i16::MAX as i128 {
-                    serializer.serialize_i16(*n as i16)
-                } else if *n >= i32::MIN as i128 && *n <= i32::MAX as i128 {
-                    serializer.serialize_i32(*n as i32)
-                } else if *n >= i64::MIN as i128 && *n <= i64::MAX as i128 {
-                    serializer.serialize_i64(*n as i64)
+            Key::I64(n) => {
+                let n = *n;
+                if n >= i8::MIN as i64 && n <= i8::MAX as i64 {
+                    serializer.serialize_i8(n as i8)
+                } else if n >= i16::MIN as i64 && n <= i16::MAX as i64 {
+                    serializer.serialize_i16(n as i16)
+                } else if n >= i32::MIN as i64 && n <= i32::MAX as i64 {
+                    serializer.serialize_i32(n as i32)
                 } else {
-                    serializer.serialize_i128(*n)
+                    serializer.serialize_i64(n)
                 }
             }
-            Key::Unsigned(n) => {
-                if *n <= u8::MAX as u128 {
-                    serializer.serialize_u8(*n as u8)
-                } else if *n <= u16::MAX as u128 {
-                    serializer.serialize_u16(*n as u16)
-                } else if *n <= u32::MAX as u128 {
-                    serializer.serialize_u32(*n as u32)
-                } else if *n <= u64::MAX as u128 {
-                    serializer.serialize_u64(*n as u64)
+            Key::U64(n) => {
+                let n = *n;
+                if n <= u8::MAX as u64 {
+                    serializer.serialize_u8(n as u8)
+                } else if n <= u16::MAX as u64 {
+                    serializer.serialize_u16(n as u16)
+                } else if n <= u32::MAX as u64 {
+                    serializer.serialize_u32(n as u32)
                 } else {
-                    serializer.serialize_u128(*n)
+                    serializer.serialize_u64(n)
                 }
             }
+            Key::Big(big) => match big.as_ref() {
+                BigIntKey::I128(n) => serializer.serialize_i128(*n),
+                BigIntKey::U128(n) => serializer.serialize_u128(*n),
+            },
         }
     }
 }
@@ -1699,8 +1736,12 @@ impl<'de> MapAccess<'de> for ValueMapAccess {
                 self.pending_value = Some(value);
                 let key_value = match key {
                     Key::String(s) => Value::String(s),
-                    Key::Signed(i) => Value::from(i),
-                    Key::Unsigned(u) => Value::from(u),
+                    Key::I64(i) => Value::from(i),
+                    Key::U64(u) => Value::from(u),
+                    Key::Big(big) => match *big {
+                        BigIntKey::I128(i) => Value::from(i),
+                        BigIntKey::U128(u) => Value::from(u),
+                    },
                 };
                 seed.deserialize(key_value).map(Some)
             }
@@ -1769,8 +1810,12 @@ impl<'de> Deserializer<'de> for KeyAsDeserializer<'de> {
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self.0 {
             Key::String(s) => visitor.visit_borrowed_str(s),
-            Key::Signed(i) => visitor.visit_i128(*i),
-            Key::Unsigned(u) => visitor.visit_u128(*u),
+            Key::I64(i) => visitor.visit_i64(*i),
+            Key::U64(u) => visitor.visit_u64(*u),
+            Key::Big(big) => match big.as_ref() {
+                BigIntKey::I128(i) => visitor.visit_i128(*i),
+                BigIntKey::U128(u) => visitor.visit_u128(*u),
+            },
         }
     }
 

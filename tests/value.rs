@@ -430,7 +430,7 @@ fn test_number_methods() {
     assert_eq!(n.as_i64(), Some(100));
     assert_eq!(n.as_u64(), Some(100));
 
-    let n = Number::Float(3.14);
+    let n = Number::Float(2.5);
     assert!(n.is_float());
     assert_eq!(n.as_i64(), None); // Has fractional part
 
@@ -446,7 +446,7 @@ fn test_display() {
     assert_eq!(Value::Bool(true).to_string(), "true");
     assert_eq!(Value::Bool(false).to_string(), "false");
     assert_eq!(Value::Number(Number::Signed(42)).to_string(), "42");
-    assert_eq!(Value::Number(Number::Float(3.14)).to_string(), "3.14");
+    assert_eq!(Value::Number(Number::Float(2.5)).to_string(), "2.5");
     assert_eq!(Value::String("hello".to_string()).to_string(), "\"hello\"");
 
     let arr = Value::Array(vec![Value::Number(Number::Signed(1)), Value::Number(Number::Signed(2))]);
@@ -635,7 +635,7 @@ fn from_value_primitives() {
     assert_eq!(from_value::<bool>(Value::Bool(true)).unwrap(), true);
     assert_eq!(from_value::<i32>(Value::Number(Number::Signed(-42))).unwrap(), -42);
     assert_eq!(from_value::<u64>(Value::Number(Number::Unsigned(100))).unwrap(), 100);
-    assert_eq!(from_value::<f64>(Value::Number(Number::Float(3.14))).unwrap(), 3.14);
+    assert_eq!(from_value::<f64>(Value::Number(Number::Float(2.5))).unwrap(), 2.5);
     assert_eq!(from_value::<String>(Value::String("hello".to_string())).unwrap(), "hello");
 }
 

@@ -197,9 +197,10 @@ pub type Object = BTreeMap<Key, Value>;
 ///
 /// This enum can represent all BEVE types and enables dynamic/schemaless
 /// deserialization of BEVE data.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum Value {
     /// Represents a null value.
+    #[default]
     Null,
     /// Represents a boolean.
     Bool(bool),
@@ -335,12 +336,6 @@ impl Value {
     pub fn get_uint_key(&self, key: u128) -> Option<&Value> {
         self.as_object()
             .and_then(|obj| obj.get(&Key::Unsigned(key)))
-    }
-}
-
-impl Default for Value {
-    fn default() -> Self {
-        Value::Null
     }
 }
 
@@ -1061,7 +1056,7 @@ impl<'de> Deserializer<'de> for Value {
                     .into_iter()
                     .map(|v| match v {
                         Value::Number(Number::Unsigned(u)) if u <= 255 => Ok(u as u8),
-                        Value::Number(Number::Signed(i)) if i >= 0 && i <= 255 => Ok(i as u8),
+                        Value::Number(Number::Signed(i)) if (0..=255).contains(&i) => Ok(i as u8),
                         _ => Err(de::Error::custom("expected byte array")),
                     })
                     .collect();
@@ -1372,7 +1367,7 @@ impl<'de> Deserializer<'de> for &'de Value {
                     .iter()
                     .map(|v| match v {
                         Value::Number(Number::Unsigned(u)) if *u <= 255 => Ok(*u as u8),
-                        Value::Number(Number::Signed(i)) if *i >= 0 && *i <= 255 => Ok(*i as u8),
+                        Value::Number(Number::Signed(i)) if (0..=255).contains(i) => Ok(*i as u8),
                         _ => Err(de::Error::custom("expected byte array")),
                     })
                     .collect();
@@ -1841,9 +1836,9 @@ mod tests {
         assert_eq!(num.as_i64(), Some(100));
         assert_eq!(num.as_u64(), Some(100));
 
-        let num = Number::Float(3.14);
+        let num = Number::Float(2.5);
         assert_eq!(num.as_i64(), None); // Has fractional part
-        assert!((num.as_f64() - 3.14).abs() < f64::EPSILON);
+        assert!((num.as_f64() - 2.5).abs() < f64::EPSILON);
     }
 
     #[test]

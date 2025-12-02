@@ -49,6 +49,66 @@ assert_eq!(
 ```
 JSON arrays are always encoded as BEVE generic arrays (we do not attempt to detect homogeneous typed arrays), which avoids backtracking mid-stream. Non-finite floating-point literals (`NaN`, `Infinity`) are rejected because standard JSON cannot express them.
 
+## Dynamic Value Type
+When you need to deserialize BEVE data without knowing the schema at compile time, use `beve::Value`:
+```rust
+use beve::Value;
+
+fn dynamic_data() -> beve::Result<()> {
+    let bytes = beve::json_str_to_beve(r#"{"name":"test","count":42}"#)?;
+    let value: Value = beve::from_slice(&bytes)?;
+
+    // Access fields dynamically
+    assert_eq!(value["name"].as_str(), Some("test"));
+    assert_eq!(value["count"].as_i64(), Some(42));
+    Ok(())
+}
+```
+
+`Value` supports all BEVE types: `Null`, `Bool`, `Number`, `String`, `Array`, and `Object`. Numbers preserve their original representation (signed, unsigned, or float) at full precision (up to 128-bit integers).
+
+### Converting Value to Concrete Types
+Once you have a `Value`, convert it directly to a concrete type without re-encoding:
+```rust
+use serde::Deserialize;
+use beve::{Value, from_value};
+
+#[derive(Deserialize, Debug, PartialEq)]
+struct Config {
+    name: String,
+    count: i32,
+}
+
+fn parse_config(value: Value) -> beve::Result<Config> {
+    // Consumes the Value, avoiding clones where possible
+    from_value(value)
+}
+```
+
+Use `from_value_ref` when you need to keep the original `Value` around:
+```rust
+use beve::from_value_ref;
+
+fn inspect_then_parse(value: &Value) -> beve::Result<Config> {
+    println!("Parsing: {}", value);
+    from_value_ref(value)
+}
+```
+
+### Object Keys
+BEVE objects support string and integer keys. The `Key` enum handles both:
+```rust
+use beve::{Value, Key, Object};
+use std::collections::BTreeMap;
+
+fn build_object() -> Value {
+    let mut obj: Object = BTreeMap::new();
+    obj.insert(Key::String("name".into()), Value::String("example".into()));
+    obj.insert(Key::Unsigned(1), Value::Bool(true));
+    Value::Object(obj)
+}
+```
+
 ## Typed Array Fast Paths
 BEVE bakes in typed arrays for numeric, boolean, and string sequences. Skip serde overhead by calling the dedicated helpers:
 ```rust

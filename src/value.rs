@@ -579,7 +579,9 @@ impl<'de> Visitor<'de> for ValueVisitor {
     fn visit_bytes<E: de::Error>(self, v: &[u8]) -> Result<Value, E> {
         // Represent bytes as an array of unsigned integers
         Ok(Value::Array(
-            v.iter().map(|&b| Value::Number(Number::Unsigned(b as u128))).collect(),
+            v.iter()
+                .map(|&b| Value::Number(Number::Unsigned(b as u128)))
+                .collect(),
         ))
     }
 
@@ -902,7 +904,9 @@ impl<'de> Deserializer<'de> for Value {
             Value::String(s) => visitor.visit_string(s),
             Value::Array(arr) => {
                 let len = arr.len();
-                let mut seq = ValueSeqAccess { iter: arr.into_iter() };
+                let mut seq = ValueSeqAccess {
+                    iter: arr.into_iter(),
+                };
                 let result = visitor.visit_seq(&mut seq)?;
                 if seq.iter.len() != 0 {
                     return Err(de::Error::custom(format!(
@@ -1103,7 +1107,9 @@ impl<'de> Deserializer<'de> for Value {
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self {
             Value::Array(arr) => {
-                let mut seq = ValueSeqAccess { iter: arr.into_iter() };
+                let mut seq = ValueSeqAccess {
+                    iter: arr.into_iter(),
+                };
                 visitor.visit_seq(&mut seq)
             }
             _ => Err(de::Error::custom("expected array")),
@@ -1701,7 +1707,11 @@ impl<'de> de::VariantAccess<'de> for ValueVariantAccess {
         }
     }
 
-    fn tuple_variant<V: Visitor<'de>>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error> {
+    fn tuple_variant<V: Visitor<'de>>(
+        self,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
         match self {
             ValueVariantAccess::WithValue(v) => v.deserialize_seq(visitor),
             ValueVariantAccess::Unit => Err(de::Error::custom("expected tuple variant")),
@@ -1773,7 +1783,11 @@ impl<'de> de::VariantAccess<'de> for ValueVariantAccessRef<'de> {
         }
     }
 
-    fn tuple_variant<V: Visitor<'de>>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error> {
+    fn tuple_variant<V: Visitor<'de>>(
+        self,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
         match self {
             ValueVariantAccessRef::WithValue(v) => v.deserialize_seq(visitor),
             ValueVariantAccessRef::Unit => Err(de::Error::custom("expected tuple variant")),

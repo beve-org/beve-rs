@@ -137,8 +137,14 @@ fn roundtrip_mixed_array() {
 #[test]
 fn roundtrip_object_string_keys() {
     let mut obj = Object::new();
-    obj.insert(Key::String("name".to_string()), Value::String("Alice".to_string()));
-    obj.insert(Key::String("age".to_string()), Value::Number(Number::Unsigned(30)));
+    obj.insert(
+        Key::String("name".to_string()),
+        Value::String("Alice".to_string()),
+    );
+    obj.insert(
+        Key::String("age".to_string()),
+        Value::Number(Number::Unsigned(30)),
+    );
 
     let v = Value::Object(obj);
     let bytes = beve::to_vec(&v).unwrap();
@@ -147,7 +153,8 @@ fn roundtrip_object_string_keys() {
     let obj = back.as_object().unwrap();
     assert_eq!(obj.len(), 2);
     assert_eq!(
-        obj.get(&Key::String("name".to_string())).and_then(|v| v.as_str()),
+        obj.get(&Key::String("name".to_string()))
+            .and_then(|v| v.as_str()),
         Some("Alice")
     );
 }
@@ -155,8 +162,14 @@ fn roundtrip_object_string_keys() {
 #[test]
 fn roundtrip_nested_structure() {
     let mut inner = Object::new();
-    inner.insert(Key::String("x".to_string()), Value::Number(Number::Float(1.5)));
-    inner.insert(Key::String("y".to_string()), Value::Number(Number::Float(2.5)));
+    inner.insert(
+        Key::String("x".to_string()),
+        Value::Number(Number::Float(1.5)),
+    );
+    inner.insert(
+        Key::String("y".to_string()),
+        Value::Number(Number::Float(2.5)),
+    );
 
     let mut outer = Object::new();
     outer.insert(Key::String("point".to_string()), Value::Object(inner));
@@ -223,8 +236,14 @@ fn struct_to_value_to_struct() {
 fn value_to_struct() {
     // Construct a Value that matches Person struct
     let mut obj = Object::new();
-    obj.insert(Key::String("name".to_string()), Value::String("Alice".to_string()));
-    obj.insert(Key::String("age".to_string()), Value::Number(Number::Unsigned(30)));
+    obj.insert(
+        Key::String("name".to_string()),
+        Value::String("Alice".to_string()),
+    );
+    obj.insert(
+        Key::String("age".to_string()),
+        Value::Number(Number::Unsigned(30)),
+    );
     obj.insert(Key::String("active".to_string()), Value::Bool(true));
     let value = Value::Object(obj);
 
@@ -252,7 +271,10 @@ fn nested_struct_to_value_roundtrip() {
 
     // Verify structure
     assert!(value.is_object());
-    assert_eq!(value.get_key("label").and_then(|v| v.as_str()), Some("test"));
+    assert_eq!(
+        value.get_key("label").and_then(|v| v.as_str()),
+        Some("test")
+    );
     let values = value.get_key("values").and_then(|v| v.as_array()).unwrap();
     assert_eq!(values.len(), 5);
 
@@ -315,7 +337,6 @@ fn integer_keyed_map_to_value_roundtrip() {
 
 #[test]
 fn deserialize_struct_as_value() {
-
     let p = Point { x: 1.0, y: -2.0 };
     let bytes = beve::to_vec(&p).unwrap();
     let value: Value = beve::from_slice(&bytes).unwrap();
@@ -383,7 +404,10 @@ fn test_index_operators() {
     assert!(v[100].is_null()); // Out of bounds returns null
 
     let mut obj = Object::new();
-    obj.insert(Key::String("foo".to_string()), Value::String("bar".to_string()));
+    obj.insert(
+        Key::String("foo".to_string()),
+        Value::String("bar".to_string()),
+    );
     let v = Value::Object(obj);
 
     assert_eq!(v["foo"].as_str(), Some("bar"));
@@ -449,7 +473,10 @@ fn test_display() {
     assert_eq!(Value::Number(Number::Float(2.5)).to_string(), "2.5");
     assert_eq!(Value::String("hello".to_string()).to_string(), "\"hello\"");
 
-    let arr = Value::Array(vec![Value::Number(Number::Signed(1)), Value::Number(Number::Signed(2))]);
+    let arr = Value::Array(vec![
+        Value::Number(Number::Signed(1)),
+        Value::Number(Number::Signed(2)),
+    ]);
     assert_eq!(arr.to_string(), "[1, 2]");
 }
 
@@ -480,7 +507,10 @@ fn value_from_json_conversion() {
     assert!(value.is_object());
     assert_eq!(value.get_key("name").and_then(|v| v.as_str()), Some("test"));
     assert_eq!(value.get_key("count").and_then(|v| v.as_i64()), Some(5));
-    assert_eq!(value.get_key("active").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        value.get_key("active").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 
     let data = value.get_key("data").unwrap();
     assert!(data.is_array());
@@ -544,8 +574,14 @@ fn string_array_to_value() {
 fn from_value_struct() {
     // Construct Value directly, convert to struct without BEVE bytes
     let mut obj = Object::new();
-    obj.insert(Key::String("x".to_string()), Value::Number(Number::Float(1.5)));
-    obj.insert(Key::String("y".to_string()), Value::Number(Number::Float(-2.5)));
+    obj.insert(
+        Key::String("x".to_string()),
+        Value::Number(Number::Float(1.5)),
+    );
+    obj.insert(
+        Key::String("y".to_string()),
+        Value::Number(Number::Float(-2.5)),
+    );
     let value = Value::Object(obj);
 
     let point: Point = from_value(value).unwrap();
@@ -557,8 +593,14 @@ fn from_value_struct() {
 fn from_value_ref_struct() {
     // Use from_value_ref to keep the Value around
     let mut obj = Object::new();
-    obj.insert(Key::String("name".to_string()), Value::String("Bob".to_string()));
-    obj.insert(Key::String("age".to_string()), Value::Number(Number::Unsigned(25)));
+    obj.insert(
+        Key::String("name".to_string()),
+        Value::String("Bob".to_string()),
+    );
+    obj.insert(
+        Key::String("age".to_string()),
+        Value::Number(Number::Unsigned(25)),
+    );
     obj.insert(Key::String("active".to_string()), Value::Bool(false));
     let value = Value::Object(obj);
 
@@ -586,8 +628,14 @@ fn from_value_vec() {
 #[test]
 fn from_value_btreemap() {
     let mut obj = Object::new();
-    obj.insert(Key::String("a".to_string()), Value::Number(Number::Signed(1)));
-    obj.insert(Key::String("b".to_string()), Value::Number(Number::Signed(2)));
+    obj.insert(
+        Key::String("a".to_string()),
+        Value::Number(Number::Signed(1)),
+    );
+    obj.insert(
+        Key::String("b".to_string()),
+        Value::Number(Number::Signed(2)),
+    );
     let value = Value::Object(obj);
 
     let map: BTreeMap<String, i32> = from_value(value).unwrap();
@@ -598,7 +646,10 @@ fn from_value_btreemap() {
 #[test]
 fn from_value_nested_struct() {
     let mut obj = Object::new();
-    obj.insert(Key::String("label".to_string()), Value::String("test".to_string()));
+    obj.insert(
+        Key::String("label".to_string()),
+        Value::String("test".to_string()),
+    );
     obj.insert(
         Key::String("values".to_string()),
         Value::Array(vec![
@@ -607,7 +658,10 @@ fn from_value_nested_struct() {
             Value::Number(Number::Signed(3)),
         ]),
     );
-    obj.insert(Key::String("metadata".to_string()), Value::String("info".to_string()));
+    obj.insert(
+        Key::String("metadata".to_string()),
+        Value::String("info".to_string()),
+    );
     let value = Value::Object(obj);
 
     let container: Container = from_value(value).unwrap();
@@ -633,10 +687,22 @@ fn from_value_option_some() {
 #[test]
 fn from_value_primitives() {
     assert!(from_value::<bool>(Value::Bool(true)).unwrap());
-    assert_eq!(from_value::<i32>(Value::Number(Number::Signed(-42))).unwrap(), -42);
-    assert_eq!(from_value::<u64>(Value::Number(Number::Unsigned(100))).unwrap(), 100);
-    assert_eq!(from_value::<f64>(Value::Number(Number::Float(2.5))).unwrap(), 2.5);
-    assert_eq!(from_value::<String>(Value::String("hello".to_string())).unwrap(), "hello");
+    assert_eq!(
+        from_value::<i32>(Value::Number(Number::Signed(-42))).unwrap(),
+        -42
+    );
+    assert_eq!(
+        from_value::<u64>(Value::Number(Number::Unsigned(100))).unwrap(),
+        100
+    );
+    assert_eq!(
+        from_value::<f64>(Value::Number(Number::Float(2.5))).unwrap(),
+        2.5
+    );
+    assert_eq!(
+        from_value::<String>(Value::String("hello".to_string())).unwrap(),
+        "hello"
+    );
 }
 
 #[test]

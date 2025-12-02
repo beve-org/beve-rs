@@ -1,6 +1,6 @@
 #![deny(warnings)]
 
-use beve::{Key, Number, Object, Value};
+use beve::{from_value, from_value_ref, Key, Number, Object, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -536,4 +536,148 @@ fn string_array_to_value() {
     assert_eq!(arr.len(), 3);
     assert_eq!(arr[0].as_str(), Some("hello"));
     assert_eq!(arr[2].as_str(), Some("test"));
+}
+
+// ============ Direct from_value tests (no BEVE bytes) ============
+
+#[test]
+fn from_value_struct() {
+    // Construct Value directly, convert to struct without BEVE bytes
+    let mut obj = Object::new();
+    obj.insert(Key::String("x".to_string()), Value::Number(Number::Float(1.5)));
+    obj.insert(Key::String("y".to_string()), Value::Number(Number::Float(-2.5)));
+    let value = Value::Object(obj);
+
+    let point: Point = from_value(value).unwrap();
+    assert_eq!(point.x, 1.5);
+    assert_eq!(point.y, -2.5);
+}
+
+#[test]
+fn from_value_ref_struct() {
+    // Use from_value_ref to keep the Value around
+    let mut obj = Object::new();
+    obj.insert(Key::String("name".to_string()), Value::String("Bob".to_string()));
+    obj.insert(Key::String("age".to_string()), Value::Number(Number::Unsigned(25)));
+    obj.insert(Key::String("active".to_string()), Value::Bool(false));
+    let value = Value::Object(obj);
+
+    let person: Person = from_value_ref(&value).unwrap();
+    assert_eq!(person.name, "Bob");
+    assert_eq!(person.age, 25);
+    assert!(!person.active);
+
+    // Value is still available
+    assert!(value.is_object());
+}
+
+#[test]
+fn from_value_vec() {
+    let value = Value::Array(vec![
+        Value::Number(Number::Signed(10)),
+        Value::Number(Number::Signed(20)),
+        Value::Number(Number::Signed(30)),
+    ]);
+
+    let vec: Vec<i32> = from_value(value).unwrap();
+    assert_eq!(vec, vec![10, 20, 30]);
+}
+
+#[test]
+fn from_value_btreemap() {
+    let mut obj = Object::new();
+    obj.insert(Key::String("a".to_string()), Value::Number(Number::Signed(1)));
+    obj.insert(Key::String("b".to_string()), Value::Number(Number::Signed(2)));
+    let value = Value::Object(obj);
+
+    let map: BTreeMap<String, i32> = from_value(value).unwrap();
+    assert_eq!(map.get("a"), Some(&1));
+    assert_eq!(map.get("b"), Some(&2));
+}
+
+#[test]
+fn from_value_nested_struct() {
+    let mut obj = Object::new();
+    obj.insert(Key::String("label".to_string()), Value::String("test".to_string()));
+    obj.insert(
+        Key::String("values".to_string()),
+        Value::Array(vec![
+            Value::Number(Number::Signed(1)),
+            Value::Number(Number::Signed(2)),
+            Value::Number(Number::Signed(3)),
+        ]),
+    );
+    obj.insert(Key::String("metadata".to_string()), Value::String("info".to_string()));
+    let value = Value::Object(obj);
+
+    let container: Container = from_value(value).unwrap();
+    assert_eq!(container.label, "test");
+    assert_eq!(container.values, vec![1, 2, 3]);
+    assert_eq!(container.metadata, Some("info".to_string()));
+}
+
+#[test]
+fn from_value_option_none() {
+    let value = Value::Null;
+    let opt: Option<i32> = from_value(value).unwrap();
+    assert_eq!(opt, None);
+}
+
+#[test]
+fn from_value_option_some() {
+    let value = Value::Number(Number::Signed(42));
+    let opt: Option<i32> = from_value(value).unwrap();
+    assert_eq!(opt, Some(42));
+}
+
+#[test]
+fn from_value_primitives() {
+    assert_eq!(from_value::<bool>(Value::Bool(true)).unwrap(), true);
+    assert_eq!(from_value::<i32>(Value::Number(Number::Signed(-42))).unwrap(), -42);
+    assert_eq!(from_value::<u64>(Value::Number(Number::Unsigned(100))).unwrap(), 100);
+    assert_eq!(from_value::<f64>(Value::Number(Number::Float(3.14))).unwrap(), 3.14);
+    assert_eq!(from_value::<String>(Value::String("hello".to_string())).unwrap(), "hello");
+}
+
+#[test]
+fn from_value_enum() {
+    #[derive(Deserialize, Debug, PartialEq)]
+    enum Status {
+        Active,
+        Inactive,
+    }
+
+    // Unit variant
+    let value = Value::String("Active".to_string());
+    let status: Status = from_value(value).unwrap();
+    assert_eq!(status, Status::Active);
+}
+
+#[test]
+fn from_value_tuple() {
+    let value = Value::Array(vec![
+        Value::Number(Number::Signed(1)),
+        Value::String("hello".to_string()),
+        Value::Bool(true),
+    ]);
+
+    let tuple: (i32, String, bool) = from_value(value).unwrap();
+    assert_eq!(tuple, (1, "hello".to_string(), true));
+}
+
+#[test]
+fn from_value_full_roundtrip() {
+    // Struct -> BEVE bytes -> Value -> Struct (via from_value, no re-serialization)
+    let original = Person {
+        name: "Alice".to_string(),
+        age: 30,
+        active: true,
+    };
+
+    let bytes = beve::to_vec(&original).unwrap();
+    let value: Value = beve::from_slice(&bytes).unwrap();
+
+    // Now convert directly without going back through bytes
+    let recovered: Person = from_value(value).unwrap();
+    assert_eq!(original, recovered);
 }

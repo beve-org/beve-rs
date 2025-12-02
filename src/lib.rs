@@ -46,7 +46,7 @@ pub use crate::json::{
     beve_slice_to_json, beve_slice_to_json_string, json_slice_to_beve, json_str_to_beve,
 };
 pub use crate::ser::{to_vec, to_vec_with_options, EnumEncoding, Serializer, SerializerOptions};
-pub use crate::value::{Key, Number, Object, Value};
+pub use crate::value::{from_value, from_value_ref, Key, Number, Object, Value, ValueError};
 
 /// BEVE-specific utilities and helper types.
 pub mod util {

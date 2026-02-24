@@ -8,6 +8,7 @@
 //! - Typed arrays for numeric, boolean, and string sequences when possible
 //! - Object keys as strings or integer types
 //! - Enum support via BEVE type-tag extension
+//! - Validation helpers for checking BEVE payload integrity without deserialization
 //!
 //! Example
 //!
@@ -22,6 +23,16 @@
 //! let p2: Point = beve::from_slice(&bytes).unwrap();
 //! assert_eq!(p, p2);
 //! ```
+//!
+//! Validate a payload without decoding it into a concrete Rust type:
+//!
+//! ```rust
+//! use std::io::Cursor;
+//!
+//! let bytes = beve::to_vec(&vec![1u32, 2, 3]).unwrap();
+//! beve::validate_slice(&bytes).unwrap();
+//! beve::validate_reader(Cursor::new(bytes)).unwrap();
+//! ```
 
 mod de;
 mod error;
@@ -33,7 +44,7 @@ mod ser;
 mod size;
 mod value;
 
-pub use crate::de::{from_slice, Deserializer};
+pub use crate::de::{from_slice, validate_slice, Deserializer};
 pub use crate::error::{Error, Result};
 pub use crate::ext::{Complex, ComplexSlice};
 pub use crate::ext::{Matrix, MatrixLayout};
@@ -84,4 +95,25 @@ pub fn from_reader<R: Read, T: serde::de::DeserializeOwned>(mut reader: R) -> Re
         .read_to_end(&mut buf)
         .map_err(|e| Error::MessageOwned(e.to_string()))?;
     from_slice(&buf)
+}
+
+/// Validate BEVE data from any reader without deserializing into a concrete type.
+///
+/// This enforces the same semantics as [`validate_slice`]: exactly one valid BEVE
+/// value and no trailing bytes.
+///
+/// # Example
+///
+/// ```rust
+/// use std::io::Cursor;
+///
+/// let bytes = beve::to_vec(&123u32).unwrap();
+/// beve::validate_reader(Cursor::new(bytes)).unwrap();
+/// ```
+pub fn validate_reader<R: Read>(mut reader: R) -> Result<()> {
+    let mut buf = Vec::new();
+    reader
+        .read_to_end(&mut buf)
+        .map_err(|e| Error::MessageOwned(e.to_string()))?;
+    validate_slice(&buf)
 }

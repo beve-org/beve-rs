@@ -136,6 +136,29 @@ pub fn from_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     Ok(t)
 }
 
+/// Validate that `bytes` contains exactly one well-formed BEVE value.
+///
+/// This performs structural validation only and does not materialize a target type.
+/// The full input must be consumed by a single value; trailing bytes are rejected.
+///
+/// # Example
+///
+/// ```rust
+/// let bytes = beve::to_vec(&vec![1u32, 2, 3]).unwrap();
+/// beve::validate_slice(&bytes).unwrap();
+/// ```
+pub fn validate_slice(bytes: &[u8]) -> Result<()> {
+    let mut de = Deserializer {
+        input: bytes,
+        pos: 0,
+    };
+    let _ = <de::IgnoredAny as serde::Deserialize>::deserialize(&mut de)?;
+    if de.pos != de.input.len() {
+        return Err(Error::InvalidType("unexpected trailing BEVE data"));
+    }
+    Ok(())
+}
+
 impl<'de> Deserializer<'de> {
     #[inline]
     fn remaining(&self) -> usize {

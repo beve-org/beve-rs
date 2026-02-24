@@ -221,3 +221,30 @@ fn beve_complex_integer_extensions_to_json() {
     let json = beve::beve_slice_to_json_string(&unsigned).unwrap();
     assert_eq!(json, "[[1,2],[3,4]]");
 }
+
+#[test]
+fn validate_slice_accepts_valid_beve() {
+    let bytes = beve::to_vec(&MyEnum::Struct { a: -7, b: 8 }).unwrap();
+    beve::validate_slice(&bytes).unwrap();
+}
+
+#[test]
+fn validate_slice_rejects_truncated_beve() {
+    let mut bytes = beve::to_vec(&Point { x: 1.0, y: -2.0 }).unwrap();
+    bytes.pop();
+    assert!(beve::validate_slice(&bytes).is_err());
+}
+
+#[test]
+fn validate_slice_rejects_trailing_data() {
+    let mut bytes = beve::to_vec(&123u32).unwrap();
+    bytes.push(0);
+    assert!(beve::validate_slice(&bytes).is_err());
+}
+
+#[test]
+fn validate_reader_accepts_valid_beve() {
+    let bytes = beve::to_vec(&vec![1u32, 2, 3, 4]).unwrap();
+    let cursor = std::io::Cursor::new(bytes);
+    beve::validate_reader(cursor).unwrap();
+}

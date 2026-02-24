@@ -35,6 +35,21 @@ fn write_point(p: &Point) -> beve::Result<()> {
 }
 ```
 
+## Validate Without Deserializing
+Use `validate_slice` or `validate_reader` when you only need to check that input is valid BEVE, without parsing into a Rust type.
+
+Validation is strict: the payload must contain exactly one well-formed BEVE value with no trailing bytes.
+
+```rust
+use std::io::Cursor;
+
+fn validate_payload(bytes: &[u8]) -> beve::Result<()> {
+    beve::validate_slice(bytes)?;
+    beve::validate_reader(Cursor::new(bytes))?;
+    Ok(())
+}
+```
+
 ## JSON Interoperability
 Convert between JSON payloads and BEVE without allocating an intermediate `serde_json::Value`. These helpers stream bytes on both sides, so large documents never build an in-memory tree and typed arrays stay in their native BEVE representation.
 ```rust

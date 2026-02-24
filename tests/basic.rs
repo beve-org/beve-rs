@@ -248,3 +248,50 @@ fn validate_reader_accepts_valid_beve() {
     let cursor = std::io::Cursor::new(bytes);
     beve::validate_reader(cursor).unwrap();
 }
+
+#[test]
+fn validate_slice_rejects_empty_input() {
+    assert!(beve::validate_slice(&[]).is_err());
+}
+
+#[test]
+fn validate_slice_rejects_concatenated_values() {
+    let mut bytes = beve::to_vec(&1u8).unwrap();
+    bytes.extend_from_slice(&beve::to_vec(&2u8).unwrap());
+    assert!(beve::validate_slice(&bytes).is_err());
+}
+
+#[test]
+fn validate_reader_rejects_truncated_beve() {
+    let mut bytes = beve::to_vec(&Point { x: 1.0, y: -2.0 }).unwrap();
+    bytes.pop();
+    let cursor = std::io::Cursor::new(bytes);
+    assert!(beve::validate_reader(cursor).is_err());
+}
+
+#[test]
+fn validate_reader_rejects_trailing_data() {
+    let mut bytes = beve::to_vec(&123u32).unwrap();
+    bytes.push(0);
+    let cursor = std::io::Cursor::new(bytes);
+    assert!(beve::validate_reader(cursor).is_err());
+}
+
+#[test]
+fn validate_slice_accepts_complex_extension() {
+    let bytes = beve::to_vec_complex64_slice(&[
+        beve::Complex { re: 1.0, im: 2.0 },
+        beve::Complex { re: -3.0, im: 4.5 },
+    ]);
+    beve::validate_slice(&bytes).unwrap();
+}
+
+#[test]
+fn validate_slice_accepts_matrix_extension() {
+    let bytes = beve::fast::to_vec_matrix_f64(
+        beve::fast::MatrixLayoutFast::Right,
+        &[2, 3],
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+    );
+    beve::validate_slice(&bytes).unwrap();
+}

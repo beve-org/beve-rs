@@ -168,7 +168,176 @@ impl ser::Serializer for U16Extractor {
     }
 }
 
+// Helper serializer used to extract raw byte payloads from newtype wrappers.
+struct BytesExtractor;
+
+impl ser::Serializer for BytesExtractor {
+    type Ok = Vec<u8>;
+    type Error = Error;
+
+    type SerializeSeq = ser::Impossible<Vec<u8>, Error>;
+    type SerializeTuple = ser::Impossible<Vec<u8>, Error>;
+    type SerializeTupleStruct = ser::Impossible<Vec<u8>, Error>;
+    type SerializeTupleVariant = ser::Impossible<Vec<u8>, Error>;
+    type SerializeMap = ser::Impossible<Vec<u8>, Error>;
+    type SerializeStruct = ser::Impossible<Vec<u8>, Error>;
+    type SerializeStructVariant = ser::Impossible<Vec<u8>, Error>;
+
+    #[inline]
+    fn serialize_bytes(self, v: &[u8]) -> Result<Vec<u8>> {
+        Ok(v.to_vec())
+    }
+
+    #[inline]
+    fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<Vec<u8>> {
+        value.serialize(self)
+    }
+
+    #[inline]
+    fn serialize_newtype_struct<T: ?Sized + Serialize>(
+        self,
+        _name: &'static str,
+        value: &T,
+    ) -> Result<Vec<u8>> {
+        value.serialize(self)
+    }
+
+    #[inline]
+    fn serialize_none(self) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+
+    #[inline]
+    fn serialize_unit(self) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+
+    #[inline]
+    fn serialize_bool(self, _v: bool) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_i8(self, _v: i8) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_i16(self, _v: i16) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_i32(self, _v: i32) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_i64(self, _v: i64) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_i128(self, _v: i128) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_u8(self, _v: u8) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_u16(self, _v: u16) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_u32(self, _v: u32) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_u64(self, _v: u64) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_u128(self, _v: u128) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_f32(self, _v: f32) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_f64(self, _v: f64) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_char(self, _v: char) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    #[inline]
+    fn serialize_str(self, _v: &str) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<Vec<u8>> {
+        self.serialize_unit()
+    }
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+    ) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    fn serialize_newtype_variant<T: ?Sized + Serialize>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _value: &T,
+    ) -> Result<Vec<u8>> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleStruct> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleVariant> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant> {
+        Err(Error::Mismatch("expected byte payload"))
+    }
+
+    fn is_human_readable(&self) -> bool {
+        false
+    }
+}
+
 use crate::error::{Error, Result};
+use crate::ext::{NT_COMPLEX32, NT_COMPLEX64, NT_RAW_VALUE};
 use crate::header::*;
 use crate::size::{encode_size_to_array, read_size, write_size};
 
@@ -230,6 +399,20 @@ impl Serializer {
     }
     pub fn into_vec(self) -> Vec<u8> {
         self.buf
+    }
+
+    pub fn clear(&mut self) {
+        self.buf.clear();
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.buf
+    }
+
+    pub fn serialize_to_buffer<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<&[u8]> {
+        self.clear();
+        value.serialize(&mut *self)?;
+        Ok(&self.buf)
     }
 
     #[inline]
@@ -385,6 +568,27 @@ impl Serializer {
         self.push(header);
         write_size(len as u64, &mut self.buf);
     }
+
+    #[inline]
+    fn complex_header(byte_code: u8, is_array: bool) -> u8 {
+        ((byte_code & 0b111) << 5) | ((NUM_FLOAT & 0b11) << 3) | if is_array { 1 } else { 0 }
+    }
+
+    fn write_complex_single_payload(&mut self, byte_code: u8, payload: &[u8]) -> Result<()> {
+        let elem_bytes = (1usize << byte_code) * 2;
+        if payload.len() != elem_bytes {
+            return Err(Error::Mismatch("invalid complex payload size"));
+        }
+        self.push(make_extension_header(EXT_COMPLEX));
+        self.push(Self::complex_header(byte_code, false));
+        self.extend_from_slice(payload);
+        Ok(())
+    }
+
+    #[inline]
+    fn write_raw_value(&mut self, raw: &[u8]) {
+        self.extend_from_slice(raw);
+    }
 }
 
 pub fn to_vec<T: Serialize>(value: &T) -> Result<Vec<u8>> {
@@ -397,6 +601,25 @@ pub fn to_vec_with_options<T: Serialize>(value: &T, opts: SerializerOptions) -> 
     let mut ser = Serializer::with_options(opts);
     value.serialize(&mut ser)?;
     Ok(ser.into_vec())
+}
+
+pub fn to_vec_into<T: ?Sized + Serialize>(out: &mut Vec<u8>, value: &T) -> Result<()> {
+    to_vec_into_with_options(out, value, SerializerOptions::default())
+}
+
+pub fn to_vec_into_with_options<T: ?Sized + Serialize>(
+    out: &mut Vec<u8>,
+    value: &T,
+    opts: SerializerOptions,
+) -> Result<()> {
+    let mut ser = Serializer {
+        buf: core::mem::take(out),
+        opts,
+    };
+    ser.clear();
+    let result = value.serialize(&mut ser);
+    *out = ser.into_vec();
+    result
 }
 
 impl<'a> ser::Serializer for &'a mut Serializer {
@@ -590,6 +813,19 @@ impl<'a> ser::Serializer for &'a mut Serializer {
                 self.write_float16_bits(bits);
                 Ok(())
             }
+            NT_COMPLEX32 => {
+                let payload = value.serialize(BytesExtractor)?;
+                self.write_complex_single_payload(2, &payload)
+            }
+            NT_COMPLEX64 => {
+                let payload = value.serialize(BytesExtractor)?;
+                self.write_complex_single_payload(3, &payload)
+            }
+            NT_RAW_VALUE => {
+                let raw = value.serialize(BytesExtractor)?;
+                self.write_raw_value(&raw);
+                Ok(())
+            }
             _ => value.serialize(self),
         }
     }
@@ -630,6 +866,11 @@ enum SeqMode {
         start_pos: usize,
     },
     TypedString {
+        patch: Option<SizePatch>,
+        start_pos: usize,
+    },
+    TypedComplex {
+        byte_code: u8,
         patch: Option<SizePatch>,
         start_pos: usize,
     },
@@ -732,6 +973,7 @@ impl<'a> SeqSerializer<'a> {
             SeqMode::TypedSigned { .. } => self.convert_typed_signed_to_generic(),
             SeqMode::TypedFloat { .. } => self.convert_typed_float_to_generic(),
             SeqMode::TypedString { .. } => self.convert_typed_string_to_generic(),
+            SeqMode::TypedComplex { .. } => self.convert_typed_complex_to_generic(),
         }
     }
 
@@ -955,6 +1197,44 @@ impl<'a> SeqSerializer<'a> {
         }
         Ok(())
     }
+
+    fn convert_typed_complex_to_generic(&mut self) -> Result<()> {
+        let (byte_code, patch, start_pos) = match self.mode {
+            SeqMode::TypedComplex {
+                byte_code,
+                patch,
+                start_pos,
+            } => (byte_code, patch, start_pos),
+            _ => return Ok(()),
+        };
+        let elem_bytes = (1usize << byte_code) * 2;
+        let header_len = if patch.is_some() {
+            2 + 8
+        } else {
+            let len = self
+                .len
+                .expect("typed complex array without patch must have known length");
+            let mut tmp = [0u8; 8];
+            let used = encode_size_to_array(len as u64, &mut tmp);
+            2 + used
+        };
+        let data_start = start_pos + header_len;
+        let total_bytes = elem_bytes
+            .checked_mul(self.count)
+            .ok_or(Error::InvalidSize)?;
+        let data = self.ser.buf[data_start..data_start + total_bytes].to_vec();
+        self.ser.buf.truncate(start_pos);
+        self.mode = SeqMode::Unknown;
+        self.count = 0;
+        self.start_generic_if_needed();
+        for chunk in data.chunks(elem_bytes) {
+            self.ser.push(make_extension_header(EXT_COMPLEX));
+            self.ser.push(Serializer::complex_header(byte_code, false));
+            self.ser.extend_from_slice(chunk);
+            self.count += 1;
+        }
+        Ok(())
+    }
 }
 
 struct SeqElemSer<'a, 'b> {
@@ -1124,6 +1404,21 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
                 let bits = value.serialize(U16Extractor)?;
                 let bytes = bits.to_le_bytes();
                 self.serialize_float_by(bytes.as_slice(), 1)
+            }
+            NT_COMPLEX32 => {
+                let payload = value.serialize(BytesExtractor)?;
+                self.serialize_complex_payload(2, &payload)
+            }
+            NT_COMPLEX64 => {
+                let payload = value.serialize(BytesExtractor)?;
+                self.serialize_complex_payload(3, &payload)
+            }
+            NT_RAW_VALUE => {
+                let raw = value.serialize(BytesExtractor)?;
+                self.seq.ensure_generic_mode()?;
+                self.seq.ser.write_raw_value(&raw);
+                self.seq.count += 1;
+                Ok(())
             }
             _ => value.serialize(self),
         }
@@ -1364,6 +1659,57 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
         self.seq.count += 1;
         Ok(())
     }
+
+    fn serialize_complex_payload(&mut self, byte_code: u8, payload: &[u8]) -> Result<()> {
+        let elem_bytes = (1usize << byte_code) * 2;
+        if payload.len() != elem_bytes {
+            return Err(Error::Mismatch("invalid complex payload size"));
+        }
+
+        match self.seq.mode {
+            SeqMode::Unknown => match self.seq.len {
+                Some(n) => {
+                    let start_pos = self.seq.ser.buf.len();
+                    self.seq.ser.push(make_extension_header(EXT_COMPLEX));
+                    self.seq
+                        .ser
+                        .push(Serializer::complex_header(byte_code, true));
+                    write_size(n as u64, &mut self.seq.ser.buf);
+                    self.seq.mode = SeqMode::TypedComplex {
+                        byte_code,
+                        patch: None,
+                        start_pos,
+                    };
+                }
+                None => {
+                    let start_pos = self.seq.ser.buf.len();
+                    self.seq.ser.push(make_extension_header(EXT_COMPLEX));
+                    self.seq
+                        .ser
+                        .push(Serializer::complex_header(byte_code, true));
+                    let p = self.seq.ser.reserve_size_patch();
+                    self.seq.mode = SeqMode::TypedComplex {
+                        byte_code,
+                        patch: Some(p),
+                        start_pos,
+                    };
+                }
+            },
+            SeqMode::TypedComplex { byte_code: bc, .. } if bc == byte_code => {}
+            _ => {
+                self.seq.ensure_generic_mode()?;
+                self.seq
+                    .ser
+                    .write_complex_single_payload(byte_code, payload)?;
+                self.seq.count += 1;
+                return Ok(());
+            }
+        }
+
+        self.seq.ser.extend_from_slice(payload);
+        self.seq.count += 1;
+        Ok(())
+    }
 }
 
 impl<'a> ser::SerializeSeq for SeqSerializer<'a> {
@@ -1422,6 +1768,9 @@ impl<'a> ser::SerializeSeq for SeqSerializer<'a> {
                     self.ser.finalize_size_patch(p, self.count)
                 }
                 SeqMode::TypedString { patch: Some(p), .. } => {
+                    self.ser.finalize_size_patch(p, self.count)
+                }
+                SeqMode::TypedComplex { patch: Some(p), .. } => {
                     self.ser.finalize_size_patch(p, self.count)
                 }
                 _ => {}

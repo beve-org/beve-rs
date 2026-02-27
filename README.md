@@ -35,6 +35,12 @@ fn write_point(p: &Point) -> beve::Result<()> {
 }
 ```
 
+For hot paths that reuse a `Vec<u8>`, encode directly into an existing buffer:
+```rust
+let mut buf = Vec::with_capacity(4096);
+beve::to_vec_into(&mut buf, &Point { x: 1.0, y: 2.0 })?;
+```
+
 ## Validate Without Deserializing
 Use `validate_slice` or `validate_reader` when you only need to check that input is valid BEVE, without parsing into a Rust type.
 
@@ -201,7 +207,7 @@ fn encode_science() -> beve::Result<()> {
     Ok(())
 }
 ```
-Matrices serialize as `{ layout, extents, value }` maps for easy consumption by other languages.
+`Matrix` and `MatrixOwned<T>` use the BEVE matrix extension for supported element types (`bool`, numeric scalars, and `Complex<f32/f64>`). For unsupported element types, serialization falls back to a `{ layout, extents, value }` map.
 
 ## Examples
 - `cargo run --example emit_bool` writes a short boolean stream to stdout so you can inspect the raw bytes.

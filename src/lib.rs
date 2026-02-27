@@ -46,8 +46,10 @@ mod value;
 
 pub use crate::de::{from_slice, validate_slice, Deserializer};
 pub use crate::error::{Error, Result};
-pub use crate::ext::{Complex, ComplexSlice};
-pub use crate::ext::{Matrix, MatrixLayout};
+pub use crate::ext::{
+    decode_matrix_slice, Complex, ComplexSlice, DecodedMatrix, Matrix, MatrixDecodeMode,
+    MatrixLayout, MatrixOwned, RawMatrix,
+};
 pub use crate::fast::{
     to_vec_bool_slice, to_vec_complex32, to_vec_complex32_slice, to_vec_complex64,
     to_vec_complex64_slice, to_vec_str_slice, to_vec_string_slice, to_vec_typed_slice,
@@ -56,7 +58,10 @@ pub use crate::fast::{
 pub use crate::json::{
     beve_slice_to_json, beve_slice_to_json_string, json_slice_to_beve, json_str_to_beve,
 };
-pub use crate::ser::{to_vec, to_vec_with_options, EnumEncoding, Serializer, SerializerOptions};
+pub use crate::ser::{
+    to_vec, to_vec_into, to_vec_into_with_options, to_vec_with_options, EnumEncoding, Serializer,
+    SerializerOptions,
+};
 pub use crate::value::{
     from_value, from_value_ref, BigInt, BigIntKey, Key, Number, Object, Value, ValueError,
 };

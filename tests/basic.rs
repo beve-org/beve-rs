@@ -110,6 +110,50 @@ fn roundtrip_map_keys() {
     assert_eq!(m, back);
 }
 
+#[test]
+fn roundtrip_empty_hashmap() {
+    use std::collections::HashMap;
+
+    let m: HashMap<String, i32> = HashMap::new();
+    let bytes = beve::to_vec(&m).unwrap();
+    let back: HashMap<String, i32> = beve::from_slice(&bytes).unwrap();
+    assert_eq!(m, back);
+
+    let m: HashMap<u64, u64> = HashMap::new();
+    let bytes = beve::to_vec(&m).unwrap();
+    let back: HashMap<u64, u64> = beve::from_slice(&bytes).unwrap();
+    assert_eq!(m, back);
+}
+
+#[test]
+fn roundtrip_hashmap_in_struct() {
+    use std::collections::HashMap;
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Wrapper {
+        name: String,
+        rates: HashMap<u64, u64>,
+        flags: HashMap<String, bool>,
+    }
+
+    let w = Wrapper {
+        name: "test".into(),
+        rates: [(1, 100), (2, 200)].into_iter().collect(),
+        flags: [("a".into(), true), ("b".into(), false)].into_iter().collect(),
+    };
+    let bytes = beve::to_vec(&w).unwrap();
+    let back: Wrapper = beve::from_slice(&bytes).unwrap();
+    assert_eq!(w, back);
+
+    let w = Wrapper {
+        name: "test".into(),
+        rates: HashMap::new(),
+        flags: HashMap::new(),
+    };
+    let bytes = beve::to_vec(&w).unwrap();
+    let back: Wrapper = beve::from_slice(&bytes).unwrap();
+    assert_eq!(w, back);
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 enum MyEnum {
     Unit,

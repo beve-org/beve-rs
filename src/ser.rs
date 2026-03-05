@@ -2296,16 +2296,16 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
     }
 
     fn end(mut self) -> Result<()> {
-        if self.len.is_none() {
-            if let Some(p) = self.patch.take() {
-                self.ser.finalize_size_patch(p, self.count);
-            } else {
-                // empty map, default to string-keyed object
-                self.ser.push(TYPE_OBJECT | (KEY_STRING << 3));
-                let mut tmp = [0u8; 8];
-                let used = encode_size_to_array(0, &mut tmp);
-                self.ser.extend_from_slice(&tmp[..used]);
-            }
+        if let Some(p) = self.patch.take() {
+            // Unknown-length map that had at least one key: finalize the size patch.
+            self.ser.finalize_size_patch(p, self.count);
+        } else if matches!(self.mode, KeyMode::Unknown) {
+            // No keys were ever serialized (empty map): emit a default
+            // string-keyed object header with count 0.
+            self.ser.push(TYPE_OBJECT | (KEY_STRING << 3));
+            let mut tmp = [0u8; 8];
+            let used = encode_size_to_array(0, &mut tmp);
+            self.ser.extend_from_slice(&tmp[..used]);
         }
         Ok(())
     }

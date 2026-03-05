@@ -138,7 +138,9 @@ fn roundtrip_hashmap_in_struct() {
     let w = Wrapper {
         name: "test".into(),
         rates: [(1, 100), (2, 200)].into_iter().collect(),
-        flags: [("a".into(), true), ("b".into(), false)].into_iter().collect(),
+        flags: [("a".into(), true), ("b".into(), false)]
+            .into_iter()
+            .collect(),
     };
     let bytes = beve::to_vec(&w).unwrap();
     let back: Wrapper = beve::from_slice(&bytes).unwrap();

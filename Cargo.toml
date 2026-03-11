@@ -11,6 +11,7 @@ readme = "README.md"
 [features]
 default = []
 mat = ["dep:hdf5_metno", "dep:ndarray"]
+mat-oracle = ["mat", "dep:matio-rs"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -18,12 +19,16 @@ half = { version = "2.4", features = ["serde"] }
 simdutf8 = "0.1"
 hdf5_metno = { package = "hdf5-metno", version = "0.12.3", optional = true }
 ndarray = { version = "0.17", optional = true }
+matio-rs = { version = "1.6.2", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 criterion = "0.5"
 proptest = "1.4"
+
+[build-dependencies]
+pkg-config = "0.3"
 
 [[bench]]
 name = "serialization"

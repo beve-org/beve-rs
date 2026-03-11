@@ -8,7 +8,7 @@ use beve::{
     InvalidNamePolicy, Key, MatV73Options, NullPolicy, Object, RootBinding, UnsupportedPolicy,
     Value,
 };
-use hdf5::types::VarLenAscii;
+use hdf5::types::{FixedAscii, VarLenArray};
 use hdf5::{ObjectReference1, ReferencedObject};
 use hdf5_metno as hdf5;
 
@@ -21,12 +21,50 @@ fn temp_path(test_name: &str) -> PathBuf {
 }
 
 fn read_matlab_class(loc: &hdf5::Location, name: &str) -> String {
-    loc.attr(name)
-        .unwrap()
-        .read_scalar::<VarLenAscii>()
-        .unwrap()
-        .as_str()
-        .to_owned()
+    let attr = loc.attr(name).unwrap();
+    match attr.dtype().unwrap().size() {
+        1 => attr
+            .read_scalar::<FixedAscii<1>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        2 => attr
+            .read_scalar::<FixedAscii<2>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        3 => attr
+            .read_scalar::<FixedAscii<3>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        4 => attr
+            .read_scalar::<FixedAscii<4>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        5 => attr
+            .read_scalar::<FixedAscii<5>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        6 => attr
+            .read_scalar::<FixedAscii<6>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        7 => attr
+            .read_scalar::<FixedAscii<7>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        8 => attr
+            .read_scalar::<FixedAscii<8>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        len => panic!("unsupported MATLAB_class width: {len}"),
+    }
 }
 
 #[test]
@@ -54,7 +92,7 @@ fn mat_v73_scalar_string_and_userblock() {
     assert_eq!(
         ds.attr("MATLAB_int_decode")
             .unwrap()
-            .read_scalar::<u8>()
+            .read_scalar::<i32>()
             .unwrap(),
         2
     );
@@ -85,7 +123,7 @@ fn mat_v73_logical_array() {
     assert_eq!(
         ds.attr("MATLAB_int_decode")
             .unwrap()
-            .read_scalar::<u8>()
+            .read_scalar::<i32>()
             .unwrap(),
         1
     );
@@ -155,7 +193,7 @@ fn mat_v73_null_defaults_to_empty_struct_array() {
     assert_eq!(
         ds.attr("MATLAB_empty")
             .unwrap()
-            .read_scalar::<u8>()
+            .read_scalar::<u32>()
             .unwrap(),
         1
     );
@@ -212,6 +250,41 @@ fn mat_v73_workspace_object_sanitizes_names() {
     let ds = file.dataset("x1_bad").unwrap();
     assert_eq!(read_matlab_class(&ds, "MATLAB_class"), "uint8");
     assert_eq!(ds.read_raw::<u8>().unwrap(), vec![7]);
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn mat_v73_struct_groups_include_fields_metadata() {
+    let path = temp_path("struct");
+    let value = Object::from_iter([
+        (Key::from("answer"), Value::from(7u32)),
+        (Key::from("label"), Value::from("ready")),
+    ]);
+    let bytes = beve::to_vec(&Value::Object(value)).unwrap();
+    beve::beve_slice_to_mat_v73_file(
+        &bytes,
+        &path,
+        RootBinding::NamedVariable("payload"),
+        &MatV73Options::default(),
+    )
+    .unwrap();
+
+    let file = hdf5::File::open(&path).unwrap();
+    let group = file.group("payload").unwrap();
+    assert_eq!(read_matlab_class(&group, "MATLAB_class"), "struct");
+    let fields = group
+        .attr("MATLAB_fields")
+        .unwrap()
+        .read_raw::<VarLenArray<FixedAscii<1>>>()
+        .unwrap();
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.iter().map(|ch| ch.as_str()).collect::<String>())
+            .collect::<Vec<_>>(),
+        vec!["answer", "label"]
+    );
 
     std::fs::remove_file(path).unwrap();
 }

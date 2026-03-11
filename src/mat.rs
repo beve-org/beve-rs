@@ -3,7 +3,7 @@ use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
-use hdf5::types::VarLenAscii;
+use hdf5::types::{FixedAscii, VarLenArray};
 use hdf5::{Dataset, DatasetBuilder, File, Group, H5Type, ObjectReference1};
 use hdf5_metno as hdf5;
 use serde::{Deserialize, Serialize};
@@ -354,12 +354,15 @@ impl MatWriter {
         let group = parent.create_group(name)?;
         write_ascii_attr(&group, "MATLAB_class", "struct")?;
         let mut used = BTreeSet::new();
+        let mut fields = Vec::with_capacity(len);
         for _ in 0..len {
             let key = reader.read_string()?;
             let field = self.normalize_name(key, &mut used)?;
             let child_path = format!("{path}.{field}");
             self.write_named_value(&group, &field, reader, &child_path)?;
+            fields.push(field);
         }
+        write_ascii_list_attr(&group, "MATLAB_fields", &fields)?;
         Ok(())
     }
 
@@ -1119,7 +1122,7 @@ impl MatWriter {
         let ds = self.create_dataset::<u8>(parent, name, &storage_dims)?;
         ds.write_raw(data)?;
         write_ascii_attr(&ds, "MATLAB_class", "logical")?;
-        write_u8_attr(&ds, "MATLAB_int_decode", 1)
+        write_i32_attr(&ds, "MATLAB_int_decode", 1)
     }
 
     fn write_char(&self, parent: &Group, name: &str, value: &str) -> Result<()> {
@@ -1132,7 +1135,7 @@ impl MatWriter {
         let ds = self.create_dataset::<u16>(parent, name, &storage_dims)?;
         ds.write_raw(&code_units)?;
         write_ascii_attr(&ds, "MATLAB_class", "char")?;
-        write_u8_attr(&ds, "MATLAB_int_decode", 2)
+        write_i32_attr(&ds, "MATLAB_int_decode", 2)
     }
 
     fn write_reference_array(
@@ -1166,9 +1169,9 @@ impl MatWriter {
             ds.write_raw(&shape_data)?;
         }
         write_ascii_attr(&ds, "MATLAB_class", class)?;
-        write_u8_attr(&ds, "MATLAB_empty", 1)?;
+        write_u32_attr(&ds, "MATLAB_empty", 1)?;
         if let Some(code) = int_decode {
-            write_u8_attr(&ds, "MATLAB_int_decode", code)?;
+            write_i32_attr(&ds, "MATLAB_int_decode", i32::from(code))?;
         }
         Ok(())
     }
@@ -1285,16 +1288,74 @@ fn unpack_bools(packed: &[u8], len: usize) -> Vec<u8> {
 }
 
 fn write_ascii_attr(target: &hdf5::Location, name: &str, value: &str) -> Result<()> {
-    let ascii = VarLenAscii::from_ascii(value.as_bytes()).map_err(|e| Error::msg(e.to_string()))?;
+    match value.len() {
+        0 => write_fixed_ascii_attr::<1>(target, name, value),
+        1 => write_fixed_ascii_attr::<1>(target, name, value),
+        2 => write_fixed_ascii_attr::<2>(target, name, value),
+        3 => write_fixed_ascii_attr::<3>(target, name, value),
+        4 => write_fixed_ascii_attr::<4>(target, name, value),
+        5 => write_fixed_ascii_attr::<5>(target, name, value),
+        6 => write_fixed_ascii_attr::<6>(target, name, value),
+        7 => write_fixed_ascii_attr::<7>(target, name, value),
+        8 => write_fixed_ascii_attr::<8>(target, name, value),
+        9 => write_fixed_ascii_attr::<9>(target, name, value),
+        10 => write_fixed_ascii_attr::<10>(target, name, value),
+        11 => write_fixed_ascii_attr::<11>(target, name, value),
+        12 => write_fixed_ascii_attr::<12>(target, name, value),
+        13 => write_fixed_ascii_attr::<13>(target, name, value),
+        14 => write_fixed_ascii_attr::<14>(target, name, value),
+        15 => write_fixed_ascii_attr::<15>(target, name, value),
+        16 => write_fixed_ascii_attr::<16>(target, name, value),
+        len => Err(Error::msg(format!(
+            "ASCII attribute `{name}` exceeds supported fixed width: {len}"
+        ))),
+    }
+}
+
+fn write_fixed_ascii_attr<const N: usize>(
+    target: &hdf5::Location,
+    name: &str,
+    value: &str,
+) -> Result<()> {
+    let ascii =
+        FixedAscii::<N>::from_ascii(value.as_bytes()).map_err(|e| Error::msg(e.to_string()))?;
     target
-        .new_attr::<VarLenAscii>()
+        .new_attr::<FixedAscii<N>>()
         .create(name)?
         .write_scalar(&ascii)?;
     Ok(())
 }
 
-fn write_u8_attr(target: &hdf5::Location, name: &str, value: u8) -> Result<()> {
-    target.new_attr::<u8>().create(name)?.write_scalar(&value)?;
+fn write_ascii_list_attr(target: &hdf5::Location, name: &str, values: &[String]) -> Result<()> {
+    let ascii: Vec<VarLenArray<FixedAscii<1>>> = values
+        .iter()
+        .map(|value| {
+            let chars = value
+                .bytes()
+                .map(|byte| {
+                    FixedAscii::<1>::from_ascii(&[byte]).map_err(|e| Error::msg(e.to_string()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(VarLenArray::from_slice(&chars))
+        })
+        .collect::<Result<_>>()?;
+    target.new_attr_builder().with_data(&ascii).create(name)?;
+    Ok(())
+}
+
+fn write_i32_attr(target: &hdf5::Location, name: &str, value: i32) -> Result<()> {
+    target
+        .new_attr::<i32>()
+        .create(name)?
+        .write_scalar(&value)?;
+    Ok(())
+}
+
+fn write_u32_attr(target: &hdf5::Location, name: &str, value: u32) -> Result<()> {
+    target
+        .new_attr::<u32>()
+        .create(name)?
+        .write_scalar(&value)?;
     Ok(())
 }
 

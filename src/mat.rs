@@ -43,56 +43,86 @@ const MATLAB_KEYWORDS: &[&str] = &[
     "while",
 ];
 
+/// Controls how the BEVE root value is bound into MATLAB workspace variables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RootBinding<'a> {
+    /// Convert the BEVE root into a single MATLAB variable with the provided name.
     NamedVariable(&'a str),
+    /// Require a string-keyed BEVE object and expand each top-level entry into a
+    /// separate MATLAB workspace variable.
     WorkspaceObject,
 }
 
+/// Compression settings for MATLAB datasets written through HDF5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Compression {
+    /// Write datasets without chunking or compression.
     None,
+    /// Apply HDF5 deflate compression.
     Deflate { level: u8, shuffle: bool },
 }
 
+/// Policy for invalid MATLAB variable names and struct field names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InvalidNamePolicy {
+    /// Return an error when a name is not a valid MATLAB identifier.
     Error,
+    /// Rewrite invalid names into valid MATLAB identifiers and deduplicate them.
     Sanitize,
 }
 
+/// Policy for BEVE values that do not have a direct MATLAB representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnsupportedPolicy {
+    /// Return an error for unsupported values.
     Error,
+    /// Convert unsupported scalar values to MATLAB char arrays using their string form.
     StringFallback,
+    /// Widen unsupported numeric values to the nearest MATLAB numeric class.
     LossyNumericWidening,
 }
 
+/// Policy for BEVE `null` values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NullPolicy {
+    /// Return an error for `null`.
     Error,
+    /// Map `null` to an empty MATLAB struct array (`struct([])`).
     EmptyStructArray,
 }
 
+/// Policy for one-dimensional arrays and vectors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OneDimensionalMode {
+    /// Encode 1D values as `Nx1` MATLAB column vectors.
     ColumnVector,
+    /// Encode 1D values as `1xN` MATLAB row vectors.
     RowVector,
 }
 
+/// Policy for BEVE row-major matrices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RowMajorPolicy {
+    /// Reorder row-major matrix payloads into MATLAB's column-major layout.
     ReorderToColumnMajor,
+    /// Return an error instead of reordering row-major matrices.
     Error,
 }
 
+/// Options for BEVE to MATLAB v7.3 conversion.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatV73Options {
+    /// HDF5 dataset compression settings.
     pub compression: Compression,
+    /// How invalid MATLAB variable and field names are handled.
     pub invalid_name_policy: InvalidNamePolicy,
+    /// How BEVE `null` is handled.
     pub null_policy: NullPolicy,
+    /// How unsupported BEVE types are handled.
     pub unsupported_policy: UnsupportedPolicy,
+    /// Whether 1D values become row or column vectors.
     pub one_dimensional_mode: OneDimensionalMode,
+    /// Whether row-major matrices are reordered or rejected.
     pub row_major_policy: RowMajorPolicy,
 }
 
@@ -123,6 +153,33 @@ struct MatComplex64 {
     imag: f64,
 }
 
+/// Convert a BEVE payload into a MATLAB v7.3 MAT file.
+///
+/// This API writes directly from the BEVE wire format without materializing an
+/// intermediate `Value` tree. Output is staged in a temporary file next to the
+/// destination and only replaces the target path after the MAT file and MATLAB
+/// userblock are fully written.
+///
+/// # Errors
+///
+/// Returns an error if the BEVE payload is malformed, if a value cannot be
+/// mapped to MATLAB under the selected policies, or if HDF5 / filesystem IO
+/// fails.
+///
+/// # Example
+///
+/// ```no_run
+/// use beve::{MatV73Options, RootBinding};
+///
+/// let bytes = beve::to_vec(&vec![1.0f64, 2.0, 3.0]).unwrap();
+/// beve::beve_slice_to_mat_v73_file(
+///     &bytes,
+///     "values.mat",
+///     RootBinding::NamedVariable("values"),
+///     &MatV73Options::default(),
+/// )?;
+/// # Ok::<(), beve::Error>(())
+/// ```
 pub fn beve_slice_to_mat_v73_file<P: AsRef<Path>>(
     beve: &[u8],
     output_path: P,
@@ -154,6 +211,7 @@ pub fn beve_slice_to_mat_v73_file<P: AsRef<Path>>(
     temp_output.persist(output_path)
 }
 
+/// Read a `.beve` file from disk and write a MATLAB v7.3 MAT file.
 pub fn beve_file_to_mat_v73_file<I: AsRef<Path>, O: AsRef<Path>>(
     input_path: I,
     output_path: O,

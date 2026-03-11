@@ -386,9 +386,7 @@ impl MatWriter {
                 self.write_unsigned_array(parent, name, reader, info.byte_code, info.len, path)
             }
             TypedArrayClass::Bool => self.write_bool_array(parent, name, reader, info.len),
-            TypedArrayClass::String => {
-                self.write_string_cell_array(parent, name, reader, info.len, path)
-            }
+            TypedArrayClass::String => self.write_string_cell_array(parent, name, reader, info.len),
         }
     }
 
@@ -822,14 +820,13 @@ impl MatWriter {
         name: &str,
         reader: &mut Reader<'_>,
         len: usize,
-        path: &str,
     ) -> Result<()> {
         let matlab_dims = vector_dims(len, self.options.one_dimensional_mode);
         if len == 0 {
             return self.write_empty_marker(parent, name, &matlab_dims, "cell", None);
         }
         let mut refs = Vec::with_capacity(len);
-        for idx in 0..len {
+        for _ in 0..len {
             let value = reader.read_string()?;
             let ref_name = self.next_ref_name();
             self.write_char(&self.refs, &ref_name, value)?;
@@ -837,13 +834,8 @@ impl MatWriter {
                 self.file
                     .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))?,
             );
-            let _ = idx;
         }
-        if !path.is_empty() {
-            self.write_reference_array(parent, name, &matlab_dims, &refs, "cell")
-        } else {
-            self.write_reference_array(parent, name, &matlab_dims, &refs, "cell")
-        }
+        self.write_reference_array(parent, name, &matlab_dims, &refs, "cell")
     }
 
     fn write_matrix_float(
@@ -1281,6 +1273,8 @@ fn unpack_bools(packed: &[u8], len: usize) -> Vec<u8> {
 }
 
 fn write_ascii_attr(target: &hdf5::Location, name: &str, value: &str) -> Result<()> {
+    // FixedAscii<N> needs a compile-time width, so this dispatch is the simplest
+    // way to keep MATLAB metadata in fixed-width ASCII attributes.
     match value.len() {
         0 => write_fixed_ascii_attr::<1>(target, name, value),
         1 => write_fixed_ascii_attr::<1>(target, name, value),
@@ -1372,7 +1366,7 @@ fn is_valid_name(name: &str) -> bool {
 }
 
 fn is_keyword(name: &str) -> bool {
-    MATLAB_KEYWORDS.iter().any(|keyword| *keyword == name)
+    MATLAB_KEYWORDS.binary_search(&name).is_ok()
 }
 
 fn sanitize_name(name: &str) -> String {
@@ -1415,9 +1409,24 @@ fn dedupe_name(mut candidate: String, used: &BTreeSet<String>) -> String {
     let base = candidate.clone();
     let mut suffix = 1usize;
     loop {
-        candidate = format!("{base}_{suffix}");
-        if candidate.len() > MATLAB_NAME_MAX {
-            candidate.truncate(MATLAB_NAME_MAX);
+        let suffix_str = format!("_{suffix}");
+        let max_base_len = MATLAB_NAME_MAX.saturating_sub(suffix_str.len());
+        if max_base_len == 0 {
+            let tail_len = MATLAB_NAME_MAX.saturating_sub(1);
+            let start = suffix_str.len().saturating_sub(tail_len);
+            candidate.clear();
+            candidate.push('x');
+            candidate.push_str(&suffix_str[start..]);
+        } else {
+            // Names are sanitized/validated to ASCII, so byte truncation is safe here.
+            let prefix = if base.len() > max_base_len {
+                &base[..max_base_len]
+            } else {
+                &base
+            };
+            candidate.clear();
+            candidate.push_str(prefix);
+            candidate.push_str(&suffix_str);
         }
         if !used.contains(&candidate) {
             return candidate;

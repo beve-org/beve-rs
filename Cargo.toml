@@ -8,10 +8,16 @@ repository = "https://github.com/beve-org/beve-rs"
 homepage = "https://github.com/beve-org/beve-rs"
 readme = "README.md"
 
+[features]
+default = []
+mat = ["dep:hdf5_metno", "dep:ndarray"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 half = { version = "2.4", features = ["serde"] }
 simdutf8 = "0.1"
+hdf5_metno = { package = "hdf5-metno", version = "0.12.3", optional = true }
+ndarray = { version = "0.17", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

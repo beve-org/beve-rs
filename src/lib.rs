@@ -40,6 +40,10 @@ mod ext;
 pub mod fast;
 mod header;
 mod json;
+#[cfg(feature = "mat")]
+pub mod mat;
+#[cfg(feature = "mat")]
+mod raw;
 mod ser;
 mod size;
 mod value;
@@ -57,6 +61,11 @@ pub use crate::fast::{
 };
 pub use crate::json::{
     beve_slice_to_json, beve_slice_to_json_string, json_slice_to_beve, json_str_to_beve,
+};
+#[cfg(feature = "mat")]
+pub use crate::mat::{
+    beve_file_to_mat_v73_file, beve_slice_to_mat_v73_file, Compression, InvalidNamePolicy,
+    MatV73Options, NullPolicy, OneDimensionalMode, RootBinding, RowMajorPolicy, UnsupportedPolicy,
 };
 pub use crate::ser::{
     to_vec, to_vec_into, to_vec_into_with_options, to_vec_with_options, EnumEncoding, Serializer,

@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use beve::{
-    InvalidNamePolicy, Key, MatV73Options, NullPolicy, Object, RootBinding, UnsupportedPolicy,
-    Value,
+    Complex, InvalidNamePolicy, Key, MatV73Options, NullPolicy, Object, RootBinding,
+    UnsupportedPolicy, Value,
 };
-use hdf5::types::{FixedAscii, VarLenArray};
+use hdf5::types::{FixedAscii, TypeDescriptor, VarLenArray};
 use hdf5::{ObjectReference1, ReferencedObject};
 use hdf5_metno as hdf5;
 
@@ -227,6 +227,38 @@ fn mat_v73_row_major_matrix_reorders_to_column_major() {
         ds.read_raw::<f64>().unwrap(),
         vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]
     );
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn mat_v73_empty_complex_array_uses_complex_dataset_type() {
+    let path = temp_path("empty-complex");
+    let empty: &[Complex<f64>] = &[];
+    let bytes = beve::to_vec_complex64_slice(empty);
+    beve::beve_slice_to_mat_v73_file(
+        &bytes,
+        &path,
+        RootBinding::NamedVariable("z"),
+        &MatV73Options::default(),
+    )
+    .unwrap();
+
+    let file = hdf5::File::open(&path).unwrap();
+    let ds = file.dataset("z").unwrap();
+    assert_eq!(ds.shape(), vec![1, 0]);
+    assert_eq!(read_matlab_class(&ds, "MATLAB_class"), "double");
+    assert!(ds.attr("MATLAB_empty").is_err());
+
+    match ds.dtype().unwrap().to_descriptor().unwrap() {
+        TypeDescriptor::Compound(compound) => {
+            assert_eq!(compound.size, 16);
+            assert_eq!(compound.fields.len(), 2);
+            assert_eq!(compound.fields[0].name, "real");
+            assert_eq!(compound.fields[1].name, "imag");
+        }
+        other => panic!("expected compound complex dtype, got {other:?}"),
+    }
 
     std::fs::remove_file(path).unwrap();
 }

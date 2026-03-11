@@ -446,9 +446,6 @@ impl MatWriter {
             let matlab_dims = vector_dims(len, self.options.one_dimensional_mode);
             match byte_code {
                 2 => {
-                    if len == 0 {
-                        return self.write_empty_marker(parent, name, &matlab_dims, "single", None);
-                    }
                     let mut data = Vec::with_capacity(len);
                     for _ in 0..len {
                         data.push(MatComplex32 {
@@ -459,9 +456,6 @@ impl MatWriter {
                     self.write_complex(parent, name, &matlab_dims, &data, "single")
                 }
                 3 => {
-                    if len == 0 {
-                        return self.write_empty_marker(parent, name, &matlab_dims, "double", None);
-                    }
                     let mut data = Vec::with_capacity(len);
                     for _ in 0..len {
                         data.push(MatComplex64 {
@@ -1099,12 +1093,11 @@ impl MatWriter {
         data: &[T],
         class: &str,
     ) -> Result<()> {
-        if data.is_empty() {
-            return self.write_empty_marker(parent, name, matlab_dims, class, None);
-        }
         let storage_dims = storage_dims(matlab_dims);
         let ds = self.create_dataset::<T>(parent, name, &storage_dims)?;
-        ds.write_raw(data)?;
+        if !data.is_empty() {
+            ds.write_raw(data)?;
+        }
         write_ascii_attr(&ds, "MATLAB_class", class)
     }
 

@@ -160,22 +160,24 @@ fn matio_link_config() -> Result<NativeLinkConfig, String> {
         .probe("matio")
         .map_err(|err| err.to_string())?;
 
-    let mut config = NativeLinkConfig::default();
-    config.include_paths = library.include_paths;
-    config.link_paths = library.link_paths;
-    config.libs = library.libs;
-    config.frameworks = library.frameworks;
-    config.framework_paths = library.framework_paths;
-    config.raw_link_args = library.ld_args.into_iter().flatten().collect();
-    Ok(config)
+    Ok(NativeLinkConfig {
+        include_paths: library.include_paths,
+        link_paths: library.link_paths,
+        libs: library.libs,
+        frameworks: library.frameworks,
+        framework_paths: library.framework_paths,
+        raw_link_args: library.ld_args.into_iter().flatten().collect(),
+    })
 }
 
 fn matio_link_config_from_env() -> Option<NativeLinkConfig> {
-    let mut config = NativeLinkConfig::default();
-    config.include_paths = env_path_list("MATIO_INCLUDE_DIRS", "MATIO_INCLUDE_DIR");
-    config.link_paths = env_path_list("MATIO_LIB_DIRS", "MATIO_LIB_DIR");
-    config.libs = env_string_list("MATIO_LIBS");
-    config.raw_link_args = env_string_list("MATIO_LINK_ARGS");
+    let mut config = NativeLinkConfig {
+        include_paths: env_path_list("MATIO_INCLUDE_DIRS", "MATIO_INCLUDE_DIR"),
+        link_paths: env_path_list("MATIO_LIB_DIRS", "MATIO_LIB_DIR"),
+        libs: env_string_list("MATIO_LIBS"),
+        raw_link_args: env_string_list("MATIO_LINK_ARGS"),
+        ..NativeLinkConfig::default()
+    };
 
     if config.include_paths.is_empty()
         && config.link_paths.is_empty()

@@ -171,6 +171,15 @@ struct MatWriter {
     next_ref_id: u64,
 }
 
+#[derive(Clone, Copy)]
+struct MatrixWriteContext<'a> {
+    parent: &'a Group,
+    name: &'a str,
+    path: &'a str,
+    layout: MatrixLayout,
+    extents: &'a [usize],
+}
+
 struct TempOutputFile {
     path: PathBuf,
     persisted: bool,
@@ -578,60 +587,52 @@ impl MatWriter {
         let extents = reader.read_matrix_extents()?;
         validate_matrix_extents(&extents, path)?;
         let header = reader.read_header()?;
+        let ctx = MatrixWriteContext {
+            parent,
+            name,
+            path,
+            layout,
+            extents: &extents,
+        };
         match parse_type(header) {
-            TYPE_TYPED_ARRAY => {
-                self.write_matrix_typed_array(parent, name, reader, header, path, layout, &extents)
-            }
-            TYPE_EXTENSION if parse_extension_id(header) == EXT_COMPLEX => {
-                self.write_matrix_complex(parent, name, reader, path, layout, &extents)
-            }
+            TYPE_TYPED_ARRAY => self.write_matrix_typed_array(reader, header, ctx),
+            TYPE_EXTENSION if parse_extension_id(header) == EXT_COMPLEX => self
+                .write_matrix_complex(
+                    ctx.parent,
+                    ctx.name,
+                    reader,
+                    ctx.path,
+                    ctx.layout,
+                    ctx.extents,
+                ),
             _ => Err(Error::msg(format!("unsupported matrix payload at {path}"))),
         }
     }
 
     fn write_matrix_typed_array(
         &mut self,
-        parent: &Group,
-        name: &str,
         reader: &mut Reader<'_>,
         header: u8,
-        path: &str,
-        layout: MatrixLayout,
-        extents: &[usize],
+        ctx: MatrixWriteContext<'_>,
     ) -> Result<()> {
         let info = reader.read_typed_array_header(header)?;
-        let expected_len = product(extents)?;
+        let expected_len = product(ctx.extents)?;
         if info.len != expected_len {
             return Err(Error::msg(format!(
-                "matrix payload length {} does not match extents product {} at {path}",
-                info.len, expected_len
+                "matrix payload length {} does not match extents product {} at {}",
+                info.len, expected_len, ctx.path
             )));
         }
         match info.class {
-            TypedArrayClass::Float => {
-                self.write_matrix_float(parent, name, reader, extents, layout, info.byte_code, path)
+            TypedArrayClass::Float => self.write_matrix_float(reader, info.byte_code, ctx),
+            TypedArrayClass::Signed => self.write_matrix_signed(reader, info.byte_code, ctx),
+            TypedArrayClass::Unsigned => self.write_matrix_unsigned(reader, info.byte_code, ctx),
+            TypedArrayClass::Bool => {
+                self.write_matrix_bool(ctx.parent, ctx.name, reader, ctx.extents, ctx.layout)
             }
-            TypedArrayClass::Signed => self.write_matrix_signed(
-                parent,
-                name,
-                reader,
-                extents,
-                layout,
-                info.byte_code,
-                path,
-            ),
-            TypedArrayClass::Unsigned => self.write_matrix_unsigned(
-                parent,
-                name,
-                reader,
-                extents,
-                layout,
-                info.byte_code,
-                path,
-            ),
-            TypedArrayClass::Bool => self.write_matrix_bool(parent, name, reader, extents, layout),
             TypedArrayClass::String => Err(Error::msg(format!(
-                "string matrices are not supported at {path}"
+                "string matrices are not supported at {}",
+                ctx.path
             ))),
         }
     }
@@ -908,16 +909,12 @@ impl MatWriter {
 
     fn write_matrix_float(
         &mut self,
-        parent: &Group,
-        name: &str,
         reader: &mut Reader<'_>,
-        extents: &[usize],
-        layout: MatrixLayout,
         byte_code: u8,
-        path: &str,
+        ctx: MatrixWriteContext<'_>,
     ) -> Result<()> {
-        let len = product(extents)?;
-        let matlab_dims = matrix_dims(extents, self.options.one_dimensional_mode);
+        let len = product(ctx.extents)?;
+        let matlab_dims = matrix_dims(ctx.extents, self.options.one_dimensional_mode);
         match byte_code {
             0 => match self.options.unsupported_policy {
                 UnsupportedPolicy::LossyNumericWidening => {
@@ -925,11 +922,13 @@ impl MatWriter {
                     for _ in 0..len {
                         values.push(reader.read_bf16_as_f32()?);
                     }
-                    let values = self.maybe_reorder(values, layout, extents, path)?;
-                    self.write_numeric(parent, name, &matlab_dims, &values, "single")
+                    let values =
+                        self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                    self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "single")
                 }
                 _ => Err(Error::msg(format!(
-                    "unsupported bf16 matrix at {path}; enable LossyNumericWidening to map it to MATLAB single"
+                    "unsupported bf16 matrix at {}; enable LossyNumericWidening to map it to MATLAB single",
+                    ctx.path
                 ))),
             },
             1 => match self.options.unsupported_policy {
@@ -938,11 +937,13 @@ impl MatWriter {
                     for _ in 0..len {
                         values.push(reader.read_f16_as_f32()?);
                     }
-                    let values = self.maybe_reorder(values, layout, extents, path)?;
-                    self.write_numeric(parent, name, &matlab_dims, &values, "single")
+                    let values =
+                        self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                    self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "single")
                 }
                 _ => Err(Error::msg(format!(
-                    "unsupported f16 matrix at {path}; enable LossyNumericWidening to map it to MATLAB single"
+                    "unsupported f16 matrix at {}; enable LossyNumericWidening to map it to MATLAB single",
+                    ctx.path
                 ))),
             },
             2 => {
@@ -950,118 +951,117 @@ impl MatWriter {
                 for _ in 0..len {
                     values.push(reader.read_f32()?);
                 }
-                let values = self.maybe_reorder(values, layout, extents, path)?;
-                self.write_numeric(parent, name, &matlab_dims, &values, "single")
+                let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "single")
             }
             3 => {
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(reader.read_f64()?);
                 }
-                let values = self.maybe_reorder(values, layout, extents, path)?;
-                self.write_numeric(parent, name, &matlab_dims, &values, "double")
+                let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "double")
             }
             _ => Err(Error::msg(format!(
-                "unsupported float matrix width at {path}"
+                "unsupported float matrix width at {}",
+                ctx.path
             ))),
         }
     }
 
     fn write_matrix_signed(
         &mut self,
-        parent: &Group,
-        name: &str,
         reader: &mut Reader<'_>,
-        extents: &[usize],
-        layout: MatrixLayout,
         byte_code: u8,
-        path: &str,
+        ctx: MatrixWriteContext<'_>,
     ) -> Result<()> {
-        let len = product(extents)?;
-        let matlab_dims = matrix_dims(extents, self.options.one_dimensional_mode);
+        let len = product(ctx.extents)?;
+        let matlab_dims = matrix_dims(ctx.extents, self.options.one_dimensional_mode);
         match byte_code {
             0 => {
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(reader.read_signed(0)? as i8);
                 }
-                let values = self.maybe_reorder(values, layout, extents, path)?;
-                self.write_numeric(parent, name, &matlab_dims, &values, "int8")
+                let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "int8")
             }
             1 => {
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(reader.read_signed(1)? as i16);
                 }
-                let values = self.maybe_reorder(values, layout, extents, path)?;
-                self.write_numeric(parent, name, &matlab_dims, &values, "int16")
+                let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "int16")
             }
             2 => {
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(reader.read_signed(2)? as i32);
                 }
-                let values = self.maybe_reorder(values, layout, extents, path)?;
-                self.write_numeric(parent, name, &matlab_dims, &values, "int32")
+                let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "int32")
             }
             3 => {
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(reader.read_signed(3)? as i64);
                 }
-                let values = self.maybe_reorder(values, layout, extents, path)?;
-                self.write_numeric(parent, name, &matlab_dims, &values, "int64")
+                let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "int64")
             }
-            _ => Err(Error::msg(format!("unsupported i128 matrix at {path}"))),
+            _ => Err(Error::msg(format!(
+                "unsupported i128 matrix at {}",
+                ctx.path
+            ))),
         }
     }
 
     fn write_matrix_unsigned(
         &mut self,
-        parent: &Group,
-        name: &str,
         reader: &mut Reader<'_>,
-        extents: &[usize],
-        layout: MatrixLayout,
         byte_code: u8,
-        path: &str,
+        ctx: MatrixWriteContext<'_>,
     ) -> Result<()> {
-        let len = product(extents)?;
-        let matlab_dims = matrix_dims(extents, self.options.one_dimensional_mode);
+        let len = product(ctx.extents)?;
+        let matlab_dims = matrix_dims(ctx.extents, self.options.one_dimensional_mode);
         match byte_code {
             0 => {
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(reader.read_unsigned(0)? as u8);
                 }
-                let values = self.maybe_reorder(values, layout, extents, path)?;
-                self.write_numeric(parent, name, &matlab_dims, &values, "uint8")
+                let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "uint8")
             }
             1 => {
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(reader.read_unsigned(1)? as u16);
                 }
-                let values = self.maybe_reorder(values, layout, extents, path)?;
-                self.write_numeric(parent, name, &matlab_dims, &values, "uint16")
+                let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "uint16")
             }
             2 => {
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(reader.read_unsigned(2)? as u32);
                 }
-                let values = self.maybe_reorder(values, layout, extents, path)?;
-                self.write_numeric(parent, name, &matlab_dims, &values, "uint32")
+                let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "uint32")
             }
             3 => {
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(reader.read_unsigned(3)? as u64);
                 }
-                let values = self.maybe_reorder(values, layout, extents, path)?;
-                self.write_numeric(parent, name, &matlab_dims, &values, "uint64")
+                let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "uint64")
             }
-            _ => Err(Error::msg(format!("unsupported u128 matrix at {path}"))),
+            _ => Err(Error::msg(format!(
+                "unsupported u128 matrix at {}",
+                ctx.path
+            ))),
         }
     }
 

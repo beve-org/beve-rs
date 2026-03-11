@@ -338,3 +338,45 @@ fn mat_v73_null_policy_error_rejects_null() {
     .unwrap_err();
     assert!(err.to_string().contains("unsupported null value"));
 }
+
+#[test]
+fn mat_v73_failed_overwrite_preserves_existing_file() {
+    let path = temp_path("preserve-existing");
+
+    let good = beve::to_vec(&"hello").unwrap();
+    beve::beve_slice_to_mat_v73_file(
+        &good,
+        &path,
+        RootBinding::NamedVariable("greeting"),
+        &MatV73Options::default(),
+    )
+    .unwrap();
+    let original = std::fs::read(&path).unwrap();
+
+    let bad = beve::to_vec(&Value::Null).unwrap();
+    let options = MatV73Options {
+        null_policy: NullPolicy::Error,
+        ..MatV73Options::default()
+    };
+    let err = beve::beve_slice_to_mat_v73_file(
+        &bad,
+        &path,
+        RootBinding::NamedVariable("nothing"),
+        &options,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("unsupported null value"));
+
+    let after = std::fs::read(&path).unwrap();
+    assert_eq!(after, original);
+
+    let file = hdf5::File::open(&path).unwrap();
+    let ds = file.dataset("greeting").unwrap();
+    assert_eq!(read_matlab_class(&ds, "MATLAB_class"), "char");
+    assert_eq!(
+        ds.read_raw::<u16>().unwrap(),
+        "hello".encode_utf16().collect::<Vec<_>>()
+    );
+
+    std::fs::remove_file(path).unwrap();
+}

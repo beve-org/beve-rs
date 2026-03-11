@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use hdf5::types::{FixedAscii, VarLenArray};
 use hdf5::{Dataset, DatasetBuilder, File, Group, H5Type, ObjectReference1};
@@ -128,10 +130,11 @@ pub fn beve_slice_to_mat_v73_file<P: AsRef<Path>>(
     options: &MatV73Options,
 ) -> Result<()> {
     let output_path = output_path.as_ref();
+    let temp_output = TempOutputFile::new(output_path)?;
     let file = File::with_options()
         .with_fcpl(|plist| plist.userblock(MATLAB_USERBLOCK_SIZE))
         .with_fapl(|plist| plist.libver_v18())
-        .create(output_path)?;
+        .create(temp_output.path())?;
     let refs = file.create_group("#refs#")?;
     let mut writer = MatWriter {
         file,
@@ -146,7 +149,9 @@ pub fn beve_slice_to_mat_v73_file<P: AsRef<Path>>(
     }
     writer.file.flush()?;
     drop(writer);
-    write_userblock(output_path)
+    write_userblock(temp_output.path())?;
+    sync_regular_file(temp_output.path())?;
+    temp_output.persist(output_path)
 }
 
 pub fn beve_file_to_mat_v73_file<I: AsRef<Path>, O: AsRef<Path>>(
@@ -164,6 +169,68 @@ struct MatWriter {
     refs: Group,
     options: MatV73Options,
     next_ref_id: u64,
+}
+
+struct TempOutputFile {
+    path: PathBuf,
+    persisted: bool,
+}
+
+impl TempOutputFile {
+    fn new(output_path: &Path) -> Result<Self> {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+        let directory = output_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let base_name = output_path
+            .file_name()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| OsString::from("beve.mat"));
+
+        for _ in 0..1024 {
+            let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let mut temp_name = OsString::from(".");
+            temp_name.push(&base_name);
+            temp_name.push(format!(".beve-tmp-{:x}-{:x}", std::process::id(), sequence));
+            let path = directory.join(temp_name);
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    drop(file);
+                    return Ok(Self {
+                        path,
+                        persisted: false,
+                    });
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(Error::msg(err.to_string())),
+            }
+        }
+
+        Err(Error::msg(format!(
+            "failed to reserve a temporary MAT path near {}",
+            output_path.display()
+        )))
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn persist(mut self, output_path: &Path) -> Result<()> {
+        replace_file(&self.path, output_path).map_err(|e| Error::msg(e.to_string()))?;
+        self.persisted = true;
+        Ok(())
+    }
+}
+
+impl Drop for TempOutputFile {
+    fn drop(&mut self) {
+        if !self.persisted {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 impl MatWriter {
@@ -1452,6 +1519,54 @@ fn write_userblock(path: &Path) -> Result<()> {
     block[127] = b'M';
     file.write_all(&block)
         .map_err(|e| Error::msg(e.to_string()))
+}
+
+fn sync_regular_file(path: &Path) -> Result<()> {
+    OpenOptions::new()
+        .read(true)
+        .open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| Error::msg(e.to_string()))
+}
+
+#[cfg(not(windows))]
+fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+#[cfg(windows)]
+fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+
+    unsafe extern "system" {
+        fn MoveFileExW(
+            existing_file_name: *const u16,
+            new_file_name: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+
+    fn to_wide(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    let from_wide = to_wide(from);
+    let to_wide = to_wide(to);
+    let result = unsafe {
+        MoveFileExW(
+            from_wide.as_ptr(),
+            to_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 fn matlab_header_text() -> [u8; 116] {

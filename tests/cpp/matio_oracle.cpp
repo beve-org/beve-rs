@@ -289,6 +289,13 @@ void write_value(std::ostream& out, const matvar_t* var) {
     fail("null MAT variable");
   }
 
+  if (var->class_type == 0 && var->data_type == 0) {
+    out << "{\"kind\":\"unknown\",\"dims\":";
+    write_dims(out, var);
+    out << ",\"class_type\":0,\"data_type\":0}";
+    return;
+  }
+
   if (var->isLogical) {
     out << "{\"kind\":\"logical\",\"dims\":";
     write_dims(out, var);

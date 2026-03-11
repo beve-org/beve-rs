@@ -187,6 +187,11 @@ enum OracleValue {
         dims: Vec<usize>,
         elements: Vec<OracleValue>,
     },
+    Unknown {
+        dims: Vec<usize>,
+        class_type: i32,
+        data_type: i32,
+    },
     Struct {
         dims: Vec<usize>,
         fields: BTreeMap<String, Vec<OracleValue>>,
@@ -223,6 +228,20 @@ fn expect_struct_field<'a>(value: &'a OracleValue, field: &str) -> &'a OracleVal
     }
 }
 
+fn assert_unknown_string(value: &OracleValue) {
+    match value {
+        OracleValue::Unknown {
+            class_type,
+            data_type,
+            ..
+        } => {
+            assert_eq!(*class_type, 0);
+            assert_eq!(*data_type, 0);
+        }
+        other => panic!("expected MATIO unknown object for MATLAB string, got {other:#?}"),
+    }
+}
+
 #[test]
 fn matio_oracle_reads_string_scalar() {
     let _guard = lock_oracle_test();
@@ -236,14 +255,7 @@ fn matio_oracle_reads_string_scalar() {
         return;
     };
 
-    assert_eq!(
-        dump.variables.get("greeting"),
-        Some(&OracleValue::Char {
-            dims: vec![1, 5],
-            value: "hello".to_owned(),
-        }),
-        "dump={dump:#?}"
-    );
+    assert_unknown_string(expect_var(&dump, "greeting"));
 }
 
 #[test]
@@ -283,23 +295,20 @@ fn matio_oracle_reads_cell_array() {
         return;
     };
 
-    assert_eq!(
-        dump.variables.get("cells"),
-        Some(&OracleValue::Cell {
-            dims: vec![2, 1],
-            elements: vec![
-                OracleValue::Uint8 {
+    match expect_var(&dump, "cells") {
+        OracleValue::Cell { dims, elements } => {
+            assert_eq!(dims, &vec![2, 1]);
+            assert_eq!(
+                elements.first(),
+                Some(&OracleValue::Uint8 {
                     dims: vec![1, 1],
                     data: vec![1],
-                },
-                OracleValue::Char {
-                    dims: vec![1, 2],
-                    value: "hi".to_owned(),
-                },
-            ],
-        }),
-        "dump={dump:#?}"
-    );
+                })
+            );
+            assert_unknown_string(&elements[1]);
+        }
+        other => panic!("expected cell array, got {other:#?}"),
+    }
 }
 
 #[test]
@@ -318,29 +327,15 @@ fn matio_oracle_reads_struct_value() {
         return;
     };
 
+    let payload = expect_var(&dump, "payload");
     assert_eq!(
-        dump.variables.get("payload"),
-        Some(&OracleValue::Struct {
+        expect_struct_field(payload, "answer"),
+        &OracleValue::Uint8 {
             dims: vec![1, 1],
-            fields: BTreeMap::from([
-                (
-                    "answer".to_owned(),
-                    vec![OracleValue::Uint8 {
-                        dims: vec![1, 1],
-                        data: vec![7],
-                    }],
-                ),
-                (
-                    "label".to_owned(),
-                    vec![OracleValue::Char {
-                        dims: vec![1, 5],
-                        value: "ready".to_owned(),
-                    }],
-                ),
-            ]),
-        }),
-        "dump={dump:#?}"
+            data: vec![7],
+        }
     );
+    assert_unknown_string(expect_struct_field(payload, "label"));
 }
 
 #[test]
@@ -422,14 +417,7 @@ fn matio_oracle_reads_workspace_variables() {
         }),
         "dump={dump:#?}"
     );
-    assert_eq!(
-        dump.variables.get("beta"),
-        Some(&OracleValue::Char {
-            dims: vec![1, 2],
-            value: "ok".to_owned(),
-        }),
-        "dump={dump:#?}"
-    );
+    assert_unknown_string(expect_var(&dump, "beta"));
 }
 
 #[derive(Debug, Serialize)]
@@ -495,13 +483,7 @@ fn matio_oracle_roundtrips_supported_scalars() {
             data: vec![true],
         }
     );
-    assert_eq!(
-        expect_var(&dump, "greeting"),
-        &OracleValue::Char {
-            dims: vec![1, 5],
-            value: "hello".to_owned(),
-        }
-    );
+    assert_unknown_string(expect_var(&dump, "greeting"));
     assert_eq!(
         expect_var(&dump, "i8v"),
         &OracleValue::Int8 {
@@ -714,22 +696,7 @@ fn matio_oracle_roundtrips_supported_arrays() {
             data: vec![true, false, true],
         }
     );
-    assert_eq!(
-        expect_var(&dump, "labels"),
-        &OracleValue::Cell {
-            dims: vec![2, 1],
-            elements: vec![
-                OracleValue::Char {
-                    dims: vec![1, 4],
-                    value: "left".to_owned(),
-                },
-                OracleValue::Char {
-                    dims: vec![1, 5],
-                    value: "right".to_owned(),
-                },
-            ],
-        }
-    );
+    assert_unknown_string(expect_var(&dump, "labels"));
     assert_eq!(
         expect_var(&dump, "c32s"),
         &OracleValue::ComplexSingle {
@@ -793,13 +760,7 @@ fn matio_oracle_roundtrips_supported_empty_values() {
         &options,
     );
     let dump = run_matio_oracle(path.path()).unwrap();
-    assert_eq!(
-        expect_var(&dump, "strings"),
-        &OracleValue::Cell {
-            dims: vec![0, 1],
-            elements: Vec::new(),
-        }
-    );
+    assert_unknown_string(expect_var(&dump, "strings"));
 
     let path = write_mat(
         "empty-cells",
@@ -903,45 +864,46 @@ fn matio_oracle_roundtrips_cells_structs_and_matrices() {
         return;
     };
 
-    assert_eq!(
-        expect_var(&dump, "cell"),
-        &OracleValue::Cell {
-            dims: vec![4, 1],
-            elements: vec![
-                OracleValue::Uint8 {
+    match expect_var(&dump, "cell") {
+        OracleValue::Cell { dims, elements } => {
+            assert_eq!(dims, &vec![4, 1]);
+            assert_eq!(
+                elements.first(),
+                Some(&OracleValue::Uint8 {
                     dims: vec![1, 1],
                     data: vec![1],
-                },
-                OracleValue::Char {
-                    dims: vec![1, 2],
-                    value: "hi".to_owned(),
-                },
-                OracleValue::Struct {
-                    dims: vec![1, 1],
-                    fields: BTreeMap::from([
-                        (
-                            "answer".to_owned(),
-                            vec![OracleValue::Uint8 {
-                                dims: vec![1, 1],
-                                data: vec![42],
-                            }],
-                        ),
-                        (
-                            "ok".to_owned(),
-                            vec![OracleValue::Logical {
-                                dims: vec![1, 1],
-                                data: vec![true],
-                            }],
-                        ),
-                    ]),
-                },
-                OracleValue::Struct {
+                })
+            );
+            assert_unknown_string(&elements[1]);
+            match &elements[2] {
+                OracleValue::Struct { fields, .. } => {
+                    assert_eq!(
+                        fields.get("answer").and_then(|vals| vals.first()),
+                        Some(&OracleValue::Uint8 {
+                            dims: vec![1, 1],
+                            data: vec![42],
+                        })
+                    );
+                    assert_eq!(
+                        fields.get("ok").and_then(|vals| vals.first()),
+                        Some(&OracleValue::Logical {
+                            dims: vec![1, 1],
+                            data: vec![true],
+                        })
+                    );
+                }
+                other => panic!("expected nested struct, got {other:#?}"),
+            }
+            assert_eq!(
+                elements.get(3),
+                Some(&OracleValue::Struct {
                     dims: vec![0, 0],
                     fields: BTreeMap::new(),
-                },
-            ],
+                })
+            );
         }
-    );
+        other => panic!("expected cell array, got {other:#?}"),
+    }
 
     let nested = expect_var(&dump, "nested");
     assert_eq!(
@@ -951,13 +913,7 @@ fn matio_oracle_roundtrips_cells_structs_and_matrices() {
             data: vec![7],
         }
     );
-    assert_eq!(
-        expect_struct_field(nested, "label"),
-        &OracleValue::Char {
-            dims: vec![1, 5],
-            value: "ready".to_owned(),
-        }
-    );
+    assert_unknown_string(expect_struct_field(nested, "label"));
 
     assert_eq!(
         expect_var(&dump, "int_matrix"),
@@ -1144,13 +1100,7 @@ fn matio_oracle_roundtrips_supported_fallback_policies() {
         &fallback,
     );
     let dump = run_matio_oracle(path.path()).unwrap();
-    assert_eq!(
-        expect_var(&dump, "big"),
-        &OracleValue::Char {
-            dims: vec![1, i128::MIN.to_string().len()],
-            value: i128::MIN.to_string(),
-        }
-    );
+    assert_unknown_string(expect_var(&dump, "big"));
 
     let path = write_mat(
         "u128-fallback",
@@ -1159,13 +1109,7 @@ fn matio_oracle_roundtrips_supported_fallback_policies() {
         &fallback,
     );
     let dump = run_matio_oracle(path.path()).unwrap();
-    assert_eq!(
-        expect_var(&dump, "big_unsigned"),
-        &OracleValue::Char {
-            dims: vec![1, u128::MAX.to_string().len()],
-            value: u128::MAX.to_string(),
-        }
-    );
+    assert_unknown_string(expect_var(&dump, "big_unsigned"));
 
     let lossy = MatV73Options {
         unsupported_policy: UnsupportedPolicy::LossyNumericWidening,

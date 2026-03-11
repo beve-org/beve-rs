@@ -236,7 +236,7 @@ fn write_mat() -> beve::Result<()> {
 
 Current mappings:
 - numeric, logical, and complex scalars/arrays
-- UTF-8 strings as MATLAB char arrays
+- UTF-8 strings and typed string arrays as MATLAB `string` objects
 - generic BEVE arrays as MATLAB cell arrays
 - string-keyed BEVE objects as MATLAB structs
 - BEVE matrix extensions, including row-major to column-major reorder when needed
@@ -244,9 +244,9 @@ Current mappings:
 
 Important limits:
 - only MATLAB v7.3 is supported
-- MATLAB `string` objects are not emitted yet; strings become char arrays and string arrays become cell arrays of char arrays
 - non-string object keys cannot map to MATLAB structs/workspace variables
 - `i128`, `u128`, `bf16`, and `f16` require explicit fallback policies when MATLAB has no direct native representation
+- the MATIO-based oracle used in tests does not decode MATLAB `string` objects semantically, so string coverage is validated structurally against MATLAB-generated fixtures
 
 ## Examples
 - `cargo run --example emit_bool` writes a short boolean stream to stdout so you can inspect the raw bytes.

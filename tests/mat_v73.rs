@@ -13,12 +13,22 @@ use hdf5::types::{FixedAscii, TypeDescriptor, VarLenArray};
 use hdf5::{ObjectReference1, ReferencedObject};
 use hdf5_metno as hdf5;
 
+const MCOS_MAGIC_NUMBER: u32 = 0xDD00_0000;
+
 fn temp_path(test_name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!("beve-mat-{test_name}-{nanos}.mat"))
+}
+
+fn fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join("matlab_string_fixture")
+        .join(name)
 }
 
 fn read_matlab_class(loc: &hdf5::Location, name: &str) -> String {
@@ -64,7 +74,138 @@ fn read_matlab_class(loc: &hdf5::Location, name: &str) -> String {
             .unwrap()
             .as_str()
             .to_owned(),
+        9 => attr
+            .read_scalar::<FixedAscii<9>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        10 => attr
+            .read_scalar::<FixedAscii<10>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        11 => attr
+            .read_scalar::<FixedAscii<11>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        12 => attr
+            .read_scalar::<FixedAscii<12>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        13 => attr
+            .read_scalar::<FixedAscii<13>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        14 => attr
+            .read_scalar::<FixedAscii<14>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        15 => attr
+            .read_scalar::<FixedAscii<15>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
+        16 => attr
+            .read_scalar::<FixedAscii<16>>()
+            .unwrap()
+            .as_str()
+            .to_owned(),
         len => panic!("unsupported MATLAB_class width: {len}"),
+    }
+}
+
+fn decode_matlab_string_saveobj(raw: &[u64]) -> Vec<String> {
+    assert!(raw.len() >= 2, "string saveobj payload is too short");
+
+    let ndims = usize::try_from(raw[1]).unwrap();
+    assert!(raw.len() >= 2 + ndims, "string saveobj dims are truncated");
+
+    let dims = &raw[2..2 + ndims];
+    let count = dims
+        .iter()
+        .copied()
+        .try_fold(1usize, |acc, dim| {
+            acc.checked_mul(usize::try_from(dim).unwrap())
+        })
+        .unwrap();
+
+    let lens_start = 2 + ndims;
+    let lens_end = lens_start + count;
+    assert!(
+        raw.len() >= lens_end,
+        "string saveobj lengths are truncated"
+    );
+
+    let lengths: Vec<usize> = raw[lens_start..lens_end]
+        .iter()
+        .copied()
+        .map(|len| usize::try_from(len).unwrap())
+        .collect();
+
+    let utf16_units = lengths
+        .iter()
+        .copied()
+        .try_fold(0usize, |acc, len| acc.checked_add(len))
+        .unwrap();
+    let payload_words = &raw[lens_end..];
+    let payload_bytes: Vec<u8> = payload_words
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .take(utf16_units * 2)
+        .collect();
+    let utf16: Vec<u16> = payload_bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect();
+
+    let mut offset = 0usize;
+    lengths
+        .into_iter()
+        .map(|len| {
+            let end = offset + len;
+            let value = String::from_utf16(&utf16[offset..end]).unwrap();
+            offset = end;
+            value
+        })
+        .collect()
+}
+
+fn read_emitted_string_saveobj(file: &hdf5::File, object: &hdf5::Dataset) -> Vec<u64> {
+    assert_eq!(read_matlab_class(object, "MATLAB_class"), "string");
+    assert_eq!(
+        object
+            .attr("MATLAB_object_decode")
+            .unwrap()
+            .read_scalar::<i32>()
+            .unwrap(),
+        3
+    );
+
+    let metadata = object.read_raw::<u32>().unwrap();
+    assert_eq!(metadata, vec![MCOS_MAGIC_NUMBER, 2, 1, 1, metadata[4], 1]);
+
+    let subsystem = file.dataset("#subsystem#/MCOS").unwrap();
+    assert_eq!(
+        read_matlab_class(&subsystem, "MATLAB_class"),
+        "FileWrapper__"
+    );
+    assert_eq!(
+        subsystem
+            .attr("MATLAB_object_decode")
+            .unwrap()
+            .read_scalar::<i32>()
+            .unwrap(),
+        3
+    );
+    let refs = subsystem.read_raw::<ObjectReference1>().unwrap();
+    let payload_ref = refs[2 + metadata[4] as usize - 1];
+    match file.dereference(&payload_ref).unwrap() {
+        ReferencedObject::Dataset(payload) => payload.read_raw::<u64>().unwrap(),
+        _ => panic!("expected string saveobj payload dataset"),
     }
 }
 
@@ -88,18 +229,12 @@ fn mat_v73_scalar_string_and_userblock() {
     assert_eq!(file.userblock(), 512);
 
     let ds = file.dataset("greeting").unwrap();
-    assert_eq!(ds.shape(), vec![5, 1]);
-    assert_eq!(read_matlab_class(&ds, "MATLAB_class"), "char");
+    assert_eq!(ds.shape(), vec![1, 6]);
+    let payload = read_emitted_string_saveobj(&file, &ds);
+    assert_eq!(payload[..5], [1, 2, 1, 1, 5]);
     assert_eq!(
-        ds.attr("MATLAB_int_decode")
-            .unwrap()
-            .read_scalar::<i32>()
-            .unwrap(),
-        2
-    );
-    assert_eq!(
-        ds.read_raw::<u16>().unwrap(),
-        "hello".encode_utf16().collect::<Vec<_>>()
+        decode_matlab_string_saveobj(&payload),
+        vec!["hello".to_owned()]
     );
 
     std::fs::remove_file(path).unwrap();
@@ -164,10 +299,10 @@ fn mat_v73_cell_array_uses_references() {
 
     match file.dereference(&refs[1]).unwrap() {
         ReferencedObject::Dataset(item) => {
-            assert_eq!(read_matlab_class(&item, "MATLAB_class"), "char");
+            let payload = read_emitted_string_saveobj(&file, &item);
             assert_eq!(
-                item.read_raw::<u16>().unwrap(),
-                "hi".encode_utf16().collect::<Vec<_>>()
+                decode_matlab_string_saveobj(&payload),
+                vec!["hi".to_owned()]
             );
         }
         _ => panic!("expected dataset reference"),
@@ -265,6 +400,77 @@ fn mat_v73_empty_complex_array_uses_complex_dataset_type() {
 }
 
 #[test]
+fn matlab_string_fixture_v73_schema() {
+    let file = hdf5::File::open(fixture_path("test_string_v73.mat")).unwrap();
+
+    for (name, payload) in [
+        ("string_scalar", vec![3707764736, 2, 1, 1, 1, 1]),
+        ("string_array", vec![3707764736, 2, 1, 1, 2, 1]),
+        ("string_empty", vec![3707764736, 2, 1, 1, 3, 1]),
+    ] {
+        let ds = file.dataset(name).unwrap();
+        assert_eq!(ds.shape(), vec![1, 6]);
+        assert_eq!(read_matlab_class(&ds, "MATLAB_class"), "string");
+        assert_eq!(
+            ds.attr("MATLAB_object_decode")
+                .unwrap()
+                .read_scalar::<i32>()
+                .unwrap(),
+            3
+        );
+        assert_eq!(ds.read_raw::<u32>().unwrap(), payload);
+    }
+
+    let subsystem = file.dataset("#subsystem#/MCOS").unwrap();
+    assert_eq!(subsystem.shape(), vec![1, 8]);
+    assert_eq!(
+        read_matlab_class(&subsystem, "MATLAB_class"),
+        "FileWrapper__"
+    );
+    assert_eq!(
+        subsystem
+            .attr("MATLAB_object_decode")
+            .unwrap()
+            .read_scalar::<i32>()
+            .unwrap(),
+        3
+    );
+}
+
+#[test]
+fn matlab_string_fixture_v73_saveobj_payloads() {
+    let file = hdf5::File::open(fixture_path("test_string_v73.mat")).unwrap();
+
+    let scalar = file.dataset("#refs#/c").unwrap();
+    assert_eq!(read_matlab_class(&scalar, "MATLAB_class"), "uint64");
+    assert_eq!(
+        decode_matlab_string_saveobj(&scalar.read_raw::<u64>().unwrap()),
+        vec!["Hello".to_owned()]
+    );
+
+    let array = file.dataset("#refs#/d").unwrap();
+    assert_eq!(read_matlab_class(&array, "MATLAB_class"), "uint64");
+    assert_eq!(
+        decode_matlab_string_saveobj(&array.read_raw::<u64>().unwrap()),
+        vec![
+            "Apple".to_owned(),
+            "Date".to_owned(),
+            "Banana".to_owned(),
+            "Fig".to_owned(),
+            "Cherry".to_owned(),
+            "Grapes".to_owned(),
+        ]
+    );
+
+    let empty = file.dataset("#refs#/e").unwrap();
+    assert_eq!(read_matlab_class(&empty, "MATLAB_class"), "uint64");
+    assert_eq!(
+        decode_matlab_string_saveobj(&empty.read_raw::<u64>().unwrap()),
+        vec![String::new()]
+    );
+}
+
+#[test]
 fn mat_v73_workspace_object_sanitizes_names() {
     let path = temp_path("workspace");
     let mut object = Object::new();
@@ -317,6 +523,12 @@ fn mat_v73_struct_groups_include_fields_metadata() {
             .map(|field| field.iter().map(|ch| ch.as_str()).collect::<String>())
             .collect::<Vec<_>>(),
         vec!["answer", "label"]
+    );
+    let label = group.dataset("label").unwrap();
+    let payload = read_emitted_string_saveobj(&file, &label);
+    assert_eq!(
+        decode_matlab_string_saveobj(&payload),
+        vec!["ready".to_owned()]
     );
 
     std::fs::remove_file(path).unwrap();
@@ -373,10 +585,35 @@ fn mat_v73_failed_overwrite_preserves_existing_file() {
 
     let file = hdf5::File::open(&path).unwrap();
     let ds = file.dataset("greeting").unwrap();
-    assert_eq!(read_matlab_class(&ds, "MATLAB_class"), "char");
+    let payload = read_emitted_string_saveobj(&file, &ds);
     assert_eq!(
-        ds.read_raw::<u16>().unwrap(),
-        "hello".encode_utf16().collect::<Vec<_>>()
+        decode_matlab_string_saveobj(&payload),
+        vec!["hello".to_owned()]
+    );
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn mat_v73_typed_string_array_uses_matlab_string() {
+    let path = temp_path("typed-strings");
+    let values = vec!["left".to_owned(), "right".to_owned()];
+    let bytes = beve::to_vec_string_slice(&values);
+    beve::beve_slice_to_mat_v73_file(
+        &bytes,
+        &path,
+        RootBinding::NamedVariable("labels"),
+        &MatV73Options::default(),
+    )
+    .unwrap();
+
+    let file = hdf5::File::open(&path).unwrap();
+    let ds = file.dataset("labels").unwrap();
+    let payload = read_emitted_string_saveobj(&file, &ds);
+    assert_eq!(payload[..6], [1, 2, 2, 1, 4, 5]);
+    assert_eq!(
+        decode_matlab_string_saveobj(&payload),
+        vec!["left".to_owned(), "right".to_owned()]
     );
 
     std::fs::remove_file(path).unwrap();

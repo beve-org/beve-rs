@@ -17,6 +17,12 @@ use crate::raw::{ComplexHeader, ObjectHeader, Reader, TypedArrayClass};
 
 const MATLAB_USERBLOCK_SIZE: u64 = 512;
 const MATLAB_NAME_MAX: usize = 2048;
+const MCOS_MAGIC_NUMBER: u32 = 0xDD00_0000;
+const FILEWRAPPER_VERSION: u32 = 4;
+const MATLAB_STRING_SAVEOBJ_VERSION: u64 = 1;
+const MATLAB_OBJECT_DECODE_OPAQUE: i32 = 3;
+const MATLAB_CLASS_STRING: &str = "string";
+const MATLAB_CLASS_FILEWRAPPER: &str = "FileWrapper__";
 const MATLAB_KEYWORDS: &[&str] = &[
     "break",
     "case",
@@ -76,7 +82,7 @@ pub enum InvalidNamePolicy {
 pub enum UnsupportedPolicy {
     /// Return an error for unsupported values.
     Error,
-    /// Convert unsupported scalar values to MATLAB char arrays using their string form.
+    /// Convert unsupported scalar values to MATLAB string objects using their string form.
     StringFallback,
     /// Widen unsupported numeric values to the nearest MATLAB numeric class.
     LossyNumericWidening,
@@ -198,12 +204,14 @@ pub fn beve_slice_to_mat_v73_file<P: AsRef<Path>>(
         refs,
         options: options.clone(),
         next_ref_id: 0,
+        string_objects: StringObjectState::new(),
     };
     let mut reader = Reader::new(beve);
     writer.write_root(&mut reader, root)?;
     if !reader.is_finished() {
         return Err(Error::InvalidType("unexpected trailing BEVE data"));
     }
+    writer.finish()?;
     writer.file.flush()?;
     drop(writer);
     write_userblock(temp_output.path())?;
@@ -227,6 +235,7 @@ struct MatWriter {
     refs: Group,
     options: MatV73Options,
     next_ref_id: u64,
+    string_objects: StringObjectState,
 }
 
 #[derive(Clone, Copy)]
@@ -236,6 +245,27 @@ struct MatrixWriteContext<'a> {
     path: &'a str,
     layout: MatrixLayout,
     extents: &'a [usize],
+}
+
+struct StringObjectState {
+    payload_refs: Vec<ObjectReference1>,
+}
+
+impl StringObjectState {
+    fn new() -> Self {
+        Self {
+            payload_refs: Vec::new(),
+        }
+    }
+
+    fn register(&mut self, payload_ref: ObjectReference1) -> u32 {
+        self.payload_refs.push(payload_ref);
+        self.payload_refs.len() as u32
+    }
+
+    fn is_empty(&self) -> bool {
+        self.payload_refs.is_empty()
+    }
 }
 
 struct TempOutputFile {
@@ -301,6 +331,13 @@ impl Drop for TempOutputFile {
 }
 
 impl MatWriter {
+    fn finish(&mut self) -> Result<()> {
+        if self.string_objects.is_empty() {
+            return Ok(());
+        }
+        self.write_string_subsystem()
+    }
+
     fn write_root(&mut self, reader: &mut Reader<'_>, root: RootBinding<'_>) -> Result<()> {
         match root {
             RootBinding::NamedVariable(name) => {
@@ -359,8 +396,8 @@ impl MatWriter {
             }
             TYPE_NUMBER => self.write_number(parent, name, reader, header, path),
             TYPE_STRING => {
-                let value = reader.read_string()?;
-                self.write_char(parent, name, value)
+                let value = reader.read_string()?.to_owned();
+                self.write_string_scalar(parent, name, &value)
             }
             TYPE_OBJECT => self.write_object(parent, name, reader, header, path),
             TYPE_TYPED_ARRAY => self.write_typed_array(parent, name, reader, header, path),
@@ -520,7 +557,7 @@ impl MatWriter {
                 self.write_unsigned_array(parent, name, reader, info.byte_code, info.len, path)
             }
             TypedArrayClass::Bool => self.write_bool_array(parent, name, reader, info.len),
-            TypedArrayClass::String => self.write_string_cell_array(parent, name, reader, info.len),
+            TypedArrayClass::String => self.write_string_array(parent, name, reader, info.len),
         }
     }
 
@@ -688,10 +725,7 @@ impl MatWriter {
             TypedArrayClass::Bool => {
                 self.write_matrix_bool(ctx.parent, ctx.name, reader, ctx.extents, ctx.layout)
             }
-            TypedArrayClass::String => Err(Error::msg(format!(
-                "string matrices are not supported at {}",
-                ctx.path
-            ))),
+            TypedArrayClass::String => self.write_matrix_string(reader, ctx),
         }
     }
 
@@ -941,28 +975,34 @@ impl MatWriter {
         self.write_logical(parent, name, &matlab_dims, &unpacked)
     }
 
-    fn write_string_cell_array(
+    fn write_string_array(
         &mut self,
         parent: &Group,
         name: &str,
         reader: &mut Reader<'_>,
         len: usize,
     ) -> Result<()> {
-        let matlab_dims = vector_dims(len, self.options.one_dimensional_mode);
-        if len == 0 {
-            return self.write_empty_marker(parent, name, &matlab_dims, "cell", None);
-        }
-        let mut refs = Vec::with_capacity(len);
+        let mut values = Vec::with_capacity(len);
         for _ in 0..len {
-            let value = reader.read_string()?;
-            let ref_name = self.next_ref_name();
-            self.write_char(&self.refs, &ref_name, value)?;
-            refs.push(
-                self.file
-                    .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))?,
-            );
+            values.push(reader.read_string()?.to_owned());
         }
-        self.write_reference_array(parent, name, &matlab_dims, &refs, "cell")
+        let matlab_dims = vector_dims(len, self.options.one_dimensional_mode);
+        self.write_string_object(parent, name, &values, &matlab_dims)
+    }
+
+    fn write_matrix_string(
+        &mut self,
+        reader: &mut Reader<'_>,
+        ctx: MatrixWriteContext<'_>,
+    ) -> Result<()> {
+        let len = product(ctx.extents)?;
+        let mut values = Vec::with_capacity(len);
+        for _ in 0..len {
+            values.push(reader.read_string()?.to_owned());
+        }
+        let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+        let matlab_dims = matrix_dims(ctx.extents, self.options.one_dimensional_mode);
+        self.write_string_object(ctx.parent, ctx.name, &values, &matlab_dims)
     }
 
     fn write_matrix_float(
@@ -1160,7 +1200,7 @@ impl MatWriter {
         value: String,
     ) -> Result<()> {
         match self.options.unsupported_policy {
-            UnsupportedPolicy::StringFallback => self.write_char(parent, name, &value),
+            UnsupportedPolicy::StringFallback => self.write_string_scalar(parent, name, &value),
             _ => Err(Error::msg(format!(
                 "unsupported 128-bit integer scalar at {path}"
             ))),
@@ -1236,17 +1276,113 @@ impl MatWriter {
         write_i32_attr(&ds, "MATLAB_int_decode", 1)
     }
 
-    fn write_char(&self, parent: &Group, name: &str, value: &str) -> Result<()> {
-        let code_units: Vec<u16> = value.encode_utf16().collect();
-        let matlab_dims = vec![1, code_units.len()];
-        if code_units.is_empty() {
-            return self.write_empty_marker(parent, name, &matlab_dims, "char", Some(2));
-        }
-        let storage_dims = storage_dims(&matlab_dims);
-        let ds = self.create_dataset::<u16>(parent, name, &storage_dims)?;
-        ds.write_raw(&code_units)?;
-        write_ascii_attr(&ds, "MATLAB_class", "char")?;
-        write_i32_attr(&ds, "MATLAB_int_decode", 2)
+    fn write_string_scalar(&mut self, parent: &Group, name: &str, value: &str) -> Result<()> {
+        self.write_string_object(parent, name, &[value.to_owned()], &[1, 1])
+    }
+
+    fn write_string_object(
+        &mut self,
+        parent: &Group,
+        name: &str,
+        values: &[String],
+        matlab_dims: &[usize],
+    ) -> Result<()> {
+        let payload_ref = self.write_string_saveobj_payload(values, matlab_dims)?;
+        let object_id = self.string_objects.register(payload_ref);
+        let metadata = create_string_object_metadata(object_id);
+        let ds = self.create_row_vector_dataset::<u32>(parent, name, &metadata)?;
+        write_ascii_attr(&ds, "MATLAB_class", MATLAB_CLASS_STRING)?;
+        write_i32_attr(&ds, "MATLAB_object_decode", MATLAB_OBJECT_DECODE_OPAQUE)
+    }
+
+    fn write_string_saveobj_payload(
+        &mut self,
+        values: &[String],
+        matlab_dims: &[usize],
+    ) -> Result<ObjectReference1> {
+        let payload = encode_string_saveobj_payload(values, matlab_dims)?;
+        let ref_name = self.next_ref_name();
+        self.write_numeric(
+            &self.refs,
+            &ref_name,
+            &[1, payload.len()],
+            &payload,
+            "uint64",
+        )?;
+        self.file
+            .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))
+            .map_err(Into::into)
+    }
+
+    fn write_string_subsystem(&mut self) -> Result<()> {
+        let subsystem = self.file.create_group("#subsystem#")?;
+
+        let metadata_ref = self.write_string_subsystem_metadata()?;
+        let canonical_empty_ref = self.write_string_canonical_empty_ref()?;
+        let unknown_template_a = self.write_string_unknown_template_ref()?;
+        let alias_ref = self.write_string_alias_metadata_ref()?;
+        let unknown_template_b = self.write_string_unknown_template_ref()?;
+
+        let mut refs = Vec::with_capacity(self.string_objects.payload_refs.len() + 5);
+        refs.push(metadata_ref);
+        refs.push(canonical_empty_ref);
+        refs.extend(self.string_objects.payload_refs.iter().copied());
+        refs.push(unknown_template_a);
+        refs.push(alias_ref);
+        refs.push(unknown_template_b);
+
+        let mcos = self.create_dataset::<ObjectReference1>(&subsystem, "MCOS", &[1, refs.len()])?;
+        mcos.write_raw(&refs)?;
+        write_ascii_attr(&mcos, "MATLAB_class", MATLAB_CLASS_FILEWRAPPER)?;
+        write_i32_attr(&mcos, "MATLAB_object_decode", MATLAB_OBJECT_DECODE_OPAQUE)
+    }
+
+    fn write_string_subsystem_metadata(&mut self) -> Result<ObjectReference1> {
+        let data = build_string_filewrapper_metadata(self.string_objects.payload_refs.len());
+        let ref_name = self.next_ref_name();
+        let ds = self.create_row_vector_dataset::<u8>(&self.refs, &ref_name, &data)?;
+        write_ascii_attr(&ds, "MATLAB_class", "uint8")?;
+        self.file
+            .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))
+            .map_err(Into::into)
+    }
+
+    fn write_string_canonical_empty_ref(&mut self) -> Result<ObjectReference1> {
+        let ref_name = self.next_ref_name();
+        self.write_empty_marker(&self.refs, &ref_name, &[0, 0], "canonical empty", None)?;
+        self.file
+            .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))
+            .map_err(Into::into)
+    }
+
+    fn write_string_alias_metadata_ref(&mut self) -> Result<ObjectReference1> {
+        let ref_name = self.next_ref_name();
+        let aliases = [0i32, 0];
+        let ds = self.create_row_vector_dataset::<i32>(&self.refs, &ref_name, &aliases)?;
+        write_ascii_attr(&ds, "MATLAB_class", "int32")?;
+        self.file
+            .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))
+            .map_err(Into::into)
+    }
+
+    fn write_string_unknown_template_ref(&mut self) -> Result<ObjectReference1> {
+        let refs = [
+            self.write_string_empty_struct_ref()?,
+            self.write_string_empty_struct_ref()?,
+        ];
+        let ref_name = self.next_ref_name();
+        self.write_reference_array(&self.refs, &ref_name, &[2, 1], &refs, "cell")?;
+        self.file
+            .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))
+            .map_err(Into::into)
+    }
+
+    fn write_string_empty_struct_ref(&mut self) -> Result<ObjectReference1> {
+        let ref_name = self.next_ref_name();
+        self.write_empty_marker(&self.refs, &ref_name, &[1, 0], "struct", None)?;
+        self.file
+            .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))
+            .map_err(Into::into)
     }
 
     fn write_reference_array(
@@ -1303,6 +1439,19 @@ impl MatWriter {
             .shape(shape.to_vec())
             .create(name)
             .map_err(Into::into)
+    }
+
+    fn create_row_vector_dataset<T: H5Type>(
+        &self,
+        parent: &Group,
+        name: &str,
+        data: &[T],
+    ) -> Result<Dataset> {
+        let ds = self.create_dataset::<T>(parent, name, &[1, data.len()])?;
+        if !data.is_empty() {
+            ds.write_raw(data)?;
+        }
+        Ok(ds)
     }
 
     fn maybe_reorder<T: Clone>(
@@ -1410,6 +1559,122 @@ fn unpack_bools(packed: &[u8], len: usize) -> Vec<u8> {
         out.push(bit);
     }
     out
+}
+
+fn create_string_object_metadata(object_id: u32) -> [u32; 6] {
+    [MCOS_MAGIC_NUMBER, 2, 1, 1, object_id, 1]
+}
+
+fn encode_string_saveobj_payload(values: &[String], matlab_dims: &[usize]) -> Result<Vec<u64>> {
+    let expected = product(matlab_dims)?;
+    if expected != values.len() {
+        return Err(Error::msg(format!(
+            "string payload length {} does not match product of dims {}",
+            values.len(),
+            expected
+        )));
+    }
+
+    let mut payload = Vec::with_capacity(2 + matlab_dims.len() + values.len());
+    payload.push(MATLAB_STRING_SAVEOBJ_VERSION);
+    payload.push(matlab_dims.len() as u64);
+    payload.extend(matlab_dims.iter().map(|&dim| dim as u64));
+
+    let mut utf16_bytes = Vec::new();
+    for value in values {
+        let units: Vec<u16> = value.encode_utf16().collect();
+        payload.push(units.len() as u64);
+        for unit in units {
+            utf16_bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+    }
+
+    while utf16_bytes.len() % 8 != 0 {
+        utf16_bytes.push(0);
+    }
+    payload.extend(
+        utf16_bytes
+            .chunks_exact(8)
+            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap())),
+    );
+    Ok(payload)
+}
+
+fn build_string_filewrapper_metadata(object_count: usize) -> Vec<u8> {
+    let mut names_bytes = b"any\0string\0".to_vec();
+    while !names_bytes.len().is_multiple_of(8) {
+        names_bytes.push(0);
+    }
+
+    let mut region_offsets = [0u32; 8];
+    let mut regions = Vec::new();
+
+    let version = u32_bytes(&[FILEWRAPPER_VERSION]);
+    let num_names = u32_bytes(&[2]);
+    let class_id_metadata = u32_bytes(&[0, 0, 0, 0, 0, 2, 0, 0]);
+
+    let mut saveobj_metadata = Vec::with_capacity(2 + object_count * 4);
+    saveobj_metadata.extend_from_slice(&[0, 0]);
+    for idx in 0..object_count {
+        saveobj_metadata.extend_from_slice(&[1, 1, 1, idx as u32]);
+    }
+    let saveobj_metadata = u32_bytes(&saveobj_metadata);
+
+    let mut object_id_metadata = Vec::with_capacity(6 + object_count * 6);
+    object_id_metadata.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+    for id in 1..=object_count as u32 {
+        object_id_metadata.extend_from_slice(&[1, 0, 0, id, 0, id]);
+    }
+    let object_id_metadata = u32_bytes(&object_id_metadata);
+
+    let nobj_metadata = u32_bytes(&[0, 0]);
+
+    let mut dynprop_metadata = Vec::with_capacity(2 + object_count * 2);
+    dynprop_metadata.extend_from_slice(&[0, 0]);
+    for _ in 0..object_count {
+        dynprop_metadata.extend_from_slice(&[0, 0]);
+    }
+    let dynprop_metadata = u32_bytes(&dynprop_metadata);
+
+    let region6 = Vec::new();
+    let region7 = vec![0u8; 8];
+
+    let mut offset = 40u32 + names_bytes.len() as u32;
+    region_offsets[0] = offset;
+    offset += class_id_metadata.len() as u32;
+    region_offsets[1] = offset;
+    offset += saveobj_metadata.len() as u32;
+    region_offsets[2] = offset;
+    offset += object_id_metadata.len() as u32;
+    region_offsets[3] = offset;
+    offset += nobj_metadata.len() as u32;
+    region_offsets[4] = offset;
+    offset += dynprop_metadata.len() as u32;
+    region_offsets[5] = offset;
+    offset += region6.len() as u32;
+    region_offsets[6] = offset;
+    offset += region7.len() as u32;
+    region_offsets[7] = offset;
+
+    regions.extend_from_slice(&version);
+    regions.extend_from_slice(&num_names);
+    regions.extend_from_slice(&u32_bytes(&region_offsets));
+    regions.extend_from_slice(&names_bytes);
+    regions.extend_from_slice(&class_id_metadata);
+    regions.extend_from_slice(&saveobj_metadata);
+    regions.extend_from_slice(&object_id_metadata);
+    regions.extend_from_slice(&nobj_metadata);
+    regions.extend_from_slice(&dynprop_metadata);
+    regions.extend_from_slice(&region6);
+    regions.extend_from_slice(&region7);
+    regions
+}
+
+fn u32_bytes(values: &[u32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
 }
 
 fn write_ascii_attr(target: &hdf5::Location, name: &str, value: &str) -> Result<()> {

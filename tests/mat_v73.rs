@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use beve::fast::{to_vec_matrix_f64, MatrixLayoutFast};
 use beve::{
     Complex, InvalidNamePolicy, Key, MatV73Options, NullPolicy, Object, RootBinding,
     UnsupportedPolicy, Value,
@@ -379,4 +380,34 @@ fn mat_v73_failed_overwrite_preserves_existing_file() {
     );
 
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn mat_v73_rejects_matrix_extension_with_empty_extents() {
+    let path = temp_path("matrix-empty-extents");
+    let bytes = to_vec_matrix_f64(MatrixLayoutFast::Left, &[], &[1.0]);
+    let err = beve::beve_slice_to_mat_v73_file(
+        &bytes,
+        &path,
+        RootBinding::NamedVariable("bad_matrix"),
+        &MatV73Options::default(),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("matrix extents cannot be empty"));
+    assert!(!path.exists());
+}
+
+#[test]
+fn mat_v73_rejects_matrix_extension_with_zero_extent() {
+    let path = temp_path("matrix-zero-extent");
+    let bytes = to_vec_matrix_f64(MatrixLayoutFast::Left, &[0, 2], &[]);
+    let err = beve::beve_slice_to_mat_v73_file(
+        &bytes,
+        &path,
+        RootBinding::NamedVariable("bad_matrix"),
+        &MatV73Options::default(),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("matrix dimensions cannot be zero"));
+    assert!(!path.exists());
 }

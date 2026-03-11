@@ -576,6 +576,7 @@ impl MatWriter {
             MatrixLayout::Left
         };
         let extents = reader.read_matrix_extents()?;
+        validate_matrix_extents(&extents, path)?;
         let header = reader.read_header()?;
         match parse_type(header) {
             TYPE_TYPED_ARRAY => {
@@ -1305,6 +1306,20 @@ fn product(extents: &[usize]) -> Result<usize> {
     extents.iter().try_fold(1usize, |acc, &dim| {
         acc.checked_mul(dim).ok_or(Error::InvalidSize)
     })
+}
+
+fn validate_matrix_extents(extents: &[usize], path: &str) -> Result<()> {
+    if extents.is_empty() {
+        return Err(Error::msg(format!(
+            "matrix extents cannot be empty at {path}"
+        )));
+    }
+    if extents.contains(&0) {
+        return Err(Error::msg(format!(
+            "matrix dimensions cannot be zero at {path}"
+        )));
+    }
+    Ok(())
 }
 
 fn reorder_row_major_to_column_major<T: Clone>(data: &[T], extents: &[usize]) -> Vec<T> {

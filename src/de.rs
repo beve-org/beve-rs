@@ -1,8 +1,8 @@
 use half::{bf16, f16};
+use serde::Deserialize;
 use serde::de::value::{BoolDeserializer, BorrowedStrDeserializer};
 use serde::de::{self, Visitor};
 use serde::forward_to_deserialize_any;
-use serde::Deserialize;
 
 use crate::error::{Error, Result};
 use crate::header::*;
@@ -1562,4 +1562,3 @@ impl<'de> de::Deserializer<'de> for HalfBitsDeserializer {
         false
     }
 }
-

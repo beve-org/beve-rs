@@ -342,6 +342,7 @@ impl MatWriter {
         match root {
             RootBinding::NamedVariable(name) => {
                 let variable = self.normalize_name(name, &mut BTreeSet::new())?;
+                // Clone the ref-counted HDF5 handle to avoid borrowing self immutably and mutably at once.
                 let file = self.file.clone();
                 self.write_named_value(&file, &variable, reader, "$")
             }
@@ -1185,6 +1186,7 @@ impl MatWriter {
         path: &str,
     ) -> Result<ObjectReference1> {
         let ref_name = self.next_ref_name();
+        // Clone the ref-counted HDF5 handle to avoid borrowing self immutably and mutably at once.
         let refs = self.refs.clone();
         self.write_named_value(&refs, &ref_name, reader, path)?;
         self.file

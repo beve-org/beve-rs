@@ -1,6 +1,6 @@
 #![deny(warnings)]
 
-use beve::{from_value, from_value_ref, Key, Number, Object, Value};
+use beve::{Key, Number, Object, Value, from_value, from_value_ref};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

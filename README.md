@@ -7,7 +7,7 @@ Grab the crate from [crates.io](https://crates.io/crates/beve) and add it to you
 [dependencies]
 beve = "0.1"
 ```
-The library only depends on `serde` and requires Rust 1.87 or newer. Half-precision floats via `half::f16` are supported alongside the standard numeric types.
+The library only depends on `serde` and requires Rust 1.88 or newer. Half-precision floats via `half::f16` are supported alongside the standard numeric types.
 
 ## Encode & Decode with Serde
 Use `beve::to_vec` and `beve::from_slice` for idiomatic serde round-trips:
@@ -208,6 +208,45 @@ fn encode_science() -> beve::Result<()> {
 }
 ```
 `Matrix` and `MatrixOwned<T>` use the BEVE matrix extension for supported element types (`bool`, numeric scalars, and `Complex<f32/f64>`). For unsupported element types, serialization falls back to a `{ layout, extents, value }` map.
+
+## MATLAB / `.mat` Export
+Enable the optional `mat` feature to convert BEVE payloads directly into MATLAB v7.3 MAT files:
+```toml
+[dependencies]
+beve = { version = "0.1", features = ["mat"] }
+```
+
+The MAT feature depends on HDF5. On Linux that typically means installing `libhdf5-dev` so the build can find headers and libraries via `pkg-config` or `HDF5_DIR`.
+
+Use `RootBinding::NamedVariable` when one BEVE value should become one MATLAB variable, or `RootBinding::WorkspaceObject` when a string-keyed BEVE object should expand into multiple top-level workspace variables:
+```rust
+use beve::{MatV73Options, RootBinding};
+
+fn write_mat() -> beve::Result<()> {
+    let bytes = beve::to_vec(&vec![1.0f64, 2.0, 3.0])?;
+    beve::beve_slice_to_mat_v73_file(
+        &bytes,
+        "values.mat",
+        RootBinding::NamedVariable("values"),
+        &MatV73Options::default(),
+    )?;
+    Ok(())
+}
+```
+
+Current mappings:
+- numeric, logical, and complex scalars/arrays
+- UTF-8 strings and typed string arrays as MATLAB `string` objects
+- generic BEVE arrays as MATLAB cell arrays
+- string-keyed BEVE objects as MATLAB structs
+- BEVE matrix extensions, including row-major to column-major reorder when needed
+- `null` as `struct([])` by default
+
+Important limits:
+- only MATLAB v7.3 is supported
+- non-string object keys cannot map to MATLAB structs/workspace variables
+- `i128`, `u128`, `bf16`, and `f16` require explicit fallback policies when MATLAB has no direct native representation
+- the MATIO-based oracle used in tests does not decode MATLAB `string` objects semantically, so string coverage is validated structurally against MATLAB-generated fixtures
 
 ## Examples
 - `cargo run --example emit_bool` writes a short boolean stream to stdout so you can inspect the raw bytes.

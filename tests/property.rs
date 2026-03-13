@@ -1,6 +1,6 @@
 #![deny(warnings)]
 
-use beve::{from_slice, to_vec, to_vec_complex64_slice, to_vec_typed_slice, Complex};
+use beve::{Complex, from_slice, to_vec, to_vec_complex64_slice, to_vec_typed_slice};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::sample::select;

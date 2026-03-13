@@ -48,3 +48,10 @@ impl serde::de::Error for Error {
         Error::MessageOwned(msg.to_string())
     }
 }
+
+#[cfg(feature = "mat")]
+impl From<hdf5_metno::Error> for Error {
+    fn from(value: hdf5_metno::Error) -> Self {
+        Error::MessageOwned(value.to_string())
+    }
+}

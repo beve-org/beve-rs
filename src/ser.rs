@@ -1731,20 +1731,19 @@ impl<'a> ser::SerializeSeq for SeqSerializer<'a> {
         if let SeqMode::TypedBool {
             byte_acc, bit_idx, ..
         } = &mut self.mode
+            && *bit_idx != 0
         {
-            if *bit_idx != 0 {
-                self.ser.push(*byte_acc);
-            }
+            self.ser.push(*byte_acc);
         }
 
-        if matches!(self.mode, SeqMode::Unknown) {
-            if let Some(len) = self.len {
-                debug_assert_eq!(
-                    len, self.count,
-                    "sequence ended without serializing expected elements"
-                );
-                self.ser.write_generic_array_header(len);
-            }
+        if matches!(self.mode, SeqMode::Unknown)
+            && let Some(len) = self.len
+        {
+            debug_assert_eq!(
+                len, self.count,
+                "sequence ended without serializing expected elements"
+            );
+            self.ser.write_generic_array_header(len);
         }
         if self.len.is_none() {
             match self.mode {
@@ -1917,7 +1916,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                     _ => {
                         return Err(Error::Mismatch(
                             "object keys must be homogeneous signed integers of same width",
-                        ))
+                        ));
                     }
                 }
                 let raw = (v as i128).to_le_bytes();
@@ -1946,7 +1945,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                     _ => {
                         return Err(Error::Mismatch(
                             "object keys must be homogeneous signed integers of same width",
-                        ))
+                        ));
                     }
                 }
                 let raw = (v as i128).to_le_bytes();
@@ -1975,7 +1974,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                     _ => {
                         return Err(Error::Mismatch(
                             "object keys must be homogeneous signed integers of same width",
-                        ))
+                        ));
                     }
                 }
                 let raw = (v as i128).to_le_bytes();
@@ -2004,7 +2003,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                     _ => {
                         return Err(Error::Mismatch(
                             "object keys must be homogeneous signed integers of same width",
-                        ))
+                        ));
                     }
                 }
                 let raw = (v as i128).to_le_bytes();
@@ -2033,7 +2032,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                     _ => {
                         return Err(Error::Mismatch(
                             "object keys must be homogeneous signed integers of same width",
-                        ))
+                        ));
                     }
                 }
                 let raw = v.to_le_bytes();
@@ -2062,7 +2061,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                     _ => {
                         return Err(Error::Mismatch(
                             "object keys must be homogeneous unsigned integers of same width",
-                        ))
+                        ));
                     }
                 }
                 let raw = (v as u128).to_le_bytes();
@@ -2091,7 +2090,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                     _ => {
                         return Err(Error::Mismatch(
                             "object keys must be homogeneous unsigned integers of same width",
-                        ))
+                        ));
                     }
                 }
                 let raw = (v as u128).to_le_bytes();
@@ -2120,7 +2119,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                     _ => {
                         return Err(Error::Mismatch(
                             "object keys must be homogeneous unsigned integers of same width",
-                        ))
+                        ));
                     }
                 }
                 let raw = (v as u128).to_le_bytes();
@@ -2149,7 +2148,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                     _ => {
                         return Err(Error::Mismatch(
                             "object keys must be homogeneous unsigned integers of same width",
-                        ))
+                        ));
                     }
                 }
                 let raw = (v as u128).to_le_bytes();
@@ -2178,7 +2177,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                     _ => {
                         return Err(Error::Mismatch(
                             "object keys must be homogeneous unsigned integers of same width",
-                        ))
+                        ));
                     }
                 }
                 let raw = v.to_le_bytes();

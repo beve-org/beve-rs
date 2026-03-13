@@ -2,12 +2,12 @@ use crate::de::from_slice;
 use crate::fast::{
     to_vec_complex32_slice, to_vec_complex64_slice, write_bool_slice, write_typed_slice,
 };
-use crate::header::{make_extension_header, ARRAY_UNSIGNED, EXT_MATRICES, TYPE_TYPED_ARRAY};
+use crate::header::{ARRAY_UNSIGNED, EXT_MATRICES, TYPE_TYPED_ARRAY, make_extension_header};
 use crate::size::write_size;
 use crate::value::Value;
 use core::any::TypeId;
 use half::{bf16, f16};
-use serde::{de, ser, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de, ser};
 
 pub(crate) const NT_RAW_VALUE: &str = "__beve_raw_value";
 pub(crate) const NT_COMPLEX32: &str = "__beve_complex32";

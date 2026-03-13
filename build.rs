@@ -198,10 +198,10 @@ fn env_path_list(list_var: &str, single_var: &str) -> Vec<PathBuf> {
         .into_iter()
         .map(PathBuf::from)
         .collect();
-    if let Ok(single) = env::var(single_var) {
-        if !single.trim().is_empty() {
-            out.push(PathBuf::from(single));
-        }
+    if let Ok(single) = env::var(single_var)
+        && !single.trim().is_empty()
+    {
+        out.push(PathBuf::from(single));
     }
     out
 }

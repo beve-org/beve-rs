@@ -1,8 +1,8 @@
 use half::{bf16, f16};
 use serde::de::value::{BoolDeserializer, BorrowedStrDeserializer};
-use serde::de::{self, DeserializeOwned, Visitor};
+use serde::de::{self, Visitor};
 use serde::forward_to_deserialize_any;
-use std::string::String;
+use serde::Deserialize;
 
 use crate::error::{Error, Result};
 use crate::header::*;
@@ -124,7 +124,25 @@ pub struct Deserializer<'de> {
     pos: usize,
 }
 
-pub fn from_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+/// Deserialize a value from a BEVE byte slice.
+///
+/// Supports zero-copy deserialization: types containing `&'de str` fields
+/// borrow directly from the input buffer instead of allocating.
+///
+/// # Example
+///
+/// ```rust
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Info<'a> {
+///     name: &'a str,
+///     count: u32,
+/// }
+///
+/// let bytes = beve::to_vec(&("hello", 42u32)).unwrap();
+/// ```
+pub fn from_slice<'de, T: Deserialize<'de>>(bytes: &'de [u8]) -> Result<T> {
     let mut de = Deserializer {
         input: bytes,
         pos: 0,
@@ -279,7 +297,7 @@ impl<'de> Deserializer<'de> {
         decode_utf8(s, "invalid utf-8")
     }
 
-    fn read_enum_tag(&mut self) -> Result<EnumTag> {
+    fn read_enum_tag(&mut self) -> Result<EnumTag<'de>> {
         let header = self.read_byte()?;
         match parse_type(header) {
             TYPE_NUMBER => {
@@ -299,7 +317,7 @@ impl<'de> Deserializer<'de> {
                 }
             }
             TYPE_STRING => {
-                let name = self.parse_string_borrowed()?.to_owned();
+                let name = self.parse_string_borrowed()?;
                 Ok(EnumTag::Name(name))
             }
             _ => Err(Error::InvalidType("unsupported enum tag")),
@@ -563,9 +581,55 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
         self.deserialize_any(visitor)
     }
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        let header = self.peek_byte()?;
+        let ty = parse_type(header);
+        if ty == TYPE_TYPED_ARRAY
+            && parse_subtype(header) == ARRAY_UNSIGNED
+            && parse_byte_count_code(header) == 0
+        {
+            self.read_byte()?;
+            let len = read_size(self.input, &mut self.pos)? as usize;
+            let data = self.read_exact(len)?;
+            return visitor.visit_borrowed_bytes(data);
+        }
+        // Empty sequences serialize as generic arrays; treat as empty bytes
+        if ty == TYPE_GENERIC_ARRAY {
+            self.read_byte()?;
+            let len = read_size(self.input, &mut self.pos)? as usize;
+            if len == 0 {
+                return visitor.visit_borrowed_bytes(&[]);
+            }
+            // Non-empty generic array: fall through via visit_seq
+            return visitor.visit_seq(SeqAccessGeneric {
+                de: self,
+                remaining: len,
+            });
+        }
         self.deserialize_any(visitor)
     }
     fn deserialize_byte_buf<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        let header = self.peek_byte()?;
+        let ty = parse_type(header);
+        if ty == TYPE_TYPED_ARRAY
+            && parse_subtype(header) == ARRAY_UNSIGNED
+            && parse_byte_count_code(header) == 0
+        {
+            self.read_byte()?;
+            let len = read_size(self.input, &mut self.pos)? as usize;
+            let data = self.read_exact(len)?;
+            return visitor.visit_borrowed_bytes(data);
+        }
+        if ty == TYPE_GENERIC_ARRAY {
+            self.read_byte()?;
+            let len = read_size(self.input, &mut self.pos)? as usize;
+            if len == 0 {
+                return visitor.visit_borrowed_bytes(&[]);
+            }
+            return visitor.visit_seq(SeqAccessGeneric {
+                de: self,
+                remaining: len,
+            });
+        }
         self.deserialize_any(visitor)
     }
 
@@ -674,13 +738,7 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
             }
             TYPE_STRING => {
                 let _ = self.read_byte()?; // consume string header
-                let len = read_size(self.input, &mut self.pos)? as usize;
-                if self.pos + len > self.input.len() {
-                    return Err(Error::Eof);
-                }
-                let s =
-                    decode_utf8(&self.input[self.pos..self.pos + len], "invalid utf-8")?.to_owned();
-                self.pos += len;
+                let s = self.parse_string_borrowed()?;
                 visitor.visit_enum(EnumStrAccess { name: s })
             }
             _ => self.deserialize_any(visitor),
@@ -1195,14 +1253,14 @@ impl<'de, 'a> de::MapAccess<'de> for MapAccessUnsigned<'a, 'de> {
 
 // =============== EnumAccess ===============
 
-enum EnumTag {
+enum EnumTag<'de> {
     Index(u64),
-    Name(String),
+    Name(&'de str),
 }
 
 struct EnumAccess<'a, 'de> {
     de: &'a mut Deserializer<'de>,
-    tag: EnumTag,
+    tag: EnumTag<'de>,
 }
 impl<'de, 'a> de::EnumAccess<'de> for EnumAccess<'a, 'de> {
     type Error = Error;
@@ -1219,7 +1277,7 @@ impl<'de, 'a> de::EnumAccess<'de> for EnumAccess<'a, 'de> {
                 Ok((v, VariantAccess { de: self.de }))
             }
             EnumTag::Name(name) => {
-                let v = seed.deserialize(StrDe(name))?;
+                let v = seed.deserialize(BorrowedStrDeserializer::new(name))?;
                 Ok((v, VariantAccess { de: self.de }))
             }
         }
@@ -1268,17 +1326,17 @@ impl<'de> de::EnumAccess<'de> for EnumIndexAccess {
     }
 }
 
-struct EnumStrAccess {
-    name: String,
+struct EnumStrAccess<'de> {
+    name: &'de str,
 }
-impl<'de> de::EnumAccess<'de> for EnumStrAccess {
+impl<'de> de::EnumAccess<'de> for EnumStrAccess<'de> {
     type Error = Error;
     type Variant = VariantAccessNoValue;
     fn variant_seed<V: de::DeserializeSeed<'de>>(
         self,
         seed: V,
     ) -> Result<(V::Value, Self::Variant)> {
-        let v = seed.deserialize(StrDe(self.name))?;
+        let v = seed.deserialize(BorrowedStrDeserializer::new(self.name))?;
         Ok((v, VariantAccessNoValue))
     }
 }
@@ -1505,19 +1563,3 @@ impl<'de> de::Deserializer<'de> for HalfBitsDeserializer {
     }
 }
 
-struct StrDe(String);
-impl<'de> de::Deserializer<'de> for StrDe {
-    type Error = Error;
-    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_string(self.0)
-    }
-    fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_string(self.0)
-    }
-    fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_str(&self.0)
-    }
-    forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char bytes byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct map struct enum identifier ignored_any
-    }
-}

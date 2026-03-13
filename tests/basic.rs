@@ -639,3 +639,192 @@ fn validate_slice_accepts_matrix_extension() {
     );
     beve::validate_slice(&bytes).unwrap();
 }
+
+// =============== Zero-copy deserialization tests ===============
+
+#[test]
+fn zero_copy_borrowed_str() {
+    let bytes = beve::to_vec(&"hello world").unwrap();
+    let borrowed: &str = beve::from_slice(&bytes).unwrap();
+    assert_eq!(borrowed, "hello world");
+}
+
+#[test]
+fn zero_copy_struct_with_borrowed_fields() {
+    #[derive(Serialize)]
+    struct InfoOwned {
+        name: String,
+        tag: String,
+    }
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Info<'a> {
+        name: &'a str,
+        tag: &'a str,
+    }
+
+    let original = InfoOwned {
+        name: "alice".to_string(),
+        tag: "admin".to_string(),
+    };
+    let bytes = beve::to_vec(&original).unwrap();
+    let info: Info = beve::from_slice(&bytes).unwrap();
+    assert_eq!(info.name, "alice");
+    assert_eq!(info.tag, "admin");
+}
+
+#[test]
+fn zero_copy_cow_str() {
+    use std::borrow::Cow;
+
+    // Serde's generic Cow<T> impl always produces Cow::Owned via T::Owned::deserialize.
+    // Zero-copy borrowing is available through &str fields directly.
+    let bytes = beve::to_vec(&"hello").unwrap();
+    let cow: Cow<str> = beve::from_slice(&bytes).unwrap();
+    assert_eq!(&*cow, "hello");
+}
+
+#[test]
+fn zero_copy_vec_of_borrowed_str() {
+    let vs: Vec<String> = vec!["alpha".into(), "beta".into(), "gamma".into()];
+    let bytes = beve::to_vec(&vs).unwrap();
+    let borrowed: Vec<&str> = beve::from_slice(&bytes).unwrap();
+    assert_eq!(borrowed, vec!["alpha", "beta", "gamma"]);
+}
+
+#[test]
+fn zero_copy_mixed_struct() {
+    #[derive(Serialize)]
+    struct DataOwned {
+        label: String,
+        values: Vec<f64>,
+        count: u32,
+    }
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Data<'a> {
+        label: &'a str,
+        values: Vec<f64>,
+        count: u32,
+    }
+
+    let original = DataOwned {
+        label: "sensor_1".to_string(),
+        values: vec![1.0, 2.5, 3.75],
+        count: 42,
+    };
+    let bytes = beve::to_vec(&original).unwrap();
+    let data: Data = beve::from_slice(&bytes).unwrap();
+    assert_eq!(data.label, "sensor_1");
+    assert_eq!(data.values, vec![1.0, 2.5, 3.75]);
+    assert_eq!(data.count, 42);
+}
+
+#[test]
+fn zero_copy_map_with_borrowed_keys() {
+    use std::collections::BTreeMap;
+
+    let mut m: BTreeMap<String, i32> = BTreeMap::new();
+    m.insert("x".into(), 1);
+    m.insert("y".into(), 2);
+    let bytes = beve::to_vec(&m).unwrap();
+
+    let borrowed: BTreeMap<&str, i32> = beve::from_slice(&bytes).unwrap();
+    assert_eq!(borrowed["x"], 1);
+    assert_eq!(borrowed["y"], 2);
+}
+
+#[test]
+fn zero_copy_enum_string_encoding() {
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    enum Status<'a> {
+        Active,
+        Error(&'a str),
+    }
+
+    let opts = beve::SerializerOptions {
+        enum_encoding: beve::EnumEncoding::String,
+    };
+
+    // Unit variant
+    let bytes = beve::to_vec_with_options(&Status::Active, opts).unwrap();
+    let back: Status = beve::from_slice(&bytes).unwrap();
+    assert_eq!(back, Status::Active);
+
+    // Newtype variant with borrowed str
+    let bytes = beve::to_vec_with_options(&Status::Error("something broke"), opts).unwrap();
+    let back: Status = beve::from_slice(&bytes).unwrap();
+    assert_eq!(back, Status::Error("something broke"));
+}
+
+#[test]
+fn zero_copy_borrowed_bytes_in_struct() {
+    #[derive(Serialize)]
+    struct DataOwned {
+        payload: Vec<u8>,
+        tag: String,
+    }
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Data<'a> {
+        #[serde(borrow)]
+        payload: &'a [u8],
+        tag: &'a str,
+    }
+
+    let original = DataOwned {
+        payload: vec![0xDE, 0xAD, 0xBE, 0xEF],
+        tag: "test".to_string(),
+    };
+    let bytes = beve::to_vec(&original).unwrap();
+    let data: Data = beve::from_slice(&bytes).unwrap();
+    assert_eq!(data.payload, &[0xDE, 0xAD, 0xBE, 0xEF]);
+    assert_eq!(data.tag, "test");
+}
+
+#[test]
+fn zero_copy_borrowed_bytes_standalone() {
+    // Serialize a Vec<u8> and deserialize as borrowed &[u8]
+    let data: Vec<u8> = vec![10, 20, 30];
+    let bytes = beve::to_vec(&data).unwrap();
+
+    // Vec<u8> serializes element-by-element via serialize_seq, but our
+    // serializer detects homogeneous u8 and writes a typed u8 array.
+    // deserialize_bytes detects this and returns borrowed bytes.
+    let borrowed: &[u8] = beve::from_slice(&bytes).unwrap();
+    assert_eq!(borrowed, &[10, 20, 30]);
+}
+
+#[test]
+fn zero_copy_borrowed_bytes_empty() {
+    let data: Vec<u8> = vec![];
+    let bytes = beve::to_vec(&data).unwrap();
+    let borrowed: &[u8] = beve::from_slice(&bytes).unwrap();
+    assert!(borrowed.is_empty());
+}
+
+#[test]
+fn zero_copy_borrowed_bytes_in_struct_via_bytes_nonempty() {
+    #[derive(Serialize, Deserialize)]
+    struct Wrap<'a> {
+        #[serde(borrow)]
+        data: &'a [u8],
+    }
+
+    let wrapper_bytes = beve::to_vec(&Wrap { data: &[1, 2, 3] }).unwrap();
+    let w: Wrap = beve::from_slice(&wrapper_bytes).unwrap();
+    assert_eq!(w.data, &[1, 2, 3]);
+}
+
+#[test]
+fn zero_copy_borrowed_bytes_in_struct_via_bytes_empty() {
+    #[derive(Serialize, Deserialize)]
+    struct Wrap<'a> {
+        #[serde(borrow)]
+        data: &'a [u8],
+    }
+
+    let empty_bytes = beve::to_vec(&Wrap { data: &[] }).unwrap();
+    let w: Wrap = beve::from_slice(&empty_bytes).unwrap();
+    assert!(w.data.is_empty());
+}

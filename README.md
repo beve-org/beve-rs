@@ -41,6 +41,28 @@ let mut buf = Vec::with_capacity(4096);
 beve::to_vec_into(&mut buf, &Point { x: 1.0, y: 2.0 })?;
 ```
 
+## Zero-Copy Deserialization
+`from_slice` supports borrowing directly from the input buffer for string types. Structs with `&str` fields avoid allocation entirely — the deserialized strings point straight into the BEVE byte slice:
+```rust
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Record<'a> {
+    name: &'a str,
+    tag: &'a str,
+    score: f64,
+}
+
+fn parse_record(bytes: &[u8]) -> beve::Result<()> {
+    let record: Record = beve::from_slice(bytes)?;
+    assert_eq!(record.name, "alice");
+    Ok(())
+}
+```
+This works for `&str` fields, `Vec<&str>`, `BTreeMap<&str, V>` keys, and `&[u8]` fields (with `#[serde(borrow)]`). BEVE typed `u8` arrays are contiguous bytes with alignment 1, so `&[u8]` borrows directly from the buffer without copying. Zero-copy borrowing is not available for wider numeric arrays (e.g. `&[f64]`) since BEVE does not guarantee alignment.
+
+`from_reader` continues to require `DeserializeOwned` since it reads into an internal buffer that cannot outlive the call.
+
 ## Validate Without Deserializing
 Use `validate_slice` or `validate_reader` when you only need to check that input is valid BEVE, without parsing into a Rust type.
 

@@ -8,6 +8,7 @@
 //! - Typed arrays for numeric, boolean, and string sequences when possible
 //! - Object keys as strings or integer types
 //! - Enum support via BEVE type-tag extension
+//! - Zero-copy deserialization for `&str` fields (borrow directly from the input buffer)
 //! - Validation helpers for checking BEVE payload integrity without deserialization
 //!
 //! Example

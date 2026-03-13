@@ -1277,7 +1277,7 @@ impl<'de, 'a> de::EnumAccess<'de> for EnumAccess<'a, 'de> {
                 Ok((v, VariantAccess { de: self.de }))
             }
             EnumTag::Name(name) => {
-                let v = seed.deserialize(BorrowedStrDeserializer::new(name))?;
+                let v = seed.deserialize(BorrowedStrDeserializer::<Error>::new(name))?;
                 Ok((v, VariantAccess { de: self.de }))
             }
         }
@@ -1336,7 +1336,7 @@ impl<'de> de::EnumAccess<'de> for EnumStrAccess<'de> {
         self,
         seed: V,
     ) -> Result<(V::Value, Self::Variant)> {
-        let v = seed.deserialize(BorrowedStrDeserializer::new(self.name))?;
+        let v = seed.deserialize(BorrowedStrDeserializer::<Error>::new(self.name))?;
         Ok((v, VariantAccessNoValue))
     }
 }

@@ -1202,10 +1202,10 @@ impl<'de> Deserializer<'de> for Value {
         match self {
             Value::String(s) => {
                 let mut chars = s.chars();
-                if let Some(c) = chars.next() {
-                    if chars.next().is_none() {
-                        return visitor.visit_char(c);
-                    }
+                if let Some(c) = chars.next()
+                    && chars.next().is_none()
+                {
+                    return visitor.visit_char(c);
                 }
                 Err(ValueError::ExpectedChar)
             }
@@ -1519,10 +1519,10 @@ impl<'de> Deserializer<'de> for &'de Value {
         match self {
             Value::String(s) => {
                 let mut chars = s.chars();
-                if let Some(c) = chars.next() {
-                    if chars.next().is_none() {
-                        return visitor.visit_char(c);
-                    }
+                if let Some(c) = chars.next()
+                    && chars.next().is_none()
+                {
+                    return visitor.visit_char(c);
                 }
                 Err(ValueError::ExpectedChar)
             }

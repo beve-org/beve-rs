@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use beve::{
-    from_reader, Complex, DecodedMatrix, EnumEncoding, MatrixDecodeMode, MatrixLayout, MatrixOwned,
-    SerializerOptions, Value,
+    Complex, DecodedMatrix, EnumEncoding, MatrixDecodeMode, MatrixLayout, MatrixOwned,
+    SerializerOptions, Value, from_reader,
 };
 use half::{bf16, f16};
 use serde::ser::{SerializeMap, SerializeSeq};
@@ -297,7 +297,9 @@ fn enum_encoding_matches_number_and_string_spec_modes() {
     let string_newtype = beve::to_vec_with_options(&TaggedEnum::Scalar(7), string_opts).unwrap();
     assert_eq!(
         string_newtype,
-        vec![0x0e, 0x02, 0x18, b'S', b'c', b'a', b'l', b'a', b'r', 0x11, 0x07]
+        vec![
+            0x0e, 0x02, 0x18, b'S', b'c', b'a', b'l', b'a', b'r', 0x11, 0x07
+        ]
     );
     let back: TaggedEnum = beve::from_slice(&string_newtype).unwrap();
     assert_eq!(back, TaggedEnum::Scalar(7));

@@ -850,7 +850,7 @@ fn write_extension(
         _ => {
             return Err(Error::Unsupported(
                 "extension not supported for JSON conversion",
-            ))
+            ));
         }
     }
     Ok(())
@@ -893,7 +893,7 @@ fn parse_complex_header_byte(header: u8) -> Result<(bool, ComplexNumeric, u8)> {
         _ => {
             return Err(Error::Unsupported(
                 "complex extension numeric type not supported",
-            ))
+            ));
         }
     };
     let byte_code = (header >> 5) & 0x07;
@@ -1152,7 +1152,7 @@ fn skip_value(reader: &mut BeveReader<'_>, depth: usize) -> Result<()> {
                 _ => {
                     return Err(Error::Unsupported(
                         "extension not supported for JSON conversion",
-                    ))
+                    ));
                 }
             }
         }

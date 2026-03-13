@@ -176,7 +176,7 @@ impl<'a> Reader<'a> {
             _ => {
                 return Err(Error::InvalidType(
                     "matrix extents must be integer typed arrays",
-                ))
+                ));
             }
         }
         Ok(extents)

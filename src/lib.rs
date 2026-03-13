@@ -48,31 +48,31 @@ mod ser;
 mod size;
 mod value;
 
-pub use crate::de::{from_slice, validate_slice, Deserializer};
+pub use crate::de::{Deserializer, from_slice, validate_slice};
 pub use crate::error::{Error, Result};
 pub use crate::ext::{
-    decode_matrix_slice, Complex, ComplexSlice, DecodedMatrix, Matrix, MatrixDecodeMode,
-    MatrixLayout, MatrixOwned, RawMatrix,
+    Complex, ComplexSlice, DecodedMatrix, Matrix, MatrixDecodeMode, MatrixLayout, MatrixOwned,
+    RawMatrix, decode_matrix_slice,
 };
 pub use crate::fast::{
-    to_vec_bool_slice, to_vec_complex32, to_vec_complex32_slice, to_vec_complex64,
+    BeveTypedSlice, to_vec_bool_slice, to_vec_complex32, to_vec_complex32_slice, to_vec_complex64,
     to_vec_complex64_slice, to_vec_str_slice, to_vec_string_slice, to_vec_typed_slice,
-    write_bool_slice, write_str_slice, write_string_slice, write_typed_slice, BeveTypedSlice,
+    write_bool_slice, write_str_slice, write_string_slice, write_typed_slice,
 };
 pub use crate::json::{
     beve_slice_to_json, beve_slice_to_json_string, json_slice_to_beve, json_str_to_beve,
 };
 #[cfg(feature = "mat")]
 pub use crate::mat::{
-    beve_file_to_mat_v73_file, beve_slice_to_mat_v73_file, Compression, InvalidNamePolicy,
-    MatV73Options, NullPolicy, OneDimensionalMode, RootBinding, RowMajorPolicy, UnsupportedPolicy,
+    Compression, InvalidNamePolicy, MatV73Options, NullPolicy, OneDimensionalMode, RootBinding,
+    RowMajorPolicy, UnsupportedPolicy, beve_file_to_mat_v73_file, beve_slice_to_mat_v73_file,
 };
 pub use crate::ser::{
-    to_vec, to_vec_into, to_vec_into_with_options, to_vec_with_options, EnumEncoding, Serializer,
-    SerializerOptions,
+    EnumEncoding, Serializer, SerializerOptions, to_vec, to_vec_into, to_vec_into_with_options,
+    to_vec_with_options,
 };
 pub use crate::value::{
-    from_value, from_value_ref, BigInt, BigIntKey, Key, Number, Object, Value, ValueError,
+    BigInt, BigIntKey, Key, Number, Object, Value, ValueError, from_value, from_value_ref,
 };
 
 /// BEVE-specific utilities and helper types.

@@ -427,7 +427,13 @@ impl MatWriter {
         let byte_code = parse_byte_count_code(header);
         match subtype {
             NUM_SIGNED => match byte_code {
-                0 => self.write_numeric(parent, name, &[1, 1], &[reader.read_signed(0)? as i8], "int8"),
+                0 => self.write_numeric(
+                    parent,
+                    name,
+                    &[1, 1],
+                    &[reader.read_signed(0)? as i8],
+                    "int8",
+                ),
                 1 => self.write_numeric(
                     parent,
                     name,
@@ -449,7 +455,12 @@ impl MatWriter {
                     &[reader.read_signed(3)? as i64],
                     "int64",
                 ),
-                4 => self.handle_128_bit_scalar(parent, name, path, reader.read_signed(4)?.to_string()),
+                4 => self.handle_128_bit_scalar(
+                    parent,
+                    name,
+                    path,
+                    reader.read_signed(4)?.to_string(),
+                ),
                 _ => Err(Error::InvalidHeader(header)),
             },
             NUM_UNSIGNED => match byte_code {
@@ -481,22 +492,35 @@ impl MatWriter {
                     &[reader.read_unsigned(3)? as u64],
                     "uint64",
                 ),
-                4 => self.handle_128_bit_scalar(parent, name, path, reader.read_unsigned(4)?.to_string()),
+                4 => self.handle_128_bit_scalar(
+                    parent,
+                    name,
+                    path,
+                    reader.read_unsigned(4)?.to_string(),
+                ),
                 _ => Err(Error::InvalidHeader(header)),
             },
             NUM_FLOAT => match byte_code {
                 0 => match self.options.unsupported_policy {
-                    UnsupportedPolicy::LossyNumericWidening => {
-                        self.write_numeric(parent, name, &[1, 1], &[reader.read_bf16_as_f32()?], "single")
-                    }
+                    UnsupportedPolicy::LossyNumericWidening => self.write_numeric(
+                        parent,
+                        name,
+                        &[1, 1],
+                        &[reader.read_bf16_as_f32()?],
+                        "single",
+                    ),
                     _ => Err(Error::msg(format!(
                         "unsupported bf16 scalar at {path}; enable LossyNumericWidening to map it to MATLAB single"
                     ))),
                 },
                 1 => match self.options.unsupported_policy {
-                    UnsupportedPolicy::LossyNumericWidening => {
-                        self.write_numeric(parent, name, &[1, 1], &[reader.read_f16_as_f32()?], "single")
-                    }
+                    UnsupportedPolicy::LossyNumericWidening => self.write_numeric(
+                        parent,
+                        name,
+                        &[1, 1],
+                        &[reader.read_f16_as_f32()?],
+                        "single",
+                    ),
                     _ => Err(Error::msg(format!(
                         "unsupported f16 scalar at {path}; enable LossyNumericWidening to map it to MATLAB single"
                     ))),
@@ -1021,8 +1045,7 @@ impl MatWriter {
                     for _ in 0..len {
                         values.push(reader.read_bf16_as_f32()?);
                     }
-                    let values =
-                        self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                    let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
                     self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "single")
                 }
                 _ => Err(Error::msg(format!(
@@ -1036,8 +1059,7 @@ impl MatWriter {
                     for _ in 0..len {
                         values.push(reader.read_f16_as_f32()?);
                     }
-                    let values =
-                        self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
+                    let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
                     self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "single")
                 }
                 _ => Err(Error::msg(format!(

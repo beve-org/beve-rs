@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use beve::fast::{to_vec_matrix_f64, MatrixLayoutFast};
+use beve::fast::{MatrixLayoutFast, to_vec_matrix_f64};
 use beve::{
     Complex, InvalidNamePolicy, Key, MatV73Options, NullPolicy, Object, RootBinding,
     UnsupportedPolicy, Value,

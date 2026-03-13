@@ -49,7 +49,7 @@ jobs:
         run: cargo test --locked --all --all-features
 
   msrv:
-    name: MSRV (Rust 1.87.0)
+    name: MSRV (Rust 1.88.0)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
@@ -60,8 +60,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config g++ libhdf5-dev
 
-      - name: Install Rust 1.87.0
-        uses: dtolnay/rust-toolchain@1.87.0
+      - name: Install Rust 1.88.0
+        uses: dtolnay/rust-toolchain@1.88.0
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2

@@ -7,7 +7,7 @@ Grab the crate from [crates.io](https://crates.io/crates/beve) and add it to you
 [dependencies]
 beve = "0.1"
 ```
-The library only depends on `serde` and requires Rust 1.87 or newer. Half-precision floats via `half::f16` are supported alongside the standard numeric types.
+The library only depends on `serde` and requires Rust 1.88 or newer. Half-precision floats via `half::f16` are supported alongside the standard numeric types.
 
 ## Encode & Decode with Serde
 Use `beve::to_vec` and `beve::from_slice` for idiomatic serde round-trips:

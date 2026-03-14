@@ -1,13 +1,11 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::OpenOptions;
-use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use hdf5::types::{FixedAscii, VarLenArray};
-use hdf5::{Dataset, DatasetBuilder, File, Group, H5Type, ObjectReference1};
-use hdf5_metno as hdf5;
+use hdf5_pure::FileBuilder;
+use hdf5_pure::type_builders::{AttrValue, DatasetBuilder, GroupBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -145,18 +143,86 @@ impl Default for MatV73Options {
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, H5Type)]
-struct MatComplex32 {
-    real: f32,
-    imag: f32,
+// ---------------------------------------------------------------------------
+// Intermediate representation
+// ---------------------------------------------------------------------------
+
+enum MatNode {
+    Dataset(MatDataset),
+    Group(MatGroup),
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, H5Type)]
-struct MatComplex64 {
-    real: f64,
-    imag: f64,
+struct MatDataset {
+    name: String,
+    content: DatasetContent,
+    attrs: Vec<(&'static str, AttrValue)>,
+}
+
+enum DatasetContent {
+    U8(Vec<u64>, Vec<u8>),
+    U16(Vec<u64>, Vec<u16>),
+    U32(Vec<u64>, Vec<u32>),
+    U64(Vec<u64>, Vec<u64>),
+    I8(Vec<u64>, Vec<i8>),
+    I16(Vec<u64>, Vec<i16>),
+    I32(Vec<u64>, Vec<i32>),
+    I64(Vec<u64>, Vec<i64>),
+    F32(Vec<u64>, Vec<f32>),
+    F64(Vec<u64>, Vec<f64>),
+    Complex32(Vec<u64>, Vec<(f32, f32)>),
+    Complex64(Vec<u64>, Vec<(f64, f64)>),
+    References(Vec<u64>, Vec<String>),
+}
+
+struct MatGroup {
+    name: String,
+    children: Vec<MatNode>,
+    attrs: Vec<(&'static str, AttrValue)>,
+}
+
+struct McosData {
+    shape: Vec<u64>,
+    ref_paths: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// MatWriter — phase 1: accumulates IR
+// ---------------------------------------------------------------------------
+
+struct MatWriter {
+    root_nodes: Vec<MatNode>,
+    refs_children: Vec<MatNode>,
+    options: MatV73Options,
+    next_ref_id: u64,
+    string_objects: StringObjectState,
+}
+
+struct StringObjectState {
+    payload_paths: Vec<String>,
+}
+
+impl StringObjectState {
+    fn new() -> Self {
+        Self {
+            payload_paths: Vec::new(),
+        }
+    }
+
+    fn register(&mut self, payload_path: String) -> u32 {
+        self.payload_paths.push(payload_path);
+        self.payload_paths.len() as u32
+    }
+
+    fn is_empty(&self) -> bool {
+        self.payload_paths.is_empty()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MatrixWriteContext<'a> {
+    path: &'a str,
+    layout: MatrixLayout,
+    extents: &'a [usize],
 }
 
 /// Convert a BEVE payload into a MATLAB v7.3 MAT file.
@@ -194,14 +260,23 @@ pub fn beve_slice_to_mat_v73_file<P: AsRef<Path>>(
 ) -> Result<()> {
     let output_path = output_path.as_ref();
     let temp_output = TempOutputFile::new(output_path)?;
-    let file = File::with_options()
-        .with_fcpl(|plist| plist.userblock(MATLAB_USERBLOCK_SIZE))
-        .with_fapl(|plist| plist.libver_v18())
-        .create(temp_output.path())?;
-    let refs = file.create_group("#refs#")?;
+    let bytes = beve_slice_to_mat_v73_bytes(beve, root, options)?;
+    std::fs::write(temp_output.path(), &bytes).map_err(|e| Error::msg(e.to_string()))?;
+    sync_regular_file(temp_output.path())?;
+    temp_output.persist(output_path)
+}
+
+/// Convert a BEVE payload to MATLAB v7.3 MAT file bytes in memory.
+///
+/// This is the WASM-compatible entry point — no filesystem access required.
+pub fn beve_slice_to_mat_v73_bytes(
+    beve: &[u8],
+    root: RootBinding<'_>,
+    options: &MatV73Options,
+) -> Result<Vec<u8>> {
     let mut writer = MatWriter {
-        file,
-        refs,
+        root_nodes: Vec::new(),
+        refs_children: Vec::new(),
         options: options.clone(),
         next_ref_id: 0,
         string_objects: StringObjectState::new(),
@@ -211,12 +286,7 @@ pub fn beve_slice_to_mat_v73_file<P: AsRef<Path>>(
     if !reader.is_finished() {
         return Err(Error::InvalidType("unexpected trailing BEVE data"));
     }
-    writer.finish()?;
-    writer.file.flush()?;
-    drop(writer);
-    write_userblock(temp_output.path())?;
-    sync_regular_file(temp_output.path())?;
-    temp_output.persist(output_path)
+    writer.build_hdf5_bytes()
 }
 
 /// Read a `.beve` file from disk and write a MATLAB v7.3 MAT file.
@@ -230,121 +300,18 @@ pub fn beve_file_to_mat_v73_file<I: AsRef<Path>, O: AsRef<Path>>(
     beve_slice_to_mat_v73_file(&bytes, output_path, root, options)
 }
 
-struct MatWriter {
-    file: File,
-    refs: Group,
-    options: MatV73Options,
-    next_ref_id: u64,
-    string_objects: StringObjectState,
-}
-
-#[derive(Clone, Copy)]
-struct MatrixWriteContext<'a> {
-    parent: &'a Group,
-    name: &'a str,
-    path: &'a str,
-    layout: MatrixLayout,
-    extents: &'a [usize],
-}
-
-struct StringObjectState {
-    payload_refs: Vec<ObjectReference1>,
-}
-
-impl StringObjectState {
-    fn new() -> Self {
-        Self {
-            payload_refs: Vec::new(),
-        }
-    }
-
-    fn register(&mut self, payload_ref: ObjectReference1) -> u32 {
-        self.payload_refs.push(payload_ref);
-        self.payload_refs.len() as u32
-    }
-
-    fn is_empty(&self) -> bool {
-        self.payload_refs.is_empty()
-    }
-}
-
-struct TempOutputFile {
-    path: PathBuf,
-    persisted: bool,
-}
-
-impl TempOutputFile {
-    fn new(output_path: &Path) -> Result<Self> {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-
-        let directory = output_path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let base_name = output_path
-            .file_name()
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| OsString::from("beve.mat"));
-
-        for _ in 0..1024 {
-            let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let mut temp_name = OsString::from(".");
-            temp_name.push(&base_name);
-            temp_name.push(format!(".beve-tmp-{:x}-{:x}", std::process::id(), sequence));
-            let path = directory.join(temp_name);
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(file) => {
-                    drop(file);
-                    return Ok(Self {
-                        path,
-                        persisted: false,
-                    });
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(err) => return Err(Error::msg(err.to_string())),
-            }
-        }
-
-        Err(Error::msg(format!(
-            "failed to reserve a temporary MAT path near {}",
-            output_path.display()
-        )))
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn persist(mut self, output_path: &Path) -> Result<()> {
-        replace_file(&self.path, output_path).map_err(|e| Error::msg(e.to_string()))?;
-        self.persisted = true;
-        Ok(())
-    }
-}
-
-impl Drop for TempOutputFile {
-    fn drop(&mut self) {
-        if !self.persisted {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
+// ---------------------------------------------------------------------------
+// Phase 1: BEVE streaming → IR nodes
+// ---------------------------------------------------------------------------
 
 impl MatWriter {
-    fn finish(&mut self) -> Result<()> {
-        if self.string_objects.is_empty() {
-            return Ok(());
-        }
-        self.write_string_subsystem()
-    }
-
     fn write_root(&mut self, reader: &mut Reader<'_>, root: RootBinding<'_>) -> Result<()> {
         match root {
             RootBinding::NamedVariable(name) => {
                 let variable = self.normalize_name(name, &mut BTreeSet::new())?;
-                // Clone the ref-counted HDF5 handle to avoid borrowing self immutably and mutably at once.
-                let file = self.file.clone();
-                self.write_named_value(&file, &variable, reader, "$")
+                let node = self.write_named_value(variable, reader, "$")?;
+                self.root_nodes.push(node);
+                Ok(())
             }
             RootBinding::WorkspaceObject => {
                 let header = reader.read_header()?;
@@ -359,8 +326,8 @@ impl MatWriter {
                     let key = reader.read_string()?;
                     let variable = self.normalize_name(key, &mut used)?;
                     let path = format!("$.{variable}");
-                    let file = self.file.clone();
-                    self.write_named_value(&file, &variable, reader, &path)?;
+                    let node = self.write_named_value(variable, reader, &path)?;
+                    self.root_nodes.push(node);
                 }
                 Ok(())
             }
@@ -369,164 +336,127 @@ impl MatWriter {
 
     fn write_named_value(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         path: &str,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let header = reader.read_header()?;
-        self.write_named_value_with_header(parent, name, reader, header, path)
+        self.write_named_value_with_header(name, reader, header, path)
     }
 
     fn write_named_value_with_header(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         header: u8,
         path: &str,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         match parse_type(header) {
             TYPE_NULL_BOOL => {
                 if header == 0 {
-                    self.handle_null(parent, name, path)
+                    self.handle_null(name, path)
                 } else {
                     let value = bool_value(header)?;
-                    self.write_logical(parent, name, &[1, 1], &[u8::from(value)])
+                    Ok(self.make_logical(name, vec![1, 1], vec![u8::from(value)]))
                 }
             }
-            TYPE_NUMBER => self.write_number(parent, name, reader, header, path),
+            TYPE_NUMBER => self.write_number(name, reader, header, path),
             TYPE_STRING => {
                 let value = reader.read_string()?.to_owned();
-                self.write_string_scalar(parent, name, &value)
+                self.write_string_scalar(name, &value)
             }
-            TYPE_OBJECT => self.write_object(parent, name, reader, header, path),
-            TYPE_TYPED_ARRAY => self.write_typed_array(parent, name, reader, header, path),
-            TYPE_GENERIC_ARRAY => self.write_generic_array(parent, name, reader, path),
-            TYPE_EXTENSION => self.write_extension(parent, name, reader, header, path),
+            TYPE_OBJECT => self.write_object(name, reader, header, path),
+            TYPE_TYPED_ARRAY => self.write_typed_array(name, reader, header, path),
+            TYPE_GENERIC_ARRAY => self.write_generic_array(name, reader, path),
+            TYPE_EXTENSION => self.write_extension(name, reader, header, path),
             _ => Err(Error::InvalidHeader(header)),
         }
     }
 
-    fn handle_null(&mut self, parent: &Group, name: &str, path: &str) -> Result<()> {
+    fn handle_null(&mut self, name: String, path: &str) -> Result<MatNode> {
         match self.options.null_policy {
-            NullPolicy::EmptyStructArray => self.write_empty_struct_array(parent, name),
+            NullPolicy::EmptyStructArray => Ok(self.make_empty_struct_array(name)),
             NullPolicy::Error => Err(Error::msg(format!("unsupported null value at {path}"))),
         }
     }
 
     fn write_number(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         header: u8,
         path: &str,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let subtype = parse_subtype(header);
         let byte_code = parse_byte_count_code(header);
         match subtype {
             NUM_SIGNED => match byte_code {
-                0 => self.write_numeric(
-                    parent,
+                0 => Ok(self.make_numeric_i8(name, vec![1, 1], vec![reader.read_signed(0)? as i8])),
+                1 => Ok(self.make_numeric_i16(
                     name,
-                    &[1, 1],
-                    &[reader.read_signed(0)? as i8],
-                    "int8",
-                ),
-                1 => self.write_numeric(
-                    parent,
+                    vec![1, 1],
+                    vec![reader.read_signed(1)? as i16],
+                )),
+                2 => Ok(self.make_numeric_i32(
                     name,
-                    &[1, 1],
-                    &[reader.read_signed(1)? as i16],
-                    "int16",
-                ),
-                2 => self.write_numeric(
-                    parent,
+                    vec![1, 1],
+                    vec![reader.read_signed(2)? as i32],
+                )),
+                3 => Ok(self.make_numeric_i64(
                     name,
-                    &[1, 1],
-                    &[reader.read_signed(2)? as i32],
-                    "int32",
-                ),
-                3 => self.write_numeric(
-                    parent,
-                    name,
-                    &[1, 1],
-                    &[reader.read_signed(3)? as i64],
-                    "int64",
-                ),
-                4 => self.handle_128_bit_scalar(
-                    parent,
-                    name,
-                    path,
-                    reader.read_signed(4)?.to_string(),
-                ),
+                    vec![1, 1],
+                    vec![reader.read_signed(3)? as i64],
+                )),
+                4 => self.handle_128_bit_scalar(name, path, reader.read_signed(4)?.to_string()),
                 _ => Err(Error::InvalidHeader(header)),
             },
             NUM_UNSIGNED => match byte_code {
-                0 => self.write_numeric(
-                    parent,
+                0 => Ok(self.make_numeric_u8(
                     name,
-                    &[1, 1],
-                    &[reader.read_unsigned(0)? as u8],
-                    "uint8",
-                ),
-                1 => self.write_numeric(
-                    parent,
+                    vec![1, 1],
+                    vec![reader.read_unsigned(0)? as u8],
+                )),
+                1 => Ok(self.make_numeric_u16(
                     name,
-                    &[1, 1],
-                    &[reader.read_unsigned(1)? as u16],
-                    "uint16",
-                ),
-                2 => self.write_numeric(
-                    parent,
+                    vec![1, 1],
+                    vec![reader.read_unsigned(1)? as u16],
+                )),
+                2 => Ok(self.make_numeric_u32(
                     name,
-                    &[1, 1],
-                    &[reader.read_unsigned(2)? as u32],
-                    "uint32",
-                ),
-                3 => self.write_numeric(
-                    parent,
+                    vec![1, 1],
+                    vec![reader.read_unsigned(2)? as u32],
+                )),
+                3 => Ok(self.make_numeric_u64(
                     name,
-                    &[1, 1],
-                    &[reader.read_unsigned(3)? as u64],
-                    "uint64",
-                ),
-                4 => self.handle_128_bit_scalar(
-                    parent,
-                    name,
-                    path,
-                    reader.read_unsigned(4)?.to_string(),
-                ),
+                    vec![1, 1],
+                    vec![reader.read_unsigned(3)? as u64],
+                )),
+                4 => self.handle_128_bit_scalar(name, path, reader.read_unsigned(4)?.to_string()),
                 _ => Err(Error::InvalidHeader(header)),
             },
             NUM_FLOAT => match byte_code {
                 0 => match self.options.unsupported_policy {
-                    UnsupportedPolicy::LossyNumericWidening => self.write_numeric(
-                        parent,
+                    UnsupportedPolicy::LossyNumericWidening => Ok(self.make_numeric_f32(
                         name,
-                        &[1, 1],
-                        &[reader.read_bf16_as_f32()?],
-                        "single",
-                    ),
+                        vec![1, 1],
+                        vec![reader.read_bf16_as_f32()?],
+                    )),
                     _ => Err(Error::msg(format!(
                         "unsupported bf16 scalar at {path}; enable LossyNumericWidening to map it to MATLAB single"
                     ))),
                 },
                 1 => match self.options.unsupported_policy {
-                    UnsupportedPolicy::LossyNumericWidening => self.write_numeric(
-                        parent,
+                    UnsupportedPolicy::LossyNumericWidening => Ok(self.make_numeric_f32(
                         name,
-                        &[1, 1],
-                        &[reader.read_f16_as_f32()?],
-                        "single",
-                    ),
+                        vec![1, 1],
+                        vec![reader.read_f16_as_f32()?],
+                    )),
                     _ => Err(Error::msg(format!(
                         "unsupported f16 scalar at {path}; enable LossyNumericWidening to map it to MATLAB single"
                     ))),
                 },
-                2 => self.write_numeric(parent, name, &[1, 1], &[reader.read_f32()?], "single"),
-                3 => self.write_numeric(parent, name, &[1, 1], &[reader.read_f64()?], "double"),
+                2 => Ok(self.make_numeric_f32(name, vec![1, 1], vec![reader.read_f32()?])),
+                3 => Ok(self.make_numeric_f64(name, vec![1, 1], vec![reader.read_f64()?])),
                 _ => Err(Error::Unsupported("float128 is not supported")),
             },
             _ => Err(Error::InvalidHeader(header)),
@@ -535,88 +465,90 @@ impl MatWriter {
 
     fn write_object(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         header: u8,
         path: &str,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let ObjectHeader { key_type, len, .. } = reader.read_object_header(header)?;
         if key_type != KEY_STRING {
             return Err(Error::msg(format!(
                 "unsupported non-string object keys at {path}"
             )));
         }
-        let group = parent.create_group(name)?;
-        write_ascii_attr(&group, "MATLAB_class", "struct")?;
         let mut used = BTreeSet::new();
+        let mut children = Vec::with_capacity(len);
         let mut fields = Vec::with_capacity(len);
         for _ in 0..len {
             let key = reader.read_string()?;
             let field = self.normalize_name(key, &mut used)?;
             let child_path = format!("{path}.{field}");
-            self.write_named_value(&group, &field, reader, &child_path)?;
+            let child = self.write_named_value(field.clone(), reader, &child_path)?;
+            children.push(child);
             fields.push(field);
         }
-        write_ascii_list_attr(&group, "MATLAB_fields", &fields)?;
-        Ok(())
+        let mut attrs: Vec<(&'static str, AttrValue)> =
+            vec![("MATLAB_class", AttrValue::AsciiString("struct".into()))];
+        attrs.push(("MATLAB_fields", AttrValue::AsciiStringArray(fields)));
+        Ok(MatNode::Group(MatGroup {
+            name,
+            children,
+            attrs,
+        }))
     }
 
     fn write_typed_array(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         header: u8,
         path: &str,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let info = reader.read_typed_array_header(header)?;
         match info.class {
             TypedArrayClass::Float => {
-                self.write_float_array(parent, name, reader, info.byte_code, info.len, path)
+                self.write_float_array(name, reader, info.byte_code, info.len, path)
             }
             TypedArrayClass::Signed => {
-                self.write_signed_array(parent, name, reader, info.byte_code, info.len, path)
+                self.write_signed_array(name, reader, info.byte_code, info.len, path)
             }
             TypedArrayClass::Unsigned => {
-                self.write_unsigned_array(parent, name, reader, info.byte_code, info.len, path)
+                self.write_unsigned_array(name, reader, info.byte_code, info.len, path)
             }
-            TypedArrayClass::Bool => self.write_bool_array(parent, name, reader, info.len),
-            TypedArrayClass::String => self.write_string_array(parent, name, reader, info.len),
+            TypedArrayClass::Bool => self.write_bool_array(name, reader, info.len),
+            TypedArrayClass::String => self.write_string_array(name, reader, info.len),
         }
     }
 
     fn write_generic_array(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         path: &str,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let len = reader.read_size()?;
         let matlab_dims = vector_dims(len, self.options.one_dimensional_mode);
         if len == 0 {
-            return self.write_empty_marker(parent, name, &matlab_dims, "cell", None);
+            return Ok(self.make_empty_marker(name, &matlab_dims, "cell", None));
         }
-        let mut refs = Vec::with_capacity(len);
+        let mut ref_paths = Vec::with_capacity(len);
         for idx in 0..len {
             let child_path = format!("{path}[{idx}]");
-            refs.push(self.write_value_reference(reader, &child_path)?);
+            ref_paths.push(self.write_value_reference(reader, &child_path)?);
         }
-        self.write_reference_array(parent, name, &matlab_dims, &refs, "cell")
+        Ok(self.make_reference_array(name, &matlab_dims, ref_paths, "cell"))
     }
 
     fn write_extension(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         header: u8,
         path: &str,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         match parse_extension_id(header) {
-            EXT_COMPLEX => self.write_complex_extension(parent, name, reader, path),
-            EXT_MATRICES => self.write_matrix_extension(parent, name, reader, path),
+            EXT_COMPLEX => self.write_complex_extension(name, reader, path),
+            EXT_MATRICES => self.write_matrix_extension(name, reader, path),
             _ => Err(Error::msg(format!(
                 "unsupported BEVE extension {:#x} at {path}",
                 parse_extension_id(header)
@@ -626,11 +558,10 @@ impl MatWriter {
 
     fn write_complex_extension(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         path: &str,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let ComplexHeader {
             is_array,
             byte_code,
@@ -642,22 +573,16 @@ impl MatWriter {
                 2 => {
                     let mut data = Vec::with_capacity(len);
                     for _ in 0..len {
-                        data.push(MatComplex32 {
-                            real: reader.read_f32()?,
-                            imag: reader.read_f32()?,
-                        });
+                        data.push((reader.read_f32()?, reader.read_f32()?));
                     }
-                    self.write_complex(parent, name, &matlab_dims, &data, "single")
+                    Ok(self.make_complex32(name, matlab_dims, data))
                 }
                 3 => {
                     let mut data = Vec::with_capacity(len);
                     for _ in 0..len {
-                        data.push(MatComplex64 {
-                            real: reader.read_f64()?,
-                            imag: reader.read_f64()?,
-                        });
+                        data.push((reader.read_f64()?, reader.read_f64()?));
                     }
-                    self.write_complex(parent, name, &matlab_dims, &data, "double")
+                    Ok(self.make_complex64(name, matlab_dims, data))
                 }
                 _ => Err(Error::msg(format!(
                     "unsupported complex element width at {path}"
@@ -665,26 +590,16 @@ impl MatWriter {
             }
         } else {
             match byte_code {
-                2 => self.write_complex(
-                    parent,
+                2 => Ok(self.make_complex32(
                     name,
-                    &[1, 1],
-                    &[MatComplex32 {
-                        real: reader.read_f32()?,
-                        imag: reader.read_f32()?,
-                    }],
-                    "single",
-                ),
-                3 => self.write_complex(
-                    parent,
+                    vec![1, 1],
+                    vec![(reader.read_f32()?, reader.read_f32()?)],
+                )),
+                3 => Ok(self.make_complex64(
                     name,
-                    &[1, 1],
-                    &[MatComplex64 {
-                        real: reader.read_f64()?,
-                        imag: reader.read_f64()?,
-                    }],
-                    "double",
-                ),
+                    vec![1, 1],
+                    vec![(reader.read_f64()?, reader.read_f64()?)],
+                )),
                 _ => Err(Error::msg(format!(
                     "unsupported complex scalar width at {path}"
                 ))),
@@ -694,11 +609,10 @@ impl MatWriter {
 
     fn write_matrix_extension(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         path: &str,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let layout = if (reader.read_header()? & 0x01) == 0 {
             MatrixLayout::Right
         } else {
@@ -708,33 +622,26 @@ impl MatWriter {
         validate_matrix_extents(&extents, path)?;
         let header = reader.read_header()?;
         let ctx = MatrixWriteContext {
-            parent,
-            name,
             path,
             layout,
             extents: &extents,
         };
         match parse_type(header) {
-            TYPE_TYPED_ARRAY => self.write_matrix_typed_array(reader, header, ctx),
-            TYPE_EXTENSION if parse_extension_id(header) == EXT_COMPLEX => self
-                .write_matrix_complex(
-                    ctx.parent,
-                    ctx.name,
-                    reader,
-                    ctx.path,
-                    ctx.layout,
-                    ctx.extents,
-                ),
+            TYPE_TYPED_ARRAY => self.write_matrix_typed_array(name.clone(), reader, header, ctx),
+            TYPE_EXTENSION if parse_extension_id(header) == EXT_COMPLEX => {
+                self.write_matrix_complex(name, reader, path, layout, &extents)
+            }
             _ => Err(Error::msg(format!("unsupported matrix payload at {path}"))),
         }
     }
 
     fn write_matrix_typed_array(
         &mut self,
+        name: String,
         reader: &mut Reader<'_>,
         header: u8,
         ctx: MatrixWriteContext<'_>,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let info = reader.read_typed_array_header(header)?;
         let expected_len = product(ctx.extents)?;
         if info.len != expected_len {
@@ -744,25 +651,24 @@ impl MatWriter {
             )));
         }
         match info.class {
-            TypedArrayClass::Float => self.write_matrix_float(reader, info.byte_code, ctx),
-            TypedArrayClass::Signed => self.write_matrix_signed(reader, info.byte_code, ctx),
-            TypedArrayClass::Unsigned => self.write_matrix_unsigned(reader, info.byte_code, ctx),
-            TypedArrayClass::Bool => {
-                self.write_matrix_bool(ctx.parent, ctx.name, reader, ctx.extents, ctx.layout)
+            TypedArrayClass::Float => self.write_matrix_float(name, reader, info.byte_code, ctx),
+            TypedArrayClass::Signed => self.write_matrix_signed(name, reader, info.byte_code, ctx),
+            TypedArrayClass::Unsigned => {
+                self.write_matrix_unsigned(name, reader, info.byte_code, ctx)
             }
-            TypedArrayClass::String => self.write_matrix_string(reader, ctx),
+            TypedArrayClass::Bool => self.write_matrix_bool(name, reader, ctx.extents, ctx.layout),
+            TypedArrayClass::String => self.write_matrix_string(name, reader, ctx),
         }
     }
 
     fn write_matrix_complex(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         path: &str,
         layout: MatrixLayout,
         extents: &[usize],
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let info = reader.read_complex_header()?;
         if !info.is_array {
             return Err(Error::msg(format!(
@@ -782,24 +688,18 @@ impl MatWriter {
             2 => {
                 let mut data = Vec::with_capacity(len);
                 for _ in 0..len {
-                    data.push(MatComplex32 {
-                        real: reader.read_f32()?,
-                        imag: reader.read_f32()?,
-                    });
+                    data.push((reader.read_f32()?, reader.read_f32()?));
                 }
                 let data = self.maybe_reorder(data, layout, extents, path)?;
-                self.write_complex(parent, name, &matlab_dims, &data, "single")
+                Ok(self.make_complex32(name, matlab_dims, data))
             }
             3 => {
                 let mut data = Vec::with_capacity(len);
                 for _ in 0..len {
-                    data.push(MatComplex64 {
-                        real: reader.read_f64()?,
-                        imag: reader.read_f64()?,
-                    });
+                    data.push((reader.read_f64()?, reader.read_f64()?));
                 }
                 let data = self.maybe_reorder(data, layout, extents, path)?;
-                self.write_complex(parent, name, &matlab_dims, &data, "double")
+                Ok(self.make_complex64(name, matlab_dims, data))
             }
             _ => Err(Error::msg(format!(
                 "unsupported complex matrix element width at {path}"
@@ -809,13 +709,12 @@ impl MatWriter {
 
     fn write_float_array(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         byte_code: u8,
         len: usize,
         path: &str,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let matlab_dims = vector_dims(len, self.options.one_dimensional_mode);
         match byte_code {
             0 => match self.options.unsupported_policy {
@@ -825,9 +724,9 @@ impl MatWriter {
                         values.push(reader.read_bf16_as_f32()?);
                     }
                     if len == 0 {
-                        return self.write_empty_marker(parent, name, &matlab_dims, "single", None);
+                        return Ok(self.make_empty_marker(name, &matlab_dims, "single", None));
                     }
-                    self.write_numeric(parent, name, &matlab_dims, &values, "single")
+                    Ok(self.make_numeric_f32(name, matlab_dims, values))
                 }
                 _ => Err(Error::msg(format!(
                     "unsupported bf16 array at {path}; enable LossyNumericWidening to map it to MATLAB single"
@@ -840,9 +739,9 @@ impl MatWriter {
                         values.push(reader.read_f16_as_f32()?);
                     }
                     if len == 0 {
-                        return self.write_empty_marker(parent, name, &matlab_dims, "single", None);
+                        return Ok(self.make_empty_marker(name, &matlab_dims, "single", None));
                     }
-                    self.write_numeric(parent, name, &matlab_dims, &values, "single")
+                    Ok(self.make_numeric_f32(name, matlab_dims, values))
                 }
                 _ => Err(Error::msg(format!(
                     "unsupported f16 array at {path}; enable LossyNumericWidening to map it to MATLAB single"
@@ -854,9 +753,9 @@ impl MatWriter {
                     values.push(reader.read_f32()?);
                 }
                 if len == 0 {
-                    return self.write_empty_marker(parent, name, &matlab_dims, "single", None);
+                    return Ok(self.make_empty_marker(name, &matlab_dims, "single", None));
                 }
-                self.write_numeric(parent, name, &matlab_dims, &values, "single")
+                Ok(self.make_numeric_f32(name, matlab_dims, values))
             }
             3 => {
                 let mut values = Vec::with_capacity(len);
@@ -864,9 +763,9 @@ impl MatWriter {
                     values.push(reader.read_f64()?);
                 }
                 if len == 0 {
-                    return self.write_empty_marker(parent, name, &matlab_dims, "double", None);
+                    return Ok(self.make_empty_marker(name, &matlab_dims, "double", None));
                 }
-                self.write_numeric(parent, name, &matlab_dims, &values, "double")
+                Ok(self.make_numeric_f64(name, matlab_dims, values))
             }
             _ => Err(Error::Unsupported("float128 arrays are not supported")),
         }
@@ -874,13 +773,12 @@ impl MatWriter {
 
     fn write_signed_array(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         byte_code: u8,
         len: usize,
         path: &str,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let matlab_dims = vector_dims(len, self.options.one_dimensional_mode);
         match byte_code {
             0 => {
@@ -889,9 +787,9 @@ impl MatWriter {
                     values.push(reader.read_signed(0)? as i8);
                 }
                 if len == 0 {
-                    return self.write_empty_marker(parent, name, &matlab_dims, "int8", None);
+                    return Ok(self.make_empty_marker(name, &matlab_dims, "int8", None));
                 }
-                self.write_numeric(parent, name, &matlab_dims, &values, "int8")
+                Ok(self.make_numeric_i8(name, matlab_dims, values))
             }
             1 => {
                 let mut values = Vec::with_capacity(len);
@@ -899,9 +797,9 @@ impl MatWriter {
                     values.push(reader.read_signed(1)? as i16);
                 }
                 if len == 0 {
-                    return self.write_empty_marker(parent, name, &matlab_dims, "int16", None);
+                    return Ok(self.make_empty_marker(name, &matlab_dims, "int16", None));
                 }
-                self.write_numeric(parent, name, &matlab_dims, &values, "int16")
+                Ok(self.make_numeric_i16(name, matlab_dims, values))
             }
             2 => {
                 let mut values = Vec::with_capacity(len);
@@ -909,9 +807,9 @@ impl MatWriter {
                     values.push(reader.read_signed(2)? as i32);
                 }
                 if len == 0 {
-                    return self.write_empty_marker(parent, name, &matlab_dims, "int32", None);
+                    return Ok(self.make_empty_marker(name, &matlab_dims, "int32", None));
                 }
-                self.write_numeric(parent, name, &matlab_dims, &values, "int32")
+                Ok(self.make_numeric_i32(name, matlab_dims, values))
             }
             3 => {
                 let mut values = Vec::with_capacity(len);
@@ -919,9 +817,9 @@ impl MatWriter {
                     values.push(reader.read_signed(3)? as i64);
                 }
                 if len == 0 {
-                    return self.write_empty_marker(parent, name, &matlab_dims, "int64", None);
+                    return Ok(self.make_empty_marker(name, &matlab_dims, "int64", None));
                 }
-                self.write_numeric(parent, name, &matlab_dims, &values, "int64")
+                Ok(self.make_numeric_i64(name, matlab_dims, values))
             }
             4 => Err(Error::msg(format!("unsupported i128 array at {path}"))),
             _ => Err(Error::InvalidSize),
@@ -930,13 +828,12 @@ impl MatWriter {
 
     fn write_unsigned_array(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         byte_code: u8,
         len: usize,
         path: &str,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let matlab_dims = vector_dims(len, self.options.one_dimensional_mode);
         match byte_code {
             0 => {
@@ -945,9 +842,9 @@ impl MatWriter {
                     values.push(reader.read_unsigned(0)? as u8);
                 }
                 if len == 0 {
-                    return self.write_empty_marker(parent, name, &matlab_dims, "uint8", None);
+                    return Ok(self.make_empty_marker(name, &matlab_dims, "uint8", None));
                 }
-                self.write_numeric(parent, name, &matlab_dims, &values, "uint8")
+                Ok(self.make_numeric_u8(name, matlab_dims, values))
             }
             1 => {
                 let mut values = Vec::with_capacity(len);
@@ -955,9 +852,9 @@ impl MatWriter {
                     values.push(reader.read_unsigned(1)? as u16);
                 }
                 if len == 0 {
-                    return self.write_empty_marker(parent, name, &matlab_dims, "uint16", None);
+                    return Ok(self.make_empty_marker(name, &matlab_dims, "uint16", None));
                 }
-                self.write_numeric(parent, name, &matlab_dims, &values, "uint16")
+                Ok(self.make_numeric_u16(name, matlab_dims, values))
             }
             2 => {
                 let mut values = Vec::with_capacity(len);
@@ -965,9 +862,9 @@ impl MatWriter {
                     values.push(reader.read_unsigned(2)? as u32);
                 }
                 if len == 0 {
-                    return self.write_empty_marker(parent, name, &matlab_dims, "uint32", None);
+                    return Ok(self.make_empty_marker(name, &matlab_dims, "uint32", None));
                 }
-                self.write_numeric(parent, name, &matlab_dims, &values, "uint32")
+                Ok(self.make_numeric_u32(name, matlab_dims, values))
             }
             3 => {
                 let mut values = Vec::with_capacity(len);
@@ -975,9 +872,9 @@ impl MatWriter {
                     values.push(reader.read_unsigned(3)? as u64);
                 }
                 if len == 0 {
-                    return self.write_empty_marker(parent, name, &matlab_dims, "uint64", None);
+                    return Ok(self.make_empty_marker(name, &matlab_dims, "uint64", None));
                 }
-                self.write_numeric(parent, name, &matlab_dims, &values, "uint64")
+                Ok(self.make_numeric_u64(name, matlab_dims, values))
             }
             4 => Err(Error::msg(format!("unsupported u128 array at {path}"))),
             _ => Err(Error::InvalidSize),
@@ -986,40 +883,39 @@ impl MatWriter {
 
     fn write_bool_array(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         len: usize,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let matlab_dims = vector_dims(len, self.options.one_dimensional_mode);
         if len == 0 {
-            return self.write_empty_marker(parent, name, &matlab_dims, "logical", Some(1));
+            return Ok(self.make_empty_marker(name, &matlab_dims, "logical", Some(1)));
         }
         let packed = reader.read_exact(len.div_ceil(8))?;
         let unpacked = unpack_bools(packed, len);
-        self.write_logical(parent, name, &matlab_dims, &unpacked)
+        Ok(self.make_logical(name, matlab_dims, unpacked))
     }
 
     fn write_string_array(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         len: usize,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let mut values = Vec::with_capacity(len);
         for _ in 0..len {
             values.push(reader.read_string()?.to_owned());
         }
         let matlab_dims = vector_dims(len, self.options.one_dimensional_mode);
-        self.write_string_object(parent, name, &values, &matlab_dims)
+        self.write_string_object(name, &values, &matlab_dims)
     }
 
     fn write_matrix_string(
         &mut self,
+        name: String,
         reader: &mut Reader<'_>,
         ctx: MatrixWriteContext<'_>,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let len = product(ctx.extents)?;
         let mut values = Vec::with_capacity(len);
         for _ in 0..len {
@@ -1027,15 +923,16 @@ impl MatWriter {
         }
         let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
         let matlab_dims = matrix_dims(ctx.extents, self.options.one_dimensional_mode);
-        self.write_string_object(ctx.parent, ctx.name, &values, &matlab_dims)
+        self.write_string_object(name, &values, &matlab_dims)
     }
 
     fn write_matrix_float(
         &mut self,
+        name: String,
         reader: &mut Reader<'_>,
         byte_code: u8,
         ctx: MatrixWriteContext<'_>,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let len = product(ctx.extents)?;
         let matlab_dims = matrix_dims(ctx.extents, self.options.one_dimensional_mode);
         match byte_code {
@@ -1046,7 +943,7 @@ impl MatWriter {
                         values.push(reader.read_bf16_as_f32()?);
                     }
                     let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
-                    self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "single")
+                    Ok(self.make_numeric_f32(name, matlab_dims, values))
                 }
                 _ => Err(Error::msg(format!(
                     "unsupported bf16 matrix at {}; enable LossyNumericWidening to map it to MATLAB single",
@@ -1060,7 +957,7 @@ impl MatWriter {
                         values.push(reader.read_f16_as_f32()?);
                     }
                     let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
-                    self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "single")
+                    Ok(self.make_numeric_f32(name, matlab_dims, values))
                 }
                 _ => Err(Error::msg(format!(
                     "unsupported f16 matrix at {}; enable LossyNumericWidening to map it to MATLAB single",
@@ -1073,7 +970,7 @@ impl MatWriter {
                     values.push(reader.read_f32()?);
                 }
                 let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
-                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "single")
+                Ok(self.make_numeric_f32(name, matlab_dims, values))
             }
             3 => {
                 let mut values = Vec::with_capacity(len);
@@ -1081,7 +978,7 @@ impl MatWriter {
                     values.push(reader.read_f64()?);
                 }
                 let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
-                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "double")
+                Ok(self.make_numeric_f64(name, matlab_dims, values))
             }
             _ => Err(Error::msg(format!(
                 "unsupported float matrix width at {}",
@@ -1092,10 +989,11 @@ impl MatWriter {
 
     fn write_matrix_signed(
         &mut self,
+        name: String,
         reader: &mut Reader<'_>,
         byte_code: u8,
         ctx: MatrixWriteContext<'_>,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let len = product(ctx.extents)?;
         let matlab_dims = matrix_dims(ctx.extents, self.options.one_dimensional_mode);
         match byte_code {
@@ -1105,7 +1003,7 @@ impl MatWriter {
                     values.push(reader.read_signed(0)? as i8);
                 }
                 let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
-                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "int8")
+                Ok(self.make_numeric_i8(name, matlab_dims, values))
             }
             1 => {
                 let mut values = Vec::with_capacity(len);
@@ -1113,7 +1011,7 @@ impl MatWriter {
                     values.push(reader.read_signed(1)? as i16);
                 }
                 let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
-                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "int16")
+                Ok(self.make_numeric_i16(name, matlab_dims, values))
             }
             2 => {
                 let mut values = Vec::with_capacity(len);
@@ -1121,7 +1019,7 @@ impl MatWriter {
                     values.push(reader.read_signed(2)? as i32);
                 }
                 let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
-                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "int32")
+                Ok(self.make_numeric_i32(name, matlab_dims, values))
             }
             3 => {
                 let mut values = Vec::with_capacity(len);
@@ -1129,7 +1027,7 @@ impl MatWriter {
                     values.push(reader.read_signed(3)? as i64);
                 }
                 let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
-                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "int64")
+                Ok(self.make_numeric_i64(name, matlab_dims, values))
             }
             _ => Err(Error::msg(format!(
                 "unsupported i128 matrix at {}",
@@ -1140,10 +1038,11 @@ impl MatWriter {
 
     fn write_matrix_unsigned(
         &mut self,
+        name: String,
         reader: &mut Reader<'_>,
         byte_code: u8,
         ctx: MatrixWriteContext<'_>,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let len = product(ctx.extents)?;
         let matlab_dims = matrix_dims(ctx.extents, self.options.one_dimensional_mode);
         match byte_code {
@@ -1153,7 +1052,7 @@ impl MatWriter {
                     values.push(reader.read_unsigned(0)? as u8);
                 }
                 let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
-                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "uint8")
+                Ok(self.make_numeric_u8(name, matlab_dims, values))
             }
             1 => {
                 let mut values = Vec::with_capacity(len);
@@ -1161,7 +1060,7 @@ impl MatWriter {
                     values.push(reader.read_unsigned(1)? as u16);
                 }
                 let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
-                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "uint16")
+                Ok(self.make_numeric_u16(name, matlab_dims, values))
             }
             2 => {
                 let mut values = Vec::with_capacity(len);
@@ -1169,7 +1068,7 @@ impl MatWriter {
                     values.push(reader.read_unsigned(2)? as u32);
                 }
                 let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
-                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "uint32")
+                Ok(self.make_numeric_u32(name, matlab_dims, values))
             }
             3 => {
                 let mut values = Vec::with_capacity(len);
@@ -1177,7 +1076,7 @@ impl MatWriter {
                     values.push(reader.read_unsigned(3)? as u64);
                 }
                 let values = self.maybe_reorder(values, ctx.layout, ctx.extents, ctx.path)?;
-                self.write_numeric(ctx.parent, ctx.name, &matlab_dims, &values, "uint64")
+                Ok(self.make_numeric_u64(name, matlab_dims, values))
             }
             _ => Err(Error::msg(format!(
                 "unsupported u128 matrix at {}",
@@ -1188,43 +1087,35 @@ impl MatWriter {
 
     fn write_matrix_bool(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         reader: &mut Reader<'_>,
         extents: &[usize],
         layout: MatrixLayout,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         let len = product(extents)?;
         let matlab_dims = matrix_dims(extents, self.options.one_dimensional_mode);
         let packed = reader.read_exact(len.div_ceil(8))?;
         let unpacked = unpack_bools(packed, len);
         let values = self.maybe_reorder(unpacked, layout, extents, "$matrix")?;
-        self.write_logical(parent, name, &matlab_dims, &values)
+        Ok(self.make_logical(name, matlab_dims, values))
     }
 
-    fn write_value_reference(
-        &mut self,
-        reader: &mut Reader<'_>,
-        path: &str,
-    ) -> Result<ObjectReference1> {
+    fn write_value_reference(&mut self, reader: &mut Reader<'_>, path: &str) -> Result<String> {
         let ref_name = self.next_ref_name();
-        // Clone the ref-counted HDF5 handle to avoid borrowing self immutably and mutably at once.
-        let refs = self.refs.clone();
-        self.write_named_value(&refs, &ref_name, reader, path)?;
-        self.file
-            .reference(&format!("/#refs#/{ref_name}"))
-            .map_err(Into::into)
+        let ref_path = format!("#refs#/{ref_name}");
+        let node = self.write_named_value(ref_name, reader, path)?;
+        self.refs_children.push(node);
+        Ok(ref_path)
     }
 
     fn handle_128_bit_scalar(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         path: &str,
         value: String,
-    ) -> Result<()> {
+    ) -> Result<MatNode> {
         match self.options.unsupported_policy {
-            UnsupportedPolicy::StringFallback => self.write_string_scalar(parent, name, &value),
+            UnsupportedPolicy::StringFallback => self.write_string_scalar(name, &value),
             _ => Err(Error::msg(format!(
                 "unsupported 128-bit integer scalar at {path}"
             ))),
@@ -1250,232 +1141,219 @@ impl MatWriter {
         name
     }
 
-    fn write_numeric<T: H5Type>(
-        &self,
-        parent: &Group,
-        name: &str,
-        matlab_dims: &[usize],
-        data: &[T],
-        class: &str,
-    ) -> Result<()> {
-        if data.is_empty() {
-            return self.write_empty_marker(parent, name, matlab_dims, class, None);
-        }
-        let storage_dims = storage_dims(matlab_dims);
-        let ds = self.create_dataset::<T>(parent, name, &storage_dims)?;
-        ds.write_raw(data)?;
-        write_ascii_attr(&ds, "MATLAB_class", class)
-    }
-
-    fn write_complex<T: H5Type>(
-        &self,
-        parent: &Group,
-        name: &str,
-        matlab_dims: &[usize],
-        data: &[T],
-        class: &str,
-    ) -> Result<()> {
-        let storage_dims = storage_dims(matlab_dims);
-        let ds = self.create_dataset::<T>(parent, name, &storage_dims)?;
-        if !data.is_empty() {
-            ds.write_raw(data)?;
-        }
-        write_ascii_attr(&ds, "MATLAB_class", class)
-    }
-
-    fn write_logical(
-        &self,
-        parent: &Group,
-        name: &str,
-        matlab_dims: &[usize],
-        data: &[u8],
-    ) -> Result<()> {
-        if data.is_empty() {
-            return self.write_empty_marker(parent, name, matlab_dims, "logical", Some(1));
-        }
-        let storage_dims = storage_dims(matlab_dims);
-        let ds = self.create_dataset::<u8>(parent, name, &storage_dims)?;
-        ds.write_raw(data)?;
-        write_ascii_attr(&ds, "MATLAB_class", "logical")?;
-        write_i32_attr(&ds, "MATLAB_int_decode", 1)
-    }
-
-    fn write_string_scalar(&mut self, parent: &Group, name: &str, value: &str) -> Result<()> {
-        self.write_string_object(parent, name, &[value.to_owned()], &[1, 1])
+    fn write_string_scalar(&mut self, name: String, value: &str) -> Result<MatNode> {
+        self.write_string_object(name, &[value.to_owned()], &[1, 1])
     }
 
     fn write_string_object(
         &mut self,
-        parent: &Group,
-        name: &str,
+        name: String,
         values: &[String],
         matlab_dims: &[usize],
-    ) -> Result<()> {
-        let payload_ref = self.write_string_saveobj_payload(values, matlab_dims)?;
-        let object_id = self.string_objects.register(payload_ref);
+    ) -> Result<MatNode> {
+        let payload_path = self.write_string_saveobj_payload(values, matlab_dims)?;
+        let object_id = self.string_objects.register(payload_path);
         let metadata = create_string_object_metadata(object_id);
-        let ds = self.create_row_vector_dataset::<u32>(parent, name, &metadata)?;
-        write_ascii_attr(&ds, "MATLAB_class", MATLAB_CLASS_STRING)?;
-        write_i32_attr(&ds, "MATLAB_object_decode", MATLAB_OBJECT_DECODE_OPAQUE)
+        let shape = vec![1, metadata.len() as u64];
+        Ok(MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::U32(shape, metadata.to_vec()),
+            attrs: vec![
+                (
+                    "MATLAB_class",
+                    AttrValue::AsciiString(MATLAB_CLASS_STRING.into()),
+                ),
+                (
+                    "MATLAB_object_decode",
+                    AttrValue::I32(MATLAB_OBJECT_DECODE_OPAQUE),
+                ),
+            ],
+        }))
     }
 
     fn write_string_saveobj_payload(
         &mut self,
         values: &[String],
         matlab_dims: &[usize],
-    ) -> Result<ObjectReference1> {
+    ) -> Result<String> {
         let payload = encode_string_saveobj_payload(values, matlab_dims)?;
         let ref_name = self.next_ref_name();
-        self.write_numeric(
-            &self.refs,
-            &ref_name,
-            &[1, payload.len()],
-            &payload,
-            "uint64",
-        )?;
-        self.file
-            .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))
-            .map_err(Into::into)
+        let ref_path = format!("#refs#/{ref_name}");
+        let shape = vec![1, payload.len() as u64];
+        self.refs_children.push(MatNode::Dataset(MatDataset {
+            name: ref_name,
+            content: DatasetContent::U64(shape, payload),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("uint64".into()))],
+        }));
+        Ok(ref_path)
     }
 
-    fn write_string_subsystem(&mut self) -> Result<()> {
-        let subsystem = self.file.create_group("#subsystem#")?;
+    // ---------------------------------------------------------------------------
+    // IR node constructors
+    // ---------------------------------------------------------------------------
 
-        let metadata_ref = self.write_string_subsystem_metadata()?;
-        let canonical_empty_ref = self.write_string_canonical_empty_ref()?;
-        let unknown_template_a = self.write_string_unknown_template_ref()?;
-        let alias_ref = self.write_string_alias_metadata_ref()?;
-        let unknown_template_b = self.write_string_unknown_template_ref()?;
-
-        let mut refs = Vec::with_capacity(self.string_objects.payload_refs.len() + 5);
-        refs.push(metadata_ref);
-        refs.push(canonical_empty_ref);
-        refs.extend(self.string_objects.payload_refs.iter().copied());
-        refs.push(unknown_template_a);
-        refs.push(alias_ref);
-        refs.push(unknown_template_b);
-
-        let mcos = self.create_dataset::<ObjectReference1>(&subsystem, "MCOS", &[1, refs.len()])?;
-        mcos.write_raw(&refs)?;
-        write_ascii_attr(&mcos, "MATLAB_class", MATLAB_CLASS_FILEWRAPPER)?;
-        write_i32_attr(&mcos, "MATLAB_object_decode", MATLAB_OBJECT_DECODE_OPAQUE)
+    fn make_numeric_u8(&self, name: String, dims: Vec<usize>, data: Vec<u8>) -> MatNode {
+        let shape = storage_dims_u64(&dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::U8(shape, data),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("uint8".into()))],
+        })
     }
 
-    fn write_string_subsystem_metadata(&mut self) -> Result<ObjectReference1> {
-        let data = build_string_filewrapper_metadata(self.string_objects.payload_refs.len());
-        let ref_name = self.next_ref_name();
-        let ds = self.create_row_vector_dataset::<u8>(&self.refs, &ref_name, &data)?;
-        write_ascii_attr(&ds, "MATLAB_class", "uint8")?;
-        self.file
-            .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))
-            .map_err(Into::into)
+    fn make_numeric_u16(&self, name: String, dims: Vec<usize>, data: Vec<u16>) -> MatNode {
+        let shape = storage_dims_u64(&dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::U16(shape, data),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("uint16".into()))],
+        })
     }
 
-    fn write_string_canonical_empty_ref(&mut self) -> Result<ObjectReference1> {
-        let ref_name = self.next_ref_name();
-        self.write_empty_marker(&self.refs, &ref_name, &[0, 0], "canonical empty", None)?;
-        self.file
-            .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))
-            .map_err(Into::into)
+    fn make_numeric_u32(&self, name: String, dims: Vec<usize>, data: Vec<u32>) -> MatNode {
+        let shape = storage_dims_u64(&dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::U32(shape, data),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("uint32".into()))],
+        })
     }
 
-    fn write_string_alias_metadata_ref(&mut self) -> Result<ObjectReference1> {
-        let ref_name = self.next_ref_name();
-        let aliases = [0i32, 0];
-        let ds = self.create_row_vector_dataset::<i32>(&self.refs, &ref_name, &aliases)?;
-        write_ascii_attr(&ds, "MATLAB_class", "int32")?;
-        self.file
-            .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))
-            .map_err(Into::into)
+    fn make_numeric_u64(&self, name: String, dims: Vec<usize>, data: Vec<u64>) -> MatNode {
+        let shape = storage_dims_u64(&dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::U64(shape, data),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("uint64".into()))],
+        })
     }
 
-    fn write_string_unknown_template_ref(&mut self) -> Result<ObjectReference1> {
-        let refs = [
-            self.write_string_empty_struct_ref()?,
-            self.write_string_empty_struct_ref()?,
-        ];
-        let ref_name = self.next_ref_name();
-        self.write_reference_array(&self.refs, &ref_name, &[2, 1], &refs, "cell")?;
-        self.file
-            .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))
-            .map_err(Into::into)
+    fn make_numeric_i8(&self, name: String, dims: Vec<usize>, data: Vec<i8>) -> MatNode {
+        let shape = storage_dims_u64(&dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::I8(shape, data),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("int8".into()))],
+        })
     }
 
-    fn write_string_empty_struct_ref(&mut self) -> Result<ObjectReference1> {
-        let ref_name = self.next_ref_name();
-        self.write_empty_marker(&self.refs, &ref_name, &[1, 0], "struct", None)?;
-        self.file
-            .reference::<ObjectReference1>(&format!("/#refs#/{ref_name}"))
-            .map_err(Into::into)
+    fn make_numeric_i16(&self, name: String, dims: Vec<usize>, data: Vec<i16>) -> MatNode {
+        let shape = storage_dims_u64(&dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::I16(shape, data),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("int16".into()))],
+        })
     }
 
-    fn write_reference_array(
+    fn make_numeric_i32(&self, name: String, dims: Vec<usize>, data: Vec<i32>) -> MatNode {
+        let shape = storage_dims_u64(&dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::I32(shape, data),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("int32".into()))],
+        })
+    }
+
+    fn make_numeric_i64(&self, name: String, dims: Vec<usize>, data: Vec<i64>) -> MatNode {
+        let shape = storage_dims_u64(&dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::I64(shape, data),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("int64".into()))],
+        })
+    }
+
+    fn make_numeric_f32(&self, name: String, dims: Vec<usize>, data: Vec<f32>) -> MatNode {
+        let shape = storage_dims_u64(&dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::F32(shape, data),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("single".into()))],
+        })
+    }
+
+    fn make_numeric_f64(&self, name: String, dims: Vec<usize>, data: Vec<f64>) -> MatNode {
+        let shape = storage_dims_u64(&dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::F64(shape, data),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("double".into()))],
+        })
+    }
+
+    fn make_logical(&self, name: String, dims: Vec<usize>, data: Vec<u8>) -> MatNode {
+        let shape = storage_dims_u64(&dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::U8(shape, data),
+            attrs: vec![
+                ("MATLAB_class", AttrValue::AsciiString("logical".into())),
+                ("MATLAB_int_decode", AttrValue::I32(1)),
+            ],
+        })
+    }
+
+    fn make_complex32(&self, name: String, dims: Vec<usize>, data: Vec<(f32, f32)>) -> MatNode {
+        let shape = storage_dims_u64(&dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::Complex32(shape, data),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("single".into()))],
+        })
+    }
+
+    fn make_complex64(&self, name: String, dims: Vec<usize>, data: Vec<(f64, f64)>) -> MatNode {
+        let shape = storage_dims_u64(&dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::Complex64(shape, data),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("double".into()))],
+        })
+    }
+
+    fn make_empty_marker(
         &self,
-        parent: &Group,
-        name: &str,
-        matlab_dims: &[usize],
-        refs: &[ObjectReference1],
-        class: &str,
-    ) -> Result<()> {
-        if refs.is_empty() {
-            return self.write_empty_marker(parent, name, matlab_dims, class, None);
-        }
-        let storage_dims = storage_dims(matlab_dims);
-        let ds = self.create_dataset::<ObjectReference1>(parent, name, &storage_dims)?;
-        ds.write_raw(refs)?;
-        write_ascii_attr(&ds, "MATLAB_class", class)
-    }
-
-    fn write_empty_marker(
-        &self,
-        parent: &Group,
-        name: &str,
+        name: String,
         matlab_dims: &[usize],
         class: &str,
         int_decode: Option<u8>,
-    ) -> Result<()> {
+    ) -> MatNode {
         let shape_data: Vec<u64> = matlab_dims.iter().map(|&dim| dim as u64).collect();
-        let ds = self.create_dataset::<u64>(parent, name, &[shape_data.len()])?;
-        if !shape_data.is_empty() {
-            ds.write_raw(&shape_data)?;
-        }
-        write_ascii_attr(&ds, "MATLAB_class", class)?;
-        write_u32_attr(&ds, "MATLAB_empty", 1)?;
+        let mut attrs: Vec<(&'static str, AttrValue)> = vec![
+            ("MATLAB_class", AttrValue::AsciiString(class.to_string())),
+            ("MATLAB_empty", AttrValue::U32(1)),
+        ];
         if let Some(code) = int_decode {
-            write_i32_attr(&ds, "MATLAB_int_decode", i32::from(code))?;
+            attrs.push(("MATLAB_int_decode", AttrValue::I32(i32::from(code))));
         }
-        Ok(())
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::U64(vec![shape_data.len() as u64], shape_data),
+            attrs,
+        })
     }
 
-    fn write_empty_struct_array(&self, parent: &Group, name: &str) -> Result<()> {
-        self.write_empty_marker(parent, name, &[0, 0], "struct", None)
+    fn make_empty_struct_array(&self, name: String) -> MatNode {
+        self.make_empty_marker(name, &[0, 0], "struct", None)
     }
 
-    fn create_dataset<T: H5Type>(
+    fn make_reference_array(
         &self,
-        parent: &Group,
-        name: &str,
-        shape: &[usize],
-    ) -> Result<Dataset> {
-        let builder = configure_builder(&self.options.compression, parent.new_dataset_builder());
-        builder
-            .empty::<T>()
-            .shape(shape.to_vec())
-            .create(name)
-            .map_err(Into::into)
-    }
-
-    fn create_row_vector_dataset<T: H5Type>(
-        &self,
-        parent: &Group,
-        name: &str,
-        data: &[T],
-    ) -> Result<Dataset> {
-        let ds = self.create_dataset::<T>(parent, name, &[1, data.len()])?;
-        if !data.is_empty() {
-            ds.write_raw(data)?;
+        name: String,
+        matlab_dims: &[usize],
+        ref_paths: Vec<String>,
+        class: &str,
+    ) -> MatNode {
+        if ref_paths.is_empty() {
+            return self.make_empty_marker(name, matlab_dims, class, None);
         }
-        Ok(ds)
+        let shape = storage_dims_u64(matlab_dims);
+        MatNode::Dataset(MatDataset {
+            name,
+            content: DatasetContent::References(shape, ref_paths),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString(class.to_string()))],
+        })
     }
 
     fn maybe_reorder<T: Clone>(
@@ -1497,17 +1375,323 @@ impl MatWriter {
             },
         }
     }
-}
 
-fn configure_builder(compression: &Compression, builder: DatasetBuilder) -> DatasetBuilder {
-    match compression {
-        Compression::None => builder.no_chunk(),
-        Compression::Deflate { level, shuffle } => {
-            let builder = if *shuffle { builder.shuffle() } else { builder };
-            builder.deflate(*level)
+    // ---------------------------------------------------------------------------
+    // Phase 2: IR → HDF5 bytes
+    // ---------------------------------------------------------------------------
+
+    fn build_hdf5_bytes(mut self) -> Result<Vec<u8>> {
+        // Build string subsystem refs before constructing the HDF5 tree
+        let subsystem_mcos = if !self.string_objects.is_empty() {
+            Some(self.build_string_subsystem_mcos())
+        } else {
+            None
+        };
+
+        let mut builder = FileBuilder::new();
+        builder.with_userblock(MATLAB_USERBLOCK_SIZE);
+
+        // Place root nodes
+        for node in self.root_nodes {
+            place_node_on_file(&mut builder, node, &self.options.compression);
+        }
+
+        // Place #refs# group
+        if !self.refs_children.is_empty() {
+            let mut refs_group = builder.create_group("#refs#");
+            for node in self.refs_children {
+                place_node_on_group(&mut refs_group, node, &self.options.compression);
+            }
+            builder.add_group(refs_group.finish());
+        }
+
+        // Place #subsystem# group
+        if let Some(mcos) = subsystem_mcos {
+            let mut subsystem_group = builder.create_group("#subsystem#");
+            let ds = subsystem_group.create_dataset("MCOS");
+            ds.with_shape(&mcos.shape);
+            ds.with_path_references(
+                &mcos
+                    .ref_paths
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>(),
+            );
+            ds.set_attr(
+                "MATLAB_class",
+                AttrValue::AsciiString(MATLAB_CLASS_FILEWRAPPER.into()),
+            );
+            ds.set_attr(
+                "MATLAB_object_decode",
+                AttrValue::I32(MATLAB_OBJECT_DECODE_OPAQUE),
+            );
+            builder.add_group(subsystem_group.finish());
+        }
+
+        let mut bytes = builder.finish()?;
+        write_userblock_header(&mut bytes);
+        Ok(bytes)
+    }
+
+    fn build_string_subsystem_mcos(&mut self) -> McosData {
+        // Build all the helper refs needed for the subsystem metadata
+        let metadata_ref_name = self.next_ref_name();
+        let metadata_data =
+            build_string_filewrapper_metadata(self.string_objects.payload_paths.len());
+        self.refs_children.push(MatNode::Dataset(MatDataset {
+            name: metadata_ref_name.clone(),
+            content: DatasetContent::U8(vec![1, metadata_data.len() as u64], metadata_data),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("uint8".into()))],
+        }));
+        let metadata_ref_path = format!("#refs#/{metadata_ref_name}");
+
+        // Canonical empty
+        let canonical_empty_name = self.next_ref_name();
+        self.refs_children.push(self.make_empty_marker(
+            canonical_empty_name.clone(),
+            &[0, 0],
+            "canonical empty",
+            None,
+        ));
+        let canonical_empty_path = format!("#refs#/{canonical_empty_name}");
+
+        // Unknown template A: cell { empty_struct, empty_struct }
+        let empty_struct_a1_name = self.next_ref_name();
+        self.refs_children.push(self.make_empty_marker(
+            empty_struct_a1_name.clone(),
+            &[1, 0],
+            "struct",
+            None,
+        ));
+        let empty_struct_a1_path = format!("#refs#/{empty_struct_a1_name}");
+
+        let empty_struct_a2_name = self.next_ref_name();
+        self.refs_children.push(self.make_empty_marker(
+            empty_struct_a2_name.clone(),
+            &[1, 0],
+            "struct",
+            None,
+        ));
+        let empty_struct_a2_path = format!("#refs#/{empty_struct_a2_name}");
+
+        let unknown_template_a_name = self.next_ref_name();
+        self.refs_children.push(self.make_reference_array(
+            unknown_template_a_name.clone(),
+            &[2, 1],
+            vec![empty_struct_a1_path, empty_struct_a2_path],
+            "cell",
+        ));
+        let unknown_template_a_path = format!("#refs#/{unknown_template_a_name}");
+
+        // Alias metadata ref
+        let alias_ref_name = self.next_ref_name();
+        self.refs_children.push(MatNode::Dataset(MatDataset {
+            name: alias_ref_name.clone(),
+            content: DatasetContent::I32(vec![1, 2], vec![0i32, 0]),
+            attrs: vec![("MATLAB_class", AttrValue::AsciiString("int32".into()))],
+        }));
+        let alias_ref_path = format!("#refs#/{alias_ref_name}");
+
+        // Unknown template B: cell { empty_struct, empty_struct }
+        let empty_struct_b1_name = self.next_ref_name();
+        self.refs_children.push(self.make_empty_marker(
+            empty_struct_b1_name.clone(),
+            &[1, 0],
+            "struct",
+            None,
+        ));
+        let empty_struct_b1_path = format!("#refs#/{empty_struct_b1_name}");
+
+        let empty_struct_b2_name = self.next_ref_name();
+        self.refs_children.push(self.make_empty_marker(
+            empty_struct_b2_name.clone(),
+            &[1, 0],
+            "struct",
+            None,
+        ));
+        let empty_struct_b2_path = format!("#refs#/{empty_struct_b2_name}");
+
+        let unknown_template_b_name = self.next_ref_name();
+        self.refs_children.push(self.make_reference_array(
+            unknown_template_b_name.clone(),
+            &[2, 1],
+            vec![empty_struct_b1_path, empty_struct_b2_path],
+            "cell",
+        ));
+        let unknown_template_b_path = format!("#refs#/{unknown_template_b_name}");
+
+        // Build the MCOS reference array paths
+        let mut mcos_paths = Vec::with_capacity(self.string_objects.payload_paths.len() + 5);
+        mcos_paths.push(metadata_ref_path);
+        mcos_paths.push(canonical_empty_path);
+        mcos_paths.extend(self.string_objects.payload_paths.iter().cloned());
+        mcos_paths.push(unknown_template_a_path);
+        mcos_paths.push(alias_ref_path);
+        mcos_paths.push(unknown_template_b_path);
+
+        let shape = vec![1u64, mcos_paths.len() as u64];
+        McosData {
+            shape,
+            ref_paths: mcos_paths,
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 2 helpers: place IR nodes onto FileBuilder / GroupBuilder
+// ---------------------------------------------------------------------------
+
+fn place_node_on_file(builder: &mut FileBuilder, node: MatNode, compression: &Compression) {
+    match node {
+        MatNode::Dataset(ds) => {
+            place_dataset_on_file(builder, ds, compression);
+        }
+        MatNode::Group(grp) => {
+            let mut gb = builder.create_group(&grp.name);
+            for (attr_name, attr_value) in grp.attrs {
+                gb.set_attr(attr_name, attr_value);
+            }
+            for child in grp.children {
+                place_node_on_group(&mut gb, child, compression);
+            }
+            builder.add_group(gb.finish());
+        }
+    }
+}
+
+fn place_node_on_group(group: &mut GroupBuilder, node: MatNode, compression: &Compression) {
+    match node {
+        MatNode::Dataset(ds) => {
+            place_dataset_on_group(group, ds, compression);
+        }
+        MatNode::Group(grp) => {
+            let mut child = group.create_group(&grp.name);
+            for (attr_name, attr_value) in grp.attrs {
+                child.set_attr(attr_name, attr_value);
+            }
+            for inner in grp.children {
+                place_node_on_group(&mut child, inner, compression);
+            }
+            group.add_group(child.finish());
+        }
+    }
+}
+
+fn configure_dataset(ds: &mut DatasetBuilder, compression: &Compression) {
+    if let Compression::Deflate { level, shuffle } = compression {
+        if *shuffle {
+            ds.with_shuffle();
+        }
+        ds.with_deflate(*level as u32);
+    }
+}
+
+fn place_dataset_on_file(builder: &mut FileBuilder, mat_ds: MatDataset, compression: &Compression) {
+    let ds = builder.create_dataset(&mat_ds.name);
+    apply_dataset_content(ds, mat_ds.content, compression);
+    for (attr_name, attr_value) in mat_ds.attrs {
+        ds.set_attr(attr_name, attr_value);
+    }
+}
+
+fn place_dataset_on_group(group: &mut GroupBuilder, mat_ds: MatDataset, compression: &Compression) {
+    let ds = group.create_dataset(&mat_ds.name);
+    apply_dataset_content(ds, mat_ds.content, compression);
+    for (attr_name, attr_value) in mat_ds.attrs {
+        ds.set_attr(attr_name, attr_value);
+    }
+}
+
+fn apply_dataset_content(
+    ds: &mut DatasetBuilder,
+    content: DatasetContent,
+    compression: &Compression,
+) {
+    match content {
+        DatasetContent::U8(shape, data) => {
+            ds.with_shape(&shape);
+            configure_dataset(ds, compression);
+            ds.with_u8_data(&data);
+        }
+        DatasetContent::U16(shape, data) => {
+            ds.with_shape(&shape);
+            configure_dataset(ds, compression);
+            ds.with_u16_data(&data);
+        }
+        DatasetContent::U32(shape, data) => {
+            ds.with_shape(&shape);
+            configure_dataset(ds, compression);
+            ds.with_u32_data(&data);
+        }
+        DatasetContent::U64(shape, data) => {
+            ds.with_shape(&shape);
+            configure_dataset(ds, compression);
+            ds.with_u64_data(&data);
+        }
+        DatasetContent::I8(shape, data) => {
+            ds.with_shape(&shape);
+            configure_dataset(ds, compression);
+            ds.with_i8_data(&data);
+        }
+        DatasetContent::I16(shape, data) => {
+            ds.with_shape(&shape);
+            configure_dataset(ds, compression);
+            ds.with_i16_data(&data);
+        }
+        DatasetContent::I32(shape, data) => {
+            ds.with_shape(&shape);
+            configure_dataset(ds, compression);
+            ds.with_i32_data(&data);
+        }
+        DatasetContent::I64(shape, data) => {
+            ds.with_shape(&shape);
+            configure_dataset(ds, compression);
+            ds.with_i64_data(&data);
+        }
+        DatasetContent::F32(shape, data) => {
+            ds.with_shape(&shape);
+            configure_dataset(ds, compression);
+            ds.with_f32_data(&data);
+        }
+        DatasetContent::F64(shape, data) => {
+            ds.with_shape(&shape);
+            configure_dataset(ds, compression);
+            ds.with_f64_data(&data);
+        }
+        DatasetContent::Complex32(shape, data) => {
+            ds.with_shape(&shape);
+            configure_dataset(ds, compression);
+            ds.with_complex32_data(&data);
+        }
+        DatasetContent::Complex64(shape, data) => {
+            ds.with_shape(&shape);
+            configure_dataset(ds, compression);
+            ds.with_complex64_data(&data);
+        }
+        DatasetContent::References(shape, paths) => {
+            ds.with_shape(&shape);
+            let path_strs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+            ds.with_path_references(&path_strs);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Userblock
+// ---------------------------------------------------------------------------
+
+fn write_userblock_header(bytes: &mut [u8]) {
+    let text = matlab_header_text();
+    bytes[..116].copy_from_slice(&text);
+    bytes[124] = 0;
+    bytes[125] = 2;
+    bytes[126] = b'I';
+    bytes[127] = b'M';
+}
+
+// ---------------------------------------------------------------------------
+// Dimension helpers
+// ---------------------------------------------------------------------------
 
 fn vector_dims(len: usize, mode: OneDimensionalMode) -> Vec<usize> {
     match mode {
@@ -1533,6 +1717,13 @@ fn storage_dims(matlab_dims: &[usize]) -> Vec<usize> {
     dims
 }
 
+fn storage_dims_u64(matlab_dims: &[usize]) -> Vec<u64> {
+    storage_dims(matlab_dims)
+        .iter()
+        .map(|&d| d as u64)
+        .collect()
+}
+
 fn product(extents: &[usize]) -> Result<usize> {
     extents.iter().try_fold(1usize, |acc, &dim| {
         acc.checked_mul(dim).ok_or(Error::InvalidSize)
@@ -1552,6 +1743,10 @@ fn validate_matrix_extents(extents: &[usize], path: &str) -> Result<()> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Data reordering
+// ---------------------------------------------------------------------------
 
 fn reorder_row_major_to_column_major<T: Clone>(data: &[T], extents: &[usize]) -> Vec<T> {
     if extents.len() <= 1 || data.len() <= 1 {
@@ -1584,6 +1779,10 @@ fn unpack_bools(packed: &[u8], len: usize) -> Vec<u8> {
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// MATLAB string object helpers
+// ---------------------------------------------------------------------------
 
 fn create_string_object_metadata(object_id: u32) -> [u32; 6] {
     [MCOS_MAGIC_NUMBER, 2, 1, 1, object_id, 1]
@@ -1701,79 +1900,9 @@ fn u32_bytes(values: &[u32]) -> Vec<u8> {
         .collect()
 }
 
-fn write_ascii_attr(target: &hdf5::Location, name: &str, value: &str) -> Result<()> {
-    // FixedAscii<N> needs a compile-time width, so this dispatch is the simplest
-    // way to keep MATLAB metadata in fixed-width ASCII attributes.
-    match value.len() {
-        0 => write_fixed_ascii_attr::<1>(target, name, value),
-        1 => write_fixed_ascii_attr::<1>(target, name, value),
-        2 => write_fixed_ascii_attr::<2>(target, name, value),
-        3 => write_fixed_ascii_attr::<3>(target, name, value),
-        4 => write_fixed_ascii_attr::<4>(target, name, value),
-        5 => write_fixed_ascii_attr::<5>(target, name, value),
-        6 => write_fixed_ascii_attr::<6>(target, name, value),
-        7 => write_fixed_ascii_attr::<7>(target, name, value),
-        8 => write_fixed_ascii_attr::<8>(target, name, value),
-        9 => write_fixed_ascii_attr::<9>(target, name, value),
-        10 => write_fixed_ascii_attr::<10>(target, name, value),
-        11 => write_fixed_ascii_attr::<11>(target, name, value),
-        12 => write_fixed_ascii_attr::<12>(target, name, value),
-        13 => write_fixed_ascii_attr::<13>(target, name, value),
-        14 => write_fixed_ascii_attr::<14>(target, name, value),
-        15 => write_fixed_ascii_attr::<15>(target, name, value),
-        16 => write_fixed_ascii_attr::<16>(target, name, value),
-        len => Err(Error::msg(format!(
-            "ASCII attribute `{name}` exceeds supported fixed width: {len}"
-        ))),
-    }
-}
-
-fn write_fixed_ascii_attr<const N: usize>(
-    target: &hdf5::Location,
-    name: &str,
-    value: &str,
-) -> Result<()> {
-    let ascii =
-        FixedAscii::<N>::from_ascii(value.as_bytes()).map_err(|e| Error::msg(e.to_string()))?;
-    target
-        .new_attr::<FixedAscii<N>>()
-        .create(name)?
-        .write_scalar(&ascii)?;
-    Ok(())
-}
-
-fn write_ascii_list_attr(target: &hdf5::Location, name: &str, values: &[String]) -> Result<()> {
-    let ascii: Vec<VarLenArray<FixedAscii<1>>> = values
-        .iter()
-        .map(|value| {
-            let chars = value
-                .bytes()
-                .map(|byte| {
-                    FixedAscii::<1>::from_ascii(&[byte]).map_err(|e| Error::msg(e.to_string()))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Ok(VarLenArray::from_slice(&chars))
-        })
-        .collect::<Result<_>>()?;
-    target.new_attr_builder().with_data(&ascii).create(name)?;
-    Ok(())
-}
-
-fn write_i32_attr(target: &hdf5::Location, name: &str, value: i32) -> Result<()> {
-    target
-        .new_attr::<i32>()
-        .create(name)?
-        .write_scalar(&value)?;
-    Ok(())
-}
-
-fn write_u32_attr(target: &hdf5::Location, name: &str, value: u32) -> Result<()> {
-    target
-        .new_attr::<u32>()
-        .create(name)?
-        .write_scalar(&value)?;
-    Ok(())
-}
+// ---------------------------------------------------------------------------
+// MATLAB name validation / sanitization
+// ---------------------------------------------------------------------------
 
 fn validate_name(name: &str) -> Result<()> {
     if !is_valid_name(name) {
@@ -1847,7 +1976,6 @@ fn dedupe_name(mut candidate: String, used: &BTreeSet<String>) -> String {
             candidate.push('x');
             candidate.push_str(&suffix_str[start..]);
         } else {
-            // Names are sanitized/validated to ASCII, so byte truncation is safe here.
             let prefix = if base.len() > max_base_len {
                 &base[..max_base_len]
             } else {
@@ -1864,23 +1992,70 @@ fn dedupe_name(mut candidate: String, used: &BTreeSet<String>) -> String {
     }
 }
 
-fn write_userblock(path: &Path) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .open(path)
-        .map_err(|e| Error::msg(e.to_string()))?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|e| Error::msg(e.to_string()))?;
+// ---------------------------------------------------------------------------
+// File I/O helpers
+// ---------------------------------------------------------------------------
 
-    let mut block = [0u8; MATLAB_USERBLOCK_SIZE as usize];
-    let text = matlab_header_text();
-    block[..116].copy_from_slice(&text);
-    block[124] = 0;
-    block[125] = 2;
-    block[126] = b'I';
-    block[127] = b'M';
-    file.write_all(&block)
-        .map_err(|e| Error::msg(e.to_string()))
+struct TempOutputFile {
+    path: PathBuf,
+    persisted: bool,
+}
+
+impl TempOutputFile {
+    fn new(output_path: &Path) -> Result<Self> {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+        let directory = output_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let base_name = output_path
+            .file_name()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| OsString::from("beve.mat"));
+
+        for _ in 0..1024 {
+            let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let mut temp_name = OsString::from(".");
+            temp_name.push(&base_name);
+            temp_name.push(format!(".beve-tmp-{:x}-{:x}", std::process::id(), sequence));
+            let path = directory.join(temp_name);
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    drop(file);
+                    return Ok(Self {
+                        path,
+                        persisted: false,
+                    });
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(Error::msg(err.to_string())),
+            }
+        }
+
+        Err(Error::msg(format!(
+            "failed to reserve a temporary MAT path near {}",
+            output_path.display()
+        )))
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn persist(mut self, output_path: &Path) -> Result<()> {
+        replace_file(&self.path, output_path).map_err(|e| Error::msg(e.to_string()))?;
+        self.persisted = true;
+        Ok(())
+    }
+}
+
+impl Drop for TempOutputFile {
+    fn drop(&mut self) {
+        if !self.persisted {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 fn sync_regular_file(path: &Path) -> Result<()> {

@@ -66,7 +66,8 @@ pub use crate::json::{
 #[cfg(feature = "mat")]
 pub use crate::mat::{
     Compression, InvalidNamePolicy, MatV73Options, NullPolicy, OneDimensionalMode, RootBinding,
-    RowMajorPolicy, UnsupportedPolicy, beve_file_to_mat_v73_file, beve_slice_to_mat_v73_file,
+    RowMajorPolicy, UnsupportedPolicy, beve_file_to_mat_v73_file, beve_slice_to_mat_v73_bytes,
+    beve_slice_to_mat_v73_file,
 };
 pub use crate::ser::{
     EnumEncoding, Serializer, SerializerOptions, to_vec, to_vec_into, to_vec_into_with_options,

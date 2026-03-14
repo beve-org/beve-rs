@@ -1,6 +1,7 @@
 #![cfg(feature = "mat")]
 #![deny(warnings)]
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -9,9 +10,7 @@ use beve::{
     Complex, InvalidNamePolicy, Key, MatV73Options, NullPolicy, Object, RootBinding,
     UnsupportedPolicy, Value,
 };
-use hdf5::types::{FixedAscii, TypeDescriptor, VarLenArray};
-use hdf5::{ObjectReference1, ReferencedObject};
-use hdf5_metno as hdf5;
+use hdf5_pure::{AttrValue, DType, File};
 
 const MCOS_MAGIC_NUMBER: u32 = 0xDD00_0000;
 
@@ -31,90 +30,27 @@ fn fixture_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn read_matlab_class(loc: &hdf5::Location, name: &str) -> String {
-    let attr = loc.attr(name).unwrap();
-    match attr.dtype().unwrap().size() {
-        1 => attr
-            .read_scalar::<FixedAscii<1>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        2 => attr
-            .read_scalar::<FixedAscii<2>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        3 => attr
-            .read_scalar::<FixedAscii<3>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        4 => attr
-            .read_scalar::<FixedAscii<4>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        5 => attr
-            .read_scalar::<FixedAscii<5>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        6 => attr
-            .read_scalar::<FixedAscii<6>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        7 => attr
-            .read_scalar::<FixedAscii<7>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        8 => attr
-            .read_scalar::<FixedAscii<8>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        9 => attr
-            .read_scalar::<FixedAscii<9>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        10 => attr
-            .read_scalar::<FixedAscii<10>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        11 => attr
-            .read_scalar::<FixedAscii<11>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        12 => attr
-            .read_scalar::<FixedAscii<12>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        13 => attr
-            .read_scalar::<FixedAscii<13>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        14 => attr
-            .read_scalar::<FixedAscii<14>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        15 => attr
-            .read_scalar::<FixedAscii<15>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        16 => attr
-            .read_scalar::<FixedAscii<16>>()
-            .unwrap()
-            .as_str()
-            .to_owned(),
-        len => panic!("unsupported MATLAB_class width: {len}"),
+fn read_attr_string(attrs: &HashMap<String, AttrValue>, name: &str) -> String {
+    match &attrs[name] {
+        AttrValue::String(s) => s.clone(),
+        AttrValue::AsciiString(s) => s.clone(),
+        other => panic!("expected String for {name}, got {other:?}"),
+    }
+}
+
+fn read_attr_i64(attrs: &HashMap<String, AttrValue>, name: &str) -> i64 {
+    match &attrs[name] {
+        AttrValue::I64(v) => *v,
+        AttrValue::I32(v) => *v as i64,
+        other => panic!("expected I64 for {name}, got {other:?}"),
+    }
+}
+
+fn read_attr_u64(attrs: &HashMap<String, AttrValue>, name: &str) -> u64 {
+    match &attrs[name] {
+        AttrValue::U64(v) => *v,
+        AttrValue::U32(v) => *v as u64,
+        other => panic!("expected U64 for {name}, got {other:?}"),
     }
 }
 
@@ -174,39 +110,104 @@ fn decode_matlab_string_saveobj(raw: &[u64]) -> Vec<String> {
         .collect()
 }
 
-fn read_emitted_string_saveobj(file: &hdf5::File, object: &hdf5::Dataset) -> Vec<u64> {
-    assert_eq!(read_matlab_class(object, "MATLAB_class"), "string");
-    assert_eq!(
-        object
-            .attr("MATLAB_object_decode")
-            .unwrap()
-            .read_scalar::<i32>()
-            .unwrap(),
-        3
-    );
+/// Read the saveobj payload for a MATLAB string object.
+///
+/// Verifies the dataset has MATLAB_class="string" and MATLAB_object_decode=3,
+/// then finds the corresponding uint64 payload dataset in `#refs#`.
+fn read_string_saveobj_payload(file: &File, ds_path: &str) -> Vec<u64> {
+    let ds = file.dataset(ds_path).unwrap();
+    let attrs = ds.attrs().unwrap();
+    assert_eq!(read_attr_string(&attrs, "MATLAB_class"), "string");
+    assert_eq!(read_attr_i64(&attrs, "MATLAB_object_decode"), 3);
 
-    let metadata = object.read_raw::<u32>().unwrap();
-    assert_eq!(metadata, vec![MCOS_MAGIC_NUMBER, 2, 1, 1, metadata[4], 1]);
+    let metadata = ds.read_u32().unwrap();
+    assert_eq!(metadata[..4], [MCOS_MAGIC_NUMBER, 2, 1, 1]);
 
+    // Verify subsystem exists
     let subsystem = file.dataset("#subsystem#/MCOS").unwrap();
+    let sub_attrs = subsystem.attrs().unwrap();
     assert_eq!(
-        read_matlab_class(&subsystem, "MATLAB_class"),
+        read_attr_string(&sub_attrs, "MATLAB_class"),
         "FileWrapper__"
     );
-    assert_eq!(
-        subsystem
-            .attr("MATLAB_object_decode")
-            .unwrap()
-            .read_scalar::<i32>()
-            .unwrap(),
-        3
-    );
-    let refs = subsystem.read_raw::<ObjectReference1>().unwrap();
-    let payload_ref = refs[2 + metadata[4] as usize - 1];
-    match file.dereference(&payload_ref).unwrap() {
-        ReferencedObject::Dataset(payload) => payload.read_raw::<u64>().unwrap(),
-        _ => panic!("expected string saveobj payload dataset"),
+    assert_eq!(read_attr_i64(&sub_attrs, "MATLAB_object_decode"), 3);
+
+    // Find the saveobj payload: scan #refs# for uint64 datasets.
+    // Each string object allocates one ref for the saveobj payload (a uint64 dataset).
+    // The refs are named ref_{id:016x} in allocation order.
+    // For object_id N (1-based from metadata[4]), the payload is at index N-1 among
+    // the uint64 datasets sorted by name.
+    let refs_group = file.group("#refs#").unwrap();
+    let mut uint64_refs: Vec<String> = Vec::new();
+    for name in refs_group.datasets().unwrap() {
+        let Ok(ref_ds) = refs_group.dataset(&name) else {
+            continue;
+        };
+        let Ok(ref_attrs) = ref_ds.attrs() else {
+            continue;
+        };
+        let class_str = match ref_attrs.get("MATLAB_class") {
+            Some(AttrValue::String(s) | AttrValue::AsciiString(s)) => s.as_str(),
+            _ => "",
+        };
+        if class_str == "uint64" {
+            uint64_refs.push(name);
+        }
     }
+    uint64_refs.sort();
+
+    let payload_idx = (metadata[4] - 1) as usize;
+    refs_group
+        .dataset(&uint64_refs[payload_idx])
+        .unwrap()
+        .read_u64()
+        .unwrap()
+}
+
+/// Read the saveobj payload for a string object nested under a group.
+fn read_string_saveobj_payload_in_group(file: &File, group_path: &str, ds_name: &str) -> Vec<u64> {
+    let group = file.group(group_path).unwrap();
+    let ds = group.dataset(ds_name).unwrap();
+    let attrs = ds.attrs().unwrap();
+    assert_eq!(read_attr_string(&attrs, "MATLAB_class"), "string");
+    assert_eq!(read_attr_i64(&attrs, "MATLAB_object_decode"), 3);
+
+    let metadata = ds.read_u32().unwrap();
+    assert_eq!(metadata[..4], [MCOS_MAGIC_NUMBER, 2, 1, 1]);
+
+    let subsystem = file.dataset("#subsystem#/MCOS").unwrap();
+    let sub_attrs = subsystem.attrs().unwrap();
+    assert_eq!(
+        read_attr_string(&sub_attrs, "MATLAB_class"),
+        "FileWrapper__"
+    );
+    assert_eq!(read_attr_i64(&sub_attrs, "MATLAB_object_decode"), 3);
+
+    let refs_group = file.group("#refs#").unwrap();
+    let mut uint64_refs: Vec<String> = Vec::new();
+    for name in refs_group.datasets().unwrap() {
+        let Ok(ref_ds) = refs_group.dataset(&name) else {
+            continue;
+        };
+        let Ok(ref_attrs) = ref_ds.attrs() else {
+            continue;
+        };
+        let class_str = match ref_attrs.get("MATLAB_class") {
+            Some(AttrValue::String(s) | AttrValue::AsciiString(s)) => s.as_str(),
+            _ => "",
+        };
+        if class_str == "uint64" {
+            uint64_refs.push(name);
+        }
+    }
+    uint64_refs.sort();
+
+    let payload_idx = (metadata[4] - 1) as usize;
+    refs_group
+        .dataset(&uint64_refs[payload_idx])
+        .unwrap()
+        .read_u64()
+        .unwrap()
 }
 
 #[test]
@@ -225,12 +226,13 @@ fn mat_v73_scalar_string_and_userblock() {
     assert!(raw.starts_with(b"MATLAB 7.3 MAT-file"));
     assert_eq!(&raw[126..128], b"IM");
 
-    let file = hdf5::File::open(&path).unwrap();
-    assert_eq!(file.userblock(), 512);
+    let file = File::open(&path).unwrap();
+    // The userblock size equals base_address (the superblock starts after the userblock).
+    assert_eq!(file.superblock().base_address, 512);
 
     let ds = file.dataset("greeting").unwrap();
-    assert_eq!(ds.shape(), vec![1, 6]);
-    let payload = read_emitted_string_saveobj(&file, &ds);
+    assert_eq!(ds.shape().unwrap(), vec![1, 6]);
+    let payload = read_string_saveobj_payload(&file, "greeting");
     assert_eq!(payload[..5], [1, 2, 1, 1, 5]);
     assert_eq!(
         decode_matlab_string_saveobj(&payload),
@@ -252,18 +254,13 @@ fn mat_v73_logical_array() {
     )
     .unwrap();
 
-    let file = hdf5::File::open(&path).unwrap();
+    let file = File::open(&path).unwrap();
     let ds = file.dataset("flags").unwrap();
-    assert_eq!(ds.shape(), vec![1, 3]);
-    assert_eq!(read_matlab_class(&ds, "MATLAB_class"), "logical");
-    assert_eq!(
-        ds.attr("MATLAB_int_decode")
-            .unwrap()
-            .read_scalar::<i32>()
-            .unwrap(),
-        1
-    );
-    assert_eq!(ds.read_raw::<u8>().unwrap(), vec![1, 0, 1]);
+    assert_eq!(ds.shape().unwrap(), vec![1, 3]);
+    let attrs = ds.attrs().unwrap();
+    assert_eq!(read_attr_string(&attrs, "MATLAB_class"), "logical");
+    assert_eq!(read_attr_i64(&attrs, "MATLAB_int_decode"), 1);
+    assert_eq!(ds.read_u8().unwrap(), vec![1, 0, 1]);
 
     std::fs::remove_file(path).unwrap();
 }
@@ -281,32 +278,60 @@ fn mat_v73_cell_array_uses_references() {
     )
     .unwrap();
 
-    let file = hdf5::File::open(&path).unwrap();
+    let file = File::open(&path).unwrap();
     let ds = file.dataset("cells").unwrap();
-    assert_eq!(ds.shape(), vec![1, 2]);
-    assert_eq!(read_matlab_class(&ds, "MATLAB_class"), "cell");
+    assert_eq!(ds.shape().unwrap(), vec![1, 2]);
+    let attrs = ds.attrs().unwrap();
+    assert_eq!(read_attr_string(&attrs, "MATLAB_class"), "cell");
 
-    let refs = ds.read_raw::<ObjectReference1>().unwrap();
-    assert_eq!(refs.len(), 2);
+    // The dtype should be ObjectReference
+    assert_eq!(ds.dtype().unwrap(), DType::ObjectReference);
 
-    match file.dereference(&refs[0]).unwrap() {
-        ReferencedObject::Dataset(item) => {
-            assert_eq!(read_matlab_class(&item, "MATLAB_class"), "uint8");
-            assert_eq!(item.read_raw::<u8>().unwrap(), vec![1]);
-        }
-        _ => panic!("expected dataset reference"),
-    }
+    // Verify the referenced datasets in #refs#.
+    // The cell array writes element references in order:
+    //   ref_0000000000000000 = first element (uint8 scalar 1)
+    //   ref_0000000000000001 = second element (string "hi" saveobj payload)
+    //   ref_0000000000000002 = second element metadata (string object u32 dataset)
+    // But the second element is a string, which allocates a saveobj payload ref first,
+    // then the string metadata dataset goes into #refs# too.
+    // Actually: cell array element refs go first. For "hi", write_value_reference
+    // is called, which calls write_string_object, which:
+    //   1. Calls write_string_saveobj_payload → allocates next ref (saveobj)
+    //   2. Creates the metadata dataset in-place (returned as the cell element ref)
+    // Wait, let me re-check. For cell arrays:
+    //   write_cell_array → for each element, calls write_value_reference
+    //   write_value_reference allocates a ref name and writes the value there
+    //   For uint8: ref_0000000000000000 = uint8 dataset with value [1]
+    //   For string: write_value_reference allocates ref_0000000000000001 for the string metadata
+    //     But write_string_object first calls write_string_saveobj_payload which allocates
+    //     ref_0000000000000002 for the saveobj payload
+    //     Then the metadata dataset is placed at ref_0000000000000001
+    // So: ref_0000000000000000 = uint8, ref_0000000000000001 = string metadata,
+    //     ref_0000000000000002 = saveobj payload (uint64)
 
-    match file.dereference(&refs[1]).unwrap() {
-        ReferencedObject::Dataset(item) => {
-            let payload = read_emitted_string_saveobj(&file, &item);
-            assert_eq!(
-                decode_matlab_string_saveobj(&payload),
-                vec!["hi".to_owned()]
-            );
-        }
-        _ => panic!("expected dataset reference"),
-    }
+    let refs_group = file.group("#refs#").unwrap();
+
+    // First ref: uint8 scalar with value 1
+    let item0 = refs_group.dataset("ref_0000000000000000").unwrap();
+    let item0_attrs = item0.attrs().unwrap();
+    assert_eq!(read_attr_string(&item0_attrs, "MATLAB_class"), "uint8");
+    assert_eq!(item0.read_u8().unwrap(), vec![1]);
+
+    // Second ref: string metadata dataset
+    let item1 = refs_group.dataset("ref_0000000000000001").unwrap();
+    let item1_attrs = item1.attrs().unwrap();
+    assert_eq!(read_attr_string(&item1_attrs, "MATLAB_class"), "string");
+    assert_eq!(read_attr_i64(&item1_attrs, "MATLAB_object_decode"), 3);
+
+    // Third ref: saveobj payload (uint64) for the string "hi"
+    let item2 = refs_group.dataset("ref_0000000000000002").unwrap();
+    let item2_attrs = item2.attrs().unwrap();
+    assert_eq!(read_attr_string(&item2_attrs, "MATLAB_class"), "uint64");
+    let payload = item2.read_u64().unwrap();
+    assert_eq!(
+        decode_matlab_string_saveobj(&payload),
+        vec!["hi".to_owned()]
+    );
 
     std::fs::remove_file(path).unwrap();
 }
@@ -323,17 +348,12 @@ fn mat_v73_null_defaults_to_empty_struct_array() {
     )
     .unwrap();
 
-    let file = hdf5::File::open(&path).unwrap();
+    let file = File::open(&path).unwrap();
     let ds = file.dataset("nothing").unwrap();
-    assert_eq!(read_matlab_class(&ds, "MATLAB_class"), "struct");
-    assert_eq!(
-        ds.attr("MATLAB_empty")
-            .unwrap()
-            .read_scalar::<u32>()
-            .unwrap(),
-        1
-    );
-    assert_eq!(ds.read_raw::<u64>().unwrap(), vec![0, 0]);
+    let attrs = ds.attrs().unwrap();
+    assert_eq!(read_attr_string(&attrs, "MATLAB_class"), "struct");
+    assert_eq!(read_attr_u64(&attrs, "MATLAB_empty"), 1);
+    assert_eq!(ds.read_u64().unwrap(), vec![0, 0]);
 
     std::fs::remove_file(path).unwrap();
 }
@@ -355,14 +375,12 @@ fn mat_v73_row_major_matrix_reorders_to_column_major() {
     )
     .unwrap();
 
-    let file = hdf5::File::open(&path).unwrap();
+    let file = File::open(&path).unwrap();
     let ds = file.dataset("a").unwrap();
-    assert_eq!(ds.shape(), vec![3, 2]);
-    assert_eq!(read_matlab_class(&ds, "MATLAB_class"), "double");
-    assert_eq!(
-        ds.read_raw::<f64>().unwrap(),
-        vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]
-    );
+    assert_eq!(ds.shape().unwrap(), vec![3, 2]);
+    let attrs = ds.attrs().unwrap();
+    assert_eq!(read_attr_string(&attrs, "MATLAB_class"), "double");
+    assert_eq!(ds.read_f64().unwrap(), vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
 
     std::fs::remove_file(path).unwrap();
 }
@@ -380,18 +398,18 @@ fn mat_v73_empty_complex_array_uses_complex_dataset_type() {
     )
     .unwrap();
 
-    let file = hdf5::File::open(&path).unwrap();
+    let file = File::open(&path).unwrap();
     let ds = file.dataset("z").unwrap();
-    assert_eq!(ds.shape(), vec![1, 0]);
-    assert_eq!(read_matlab_class(&ds, "MATLAB_class"), "double");
-    assert!(ds.attr("MATLAB_empty").is_err());
+    assert_eq!(ds.shape().unwrap(), vec![1, 0]);
+    let attrs = ds.attrs().unwrap();
+    assert_eq!(read_attr_string(&attrs, "MATLAB_class"), "double");
+    assert!(!attrs.contains_key("MATLAB_empty"));
 
-    match ds.dtype().unwrap().to_descriptor().unwrap() {
-        TypeDescriptor::Compound(compound) => {
-            assert_eq!(compound.size, 16);
-            assert_eq!(compound.fields.len(), 2);
-            assert_eq!(compound.fields[0].name, "real");
-            assert_eq!(compound.fields[1].name, "imag");
+    match ds.dtype().unwrap() {
+        DType::Compound(fields) => {
+            assert_eq!(fields.len(), 2);
+            assert_eq!(fields[0].0, "real");
+            assert_eq!(fields[1].0, "imag");
         }
         other => panic!("expected compound complex dtype, got {other:?}"),
     }
@@ -401,57 +419,48 @@ fn mat_v73_empty_complex_array_uses_complex_dataset_type() {
 
 #[test]
 fn matlab_string_fixture_v73_schema() {
-    let file = hdf5::File::open(fixture_path("test_string_v73.mat")).unwrap();
+    let file = File::open(fixture_path("test_string_v73.mat")).unwrap();
 
     for (name, payload) in [
-        ("string_scalar", vec![3707764736, 2, 1, 1, 1, 1]),
+        ("string_scalar", vec![3707764736u32, 2, 1, 1, 1, 1]),
         ("string_array", vec![3707764736, 2, 1, 1, 2, 1]),
         ("string_empty", vec![3707764736, 2, 1, 1, 3, 1]),
     ] {
         let ds = file.dataset(name).unwrap();
-        assert_eq!(ds.shape(), vec![1, 6]);
-        assert_eq!(read_matlab_class(&ds, "MATLAB_class"), "string");
-        assert_eq!(
-            ds.attr("MATLAB_object_decode")
-                .unwrap()
-                .read_scalar::<i32>()
-                .unwrap(),
-            3
-        );
-        assert_eq!(ds.read_raw::<u32>().unwrap(), payload);
+        assert_eq!(ds.shape().unwrap(), vec![1, 6]);
+        let attrs = ds.attrs().unwrap();
+        assert_eq!(read_attr_string(&attrs, "MATLAB_class"), "string");
+        assert_eq!(read_attr_i64(&attrs, "MATLAB_object_decode"), 3);
+        assert_eq!(ds.read_u32().unwrap(), payload);
     }
 
     let subsystem = file.dataset("#subsystem#/MCOS").unwrap();
-    assert_eq!(subsystem.shape(), vec![1, 8]);
+    assert_eq!(subsystem.shape().unwrap(), vec![1, 8]);
+    let sub_attrs = subsystem.attrs().unwrap();
     assert_eq!(
-        read_matlab_class(&subsystem, "MATLAB_class"),
+        read_attr_string(&sub_attrs, "MATLAB_class"),
         "FileWrapper__"
     );
-    assert_eq!(
-        subsystem
-            .attr("MATLAB_object_decode")
-            .unwrap()
-            .read_scalar::<i32>()
-            .unwrap(),
-        3
-    );
+    assert_eq!(read_attr_i64(&sub_attrs, "MATLAB_object_decode"), 3);
 }
 
 #[test]
 fn matlab_string_fixture_v73_saveobj_payloads() {
-    let file = hdf5::File::open(fixture_path("test_string_v73.mat")).unwrap();
+    let file = File::open(fixture_path("test_string_v73.mat")).unwrap();
 
     let scalar = file.dataset("#refs#/c").unwrap();
-    assert_eq!(read_matlab_class(&scalar, "MATLAB_class"), "uint64");
+    let scalar_attrs = scalar.attrs().unwrap();
+    assert_eq!(read_attr_string(&scalar_attrs, "MATLAB_class"), "uint64");
     assert_eq!(
-        decode_matlab_string_saveobj(&scalar.read_raw::<u64>().unwrap()),
+        decode_matlab_string_saveobj(&scalar.read_u64().unwrap()),
         vec!["Hello".to_owned()]
     );
 
     let array = file.dataset("#refs#/d").unwrap();
-    assert_eq!(read_matlab_class(&array, "MATLAB_class"), "uint64");
+    let array_attrs = array.attrs().unwrap();
+    assert_eq!(read_attr_string(&array_attrs, "MATLAB_class"), "uint64");
     assert_eq!(
-        decode_matlab_string_saveobj(&array.read_raw::<u64>().unwrap()),
+        decode_matlab_string_saveobj(&array.read_u64().unwrap()),
         vec![
             "Apple".to_owned(),
             "Date".to_owned(),
@@ -463,9 +472,10 @@ fn matlab_string_fixture_v73_saveobj_payloads() {
     );
 
     let empty = file.dataset("#refs#/e").unwrap();
-    assert_eq!(read_matlab_class(&empty, "MATLAB_class"), "uint64");
+    let empty_attrs = empty.attrs().unwrap();
+    assert_eq!(read_attr_string(&empty_attrs, "MATLAB_class"), "uint64");
     assert_eq!(
-        decode_matlab_string_saveobj(&empty.read_raw::<u64>().unwrap()),
+        decode_matlab_string_saveobj(&empty.read_u64().unwrap()),
         vec![String::new()]
     );
 }
@@ -485,10 +495,11 @@ fn mat_v73_workspace_object_sanitizes_names() {
     beve::beve_slice_to_mat_v73_file(&bytes, &path, RootBinding::WorkspaceObject, &options)
         .unwrap();
 
-    let file = hdf5::File::open(&path).unwrap();
+    let file = File::open(&path).unwrap();
     let ds = file.dataset("x1_bad").unwrap();
-    assert_eq!(read_matlab_class(&ds, "MATLAB_class"), "uint8");
-    assert_eq!(ds.read_raw::<u8>().unwrap(), vec![7]);
+    let attrs = ds.attrs().unwrap();
+    assert_eq!(read_attr_string(&attrs, "MATLAB_class"), "uint8");
+    assert_eq!(ds.read_u8().unwrap(), vec![7]);
 
     std::fs::remove_file(path).unwrap();
 }
@@ -509,23 +520,21 @@ fn mat_v73_struct_groups_include_fields_metadata() {
     )
     .unwrap();
 
-    let file = hdf5::File::open(&path).unwrap();
+    let file = File::open(&path).unwrap();
     let group = file.group("payload").unwrap();
-    assert_eq!(read_matlab_class(&group, "MATLAB_class"), "struct");
-    let fields = group
-        .attr("MATLAB_fields")
-        .unwrap()
-        .read_raw::<VarLenArray<FixedAscii<1>>>()
-        .unwrap();
-    assert_eq!(
-        fields
-            .iter()
-            .map(|field| field.iter().map(|ch| ch.as_str()).collect::<String>())
-            .collect::<Vec<_>>(),
-        vec!["answer", "label"]
-    );
-    let label = group.dataset("label").unwrap();
-    let payload = read_emitted_string_saveobj(&file, &label);
+    let group_attrs = group.attrs().unwrap();
+    assert_eq!(read_attr_string(&group_attrs, "MATLAB_class"), "struct");
+
+    // Fields are written as fixed-width ASCII strings (AsciiStringArray).
+    // The reader returns them as StringArray.
+    let fields: Vec<String> = match &group_attrs["MATLAB_fields"] {
+        AttrValue::StringArray(arr) => arr.clone(),
+        AttrValue::AsciiStringArray(arr) => arr.clone(),
+        other => panic!("expected StringArray for MATLAB_fields, got {other:?}"),
+    };
+    assert_eq!(fields, vec!["answer", "label"]);
+
+    let payload = read_string_saveobj_payload_in_group(&file, "payload", "label");
     assert_eq!(
         decode_matlab_string_saveobj(&payload),
         vec!["ready".to_owned()]
@@ -583,9 +592,8 @@ fn mat_v73_failed_overwrite_preserves_existing_file() {
     let after = std::fs::read(&path).unwrap();
     assert_eq!(after, original);
 
-    let file = hdf5::File::open(&path).unwrap();
-    let ds = file.dataset("greeting").unwrap();
-    let payload = read_emitted_string_saveobj(&file, &ds);
+    let file = File::open(&path).unwrap();
+    let payload = read_string_saveobj_payload(&file, "greeting");
     assert_eq!(
         decode_matlab_string_saveobj(&payload),
         vec!["hello".to_owned()]
@@ -607,15 +615,16 @@ fn mat_v73_typed_string_array_uses_matlab_string() {
     )
     .unwrap();
 
-    let file = hdf5::File::open(&path).unwrap();
+    let file = File::open(&path).unwrap();
     let ds = file.dataset("labels").unwrap();
-    let payload = read_emitted_string_saveobj(&file, &ds);
+    let payload = read_string_saveobj_payload(&file, "labels");
     assert_eq!(payload[..6], [1, 2, 2, 1, 4, 5]);
     assert_eq!(
         decode_matlab_string_saveobj(&payload),
         vec!["left".to_owned(), "right".to_owned()]
     );
 
+    drop(ds);
     std::fs::remove_file(path).unwrap();
 }
 

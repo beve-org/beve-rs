@@ -9,7 +9,7 @@ use beve::{
     Complex, InvalidNamePolicy, Key, MatV73Options, NullPolicy, Object, RootBinding,
     UnsupportedPolicy, Value,
 };
-use hdf5::types::{FixedAscii, TypeDescriptor, VarLenArray};
+use hdf5::types::{FixedAscii, TypeDescriptor, VarLenAscii};
 use hdf5::{ObjectReference1, ReferencedObject};
 use hdf5_metno as hdf5;
 
@@ -515,12 +515,12 @@ fn mat_v73_struct_groups_include_fields_metadata() {
     let fields = group
         .attr("MATLAB_fields")
         .unwrap()
-        .read_raw::<VarLenArray<FixedAscii<1>>>()
+        .read_raw::<VarLenAscii>()
         .unwrap();
     assert_eq!(
         fields
             .iter()
-            .map(|field| field.iter().map(|ch| ch.as_str()).collect::<String>())
+            .map(|f| f.as_str().to_owned())
             .collect::<Vec<_>>(),
         vec!["answer", "label"]
     );

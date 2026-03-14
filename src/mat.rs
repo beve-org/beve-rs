@@ -489,7 +489,7 @@ impl MatWriter {
         }
         let mut attrs: Vec<(&'static str, AttrValue)> =
             vec![("MATLAB_class", AttrValue::AsciiString("struct".into()))];
-        attrs.push(("MATLAB_fields", AttrValue::VarLenAsciiArray(fields)));
+        attrs.push(("MATLAB_fields", AttrValue::AsciiStringArray(fields)));
         Ok(MatNode::Group(MatGroup {
             name,
             children,

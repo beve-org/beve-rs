@@ -5,7 +5,7 @@ Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specificat
 Grab the crate from [crates.io](https://crates.io/crates/beve) and add it to your project with `cargo add beve` or by editing `Cargo.toml`:
 ```toml
 [dependencies]
-beve = "0.1"
+beve = "0.6"
 ```
 The library only depends on `serde` and requires Rust 1.88 or newer. Half-precision floats via `half::f16` are supported alongside the standard numeric types.
 
@@ -235,10 +235,10 @@ fn encode_science() -> beve::Result<()> {
 Enable the optional `mat` feature to convert BEVE payloads directly into MATLAB v7.3 MAT files:
 ```toml
 [dependencies]
-beve = { version = "0.1", features = ["mat"] }
+beve = { version = "0.6", features = ["mat"] }
 ```
 
-The MAT feature depends on HDF5. On Linux that typically means installing `libhdf5-dev` so the build can find headers and libraries via `pkg-config` or `HDF5_DIR`.
+The MAT feature uses a pure-Rust HDF5 writer (`hdf5-pure`) and requires no system libraries.
 
 Use `RootBinding::NamedVariable` when one BEVE value should become one MATLAB variable, or `RootBinding::WorkspaceObject` when a string-keyed BEVE object should expand into multiple top-level workspace variables:
 ```rust
@@ -254,6 +254,15 @@ fn write_mat() -> beve::Result<()> {
     )?;
     Ok(())
 }
+```
+
+For in-memory conversion (useful in WASM or when you already have the bytes), use `beve_slice_to_mat_v73_bytes`:
+```rust
+let mat_bytes = beve::beve_slice_to_mat_v73_bytes(
+    &bytes,
+    RootBinding::NamedVariable("values"),
+    &MatV73Options::default(),
+)?;
 ```
 
 Current mappings:

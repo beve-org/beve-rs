@@ -9,7 +9,7 @@ homepage = "https://github.com/beve-org/beve-rs"
 readme = "README.md"
 
 [features]
-default = []
+default = ["mat"]
 mat = ["dep:hdf5-pure"]
 
 [dependencies]
@@ -24,6 +24,9 @@ serde_json = "1"
 criterion = "0.5"
 proptest = "1.4"
 hdf5-pure = { version = "0.1" }
+
+[[bin]]
+name = "beve-cli"
 
 [[bench]]
 name = "serialization"

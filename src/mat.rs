@@ -470,18 +470,22 @@ impl MatWriter {
         header: u8,
         path: &str,
     ) -> Result<MatNode> {
-        let ObjectHeader { key_type, len, .. } = reader.read_object_header(header)?;
-        if key_type != KEY_STRING {
-            return Err(Error::msg(format!(
-                "unsupported non-string object keys at {path}"
-            )));
-        }
+        let ObjectHeader {
+            key_type,
+            byte_code,
+            len,
+        } = reader.read_object_header(header)?;
         let mut used = BTreeSet::new();
         let mut children = Vec::with_capacity(len);
         let mut fields = Vec::with_capacity(len);
         for _ in 0..len {
-            let key = reader.read_string()?;
-            let field = self.normalize_name(key, &mut used)?;
+            let key: String = match key_type {
+                KEY_STRING => reader.read_string()?.to_owned(),
+                KEY_SIGNED => reader.read_signed(byte_code)?.to_string(),
+                KEY_UNSIGNED => reader.read_unsigned(byte_code)?.to_string(),
+                _ => return Err(Error::InvalidHeader(header)),
+            };
+            let field = self.normalize_name(&key, &mut used)?;
             let child_path = format!("{path}.{field}");
             let child = self.write_named_value(field.clone(), reader, &child_path)?;
             children.push(child);

@@ -275,9 +275,36 @@ Current mappings:
 
 Important limits:
 - only MATLAB v7.3 is supported
-- non-string object keys cannot map to MATLAB structs/workspace variables
 - `i128`, `u128`, `bf16`, and `f16` require explicit fallback policies when MATLAB has no direct native representation
+- non-string object keys are converted to their string representation (e.g. integer key `48000` becomes field name `"x48000"` with `InvalidNamePolicy::Sanitize`)
 - the MATIO-based oracle used in tests does not decode MATLAB `string` objects semantically, so string coverage is validated structurally against MATLAB-generated fixtures
+
+## CLI
+
+The crate includes `beve-cli`, a command-line tool for converting BEVE files:
+
+```bash
+cargo install beve --bin beve-cli
+```
+
+```
+Usage: beve-cli <command> [options] <input> [output]
+
+Commands:
+  to-json    Convert BEVE to JSON
+  to-mat     Convert BEVE to MATLAB v7.3 MAT
+  from-json  Convert JSON to BEVE
+```
+
+Examples:
+```bash
+beve-cli to-json data.beve              # writes data.json
+beve-cli to-mat data.beve               # writes data.mat
+beve-cli to-mat data.beve output.mat    # explicit output path
+beve-cli from-json data.json            # writes data.beve
+```
+
+The `to-mat` command supports `--name <var>` to set the MATLAB variable name (default: `data`) and `--workspace` to expand top-level object keys into separate workspace variables.
 
 ## Examples
 - `cargo run --example emit_bool` writes a short boolean stream to stdout so you can inspect the raw bytes.

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 fn main() {
@@ -181,7 +181,7 @@ fn parse_positional(args: &[String]) -> Result<(PathBuf, Vec<String>), String> {
     Ok((input, positional))
 }
 
-fn positional_or_default_ext(positional: &[String], input: &PathBuf, ext: &str) -> PathBuf {
+fn positional_or_default_ext(positional: &[String], input: &Path, ext: &str) -> PathBuf {
     if positional.len() >= 2 {
         PathBuf::from(&positional[1])
     } else {

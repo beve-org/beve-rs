@@ -470,7 +470,11 @@ impl MatWriter {
         header: u8,
         path: &str,
     ) -> Result<MatNode> {
-        let ObjectHeader { key_type, byte_code, len } = reader.read_object_header(header)?;
+        let ObjectHeader {
+            key_type,
+            byte_code,
+            len,
+        } = reader.read_object_header(header)?;
         let mut used = BTreeSet::new();
         let mut children = Vec::with_capacity(len);
         let mut fields = Vec::with_capacity(len);

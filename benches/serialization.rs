@@ -309,6 +309,80 @@ fn bench_mixed_structs(c: &mut Criterion) {
     group.finish();
 }
 
+// ---------------------------------------------------------------------------
+// Glaze-comparable benchmark: struct with large vectors
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Clone)]
+struct LargeVecs {
+    name: String,
+    values: Vec<f64>,
+    ids: Vec<u32>,
+    flags: Vec<bool>,
+}
+
+fn make_large_vecs(n: usize) -> LargeVecs {
+    LargeVecs {
+        name: "benchmark".into(),
+        values: (0..n).map(|i| (i as f64 * 0.001).sin() * 100.0).collect(),
+        ids: (0..n).map(|i| i as u32).collect(),
+        flags: (0..n).map(|i| i % 3 == 0).collect(),
+    }
+}
+
+fn bench_large_vecs(c: &mut Criterion) {
+    for &n in &[1_000, 10_000, 100_000] {
+        let data = make_large_vecs(n);
+        let encoded = beve::to_vec(&data).expect("serialize");
+
+        let mut group = c.benchmark_group(format!("large_vecs_{n}"));
+
+        group.bench_function("serde_to_vec", |b| {
+            b.iter(|| {
+                let bytes = beve::to_vec(black_box(&data)).expect("serialize");
+                black_box(bytes);
+            });
+        });
+
+        group.bench_function("serde_from_slice", |b| {
+            b.iter(|| {
+                let decoded: LargeVecs =
+                    beve::from_slice(black_box(&encoded)).expect("deserialize");
+                black_box(decoded);
+            });
+        });
+
+        group.bench_function("streaming_to_vec", |b| {
+            b.iter(|| {
+                let mut buf = Vec::new();
+                beve::to_writer_streaming(black_box(&mut buf), black_box(&data))
+                    .expect("streaming");
+                black_box(buf);
+            });
+        });
+
+        let prealloc_size = encoded.len();
+        group.bench_function("serde_to_vec_prealloc", |b| {
+            b.iter(|| {
+                let mut ser = beve::Serializer::with_capacity(prealloc_size);
+                black_box(&data).serialize(&mut ser).expect("serialize");
+                black_box(ser.into_vec());
+            });
+        });
+
+        group.bench_function("streaming_to_vec_prealloc", |b| {
+            b.iter(|| {
+                let mut buf = Vec::with_capacity(prealloc_size);
+                beve::to_writer_streaming(black_box(&mut buf), black_box(&data))
+                    .expect("streaming");
+                black_box(buf);
+            });
+        });
+
+        group.finish();
+    }
+}
+
 criterion_group!(
     benches,
     bench_struct_roundtrip,
@@ -316,6 +390,7 @@ criterion_group!(
     bench_bool_arrays,
     bench_string_arrays,
     bench_matrix_payloads,
-    bench_mixed_structs
+    bench_mixed_structs,
+    bench_large_vecs
 );
 criterion_main!(benches);

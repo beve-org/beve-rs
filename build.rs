@@ -4,6 +4,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=tests/cpp/glaze_interop.cpp");
+    println!("cargo:rerun-if-changed=tests/cpp/glaze_bench.cpp");
     println!("cargo:rerun-if-changed=reference/glaze/include");
 
     for var in [
@@ -16,6 +17,7 @@ fn main() {
     }
 
     build_glaze_helper();
+    build_glaze_bench();
 }
 
 fn build_glaze_helper() {
@@ -36,6 +38,26 @@ fn build_glaze_helper() {
             println!(
                 "cargo:warning=Failed to build Glaze interop helper; set CXX or install a C++23 compiler to enable interop tests."
             );
+        }
+    }
+}
+
+fn build_glaze_bench() {
+    let cpp_src = PathBuf::from("tests/cpp/glaze_bench.cpp");
+    if !cpp_src.exists() {
+        return;
+    }
+
+    match compile_cpp_helper(
+        "glaze_bench",
+        &cpp_src,
+        &[PathBuf::from("reference/glaze/include")],
+    ) {
+        Ok(bin_path) => {
+            println!("cargo:rustc-env=GLAZE_BENCH_BIN={}", bin_path.display());
+        }
+        Err(_) => {
+            // Silently skip — the interop warning is sufficient
         }
     }
 }

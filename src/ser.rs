@@ -841,39 +841,13 @@ impl<'a> ser::Serializer for &'a mut Serializer {
 
 enum SeqMode {
     Unknown,
-    Generic {
-        patch: Option<SizePatch>,
-    },
-    TypedUnsigned {
-        byte_code: u8,
-        patch: Option<SizePatch>,
-        start_pos: usize,
-    },
-    TypedSigned {
-        byte_code: u8,
-        patch: Option<SizePatch>,
-        start_pos: usize,
-    },
-    TypedFloat {
-        byte_code: u8,
-        patch: Option<SizePatch>,
-        start_pos: usize,
-    },
-    TypedBool {
-        byte_acc: u8,
-        bit_idx: u8,
-        patch: Option<SizePatch>,
-        start_pos: usize,
-    },
-    TypedString {
-        patch: Option<SizePatch>,
-        start_pos: usize,
-    },
-    TypedComplex {
-        byte_code: u8,
-        patch: Option<SizePatch>,
-        start_pos: usize,
-    },
+    Generic,
+    TypedUnsigned { byte_code: u8 },
+    TypedSigned { byte_code: u8 },
+    TypedFloat { byte_code: u8 },
+    TypedBool { byte_acc: u8, bit_idx: u8 },
+    TypedString,
+    TypedComplex { byte_code: u8 },
 }
 
 pub struct SeqSerializer<'a> {
@@ -881,6 +855,10 @@ pub struct SeqSerializer<'a> {
     len: Option<usize>,
     mode: SeqMode,
     count: usize,
+    /// Size patch for unknown-length containers (None when length is known).
+    patch: Option<SizePatch>,
+    /// Buffer position where the current typed header started (for conversion to generic).
+    start_pos: usize,
 }
 
 impl<'a> SeqSerializer<'a> {
@@ -890,20 +868,22 @@ impl<'a> SeqSerializer<'a> {
             len,
             mode: SeqMode::Unknown,
             count: 0,
+            patch: None,
+            start_pos: 0,
         }
     }
 
     fn start_generic_if_needed(&mut self) {
-        if !matches!(self.mode, SeqMode::Generic { .. }) {
+        if !matches!(self.mode, SeqMode::Generic) {
             match self.len {
                 Some(n) => {
                     self.ser.write_generic_array_header(n);
-                    self.mode = SeqMode::Generic { patch: None };
+                    self.mode = SeqMode::Generic;
                 }
                 None => {
                     self.ser.push(TYPE_GENERIC_ARRAY);
-                    let p = self.ser.reserve_size_patch();
-                    self.mode = SeqMode::Generic { patch: Some(p) };
+                    self.patch = Some(self.ser.reserve_size_patch());
+                    self.mode = SeqMode::Generic;
                 }
             }
         }
@@ -911,26 +891,22 @@ impl<'a> SeqSerializer<'a> {
 
     fn start_typed_bool_if_needed(&mut self) {
         if !matches!(self.mode, SeqMode::TypedBool { .. }) {
-            let start_pos = self.ser.buf.len();
+            self.start_pos = self.ser.buf.len();
             match self.len {
                 Some(n) => {
                     self.ser.write_typed_array_header_bool(n);
                     self.mode = SeqMode::TypedBool {
                         byte_acc: 0,
                         bit_idx: 0,
-                        patch: None,
-                        start_pos,
                     };
                 }
                 None => {
                     let header = make_header(TYPE_TYPED_ARRAY, ARRAY_BOOL_OR_STRING, 0);
                     self.ser.push(header);
-                    let p = self.ser.reserve_size_patch();
+                    self.patch = Some(self.ser.reserve_size_patch());
                     self.mode = SeqMode::TypedBool {
                         byte_acc: 0,
                         bit_idx: 0,
-                        patch: Some(p),
-                        start_pos,
                     };
                 }
             }
@@ -938,24 +914,18 @@ impl<'a> SeqSerializer<'a> {
     }
 
     fn start_typed_string_if_needed(&mut self) {
-        if !matches!(self.mode, SeqMode::TypedString { .. }) {
-            let start_pos = self.ser.buf.len();
+        if !matches!(self.mode, SeqMode::TypedString) {
+            self.start_pos = self.ser.buf.len();
             match self.len {
                 Some(n) => {
                     self.ser.write_typed_array_header_string(n);
-                    self.mode = SeqMode::TypedString {
-                        patch: None,
-                        start_pos,
-                    };
+                    self.mode = SeqMode::TypedString;
                 }
                 None => {
                     let header = make_header(TYPE_TYPED_ARRAY, ARRAY_BOOL_OR_STRING, 1);
                     self.ser.push(header);
-                    let p = self.ser.reserve_size_patch();
-                    self.mode = SeqMode::TypedString {
-                        patch: Some(p),
-                        start_pos,
-                    };
+                    self.patch = Some(self.ser.reserve_size_patch());
+                    self.mode = SeqMode::TypedString;
                 }
             }
         }
@@ -963,7 +933,7 @@ impl<'a> SeqSerializer<'a> {
 
     fn ensure_generic_mode(&mut self) -> Result<()> {
         match self.mode {
-            SeqMode::Generic { .. } => Ok(()),
+            SeqMode::Generic => Ok(()),
             SeqMode::Unknown => {
                 self.start_generic_if_needed();
                 Ok(())
@@ -972,13 +942,13 @@ impl<'a> SeqSerializer<'a> {
             SeqMode::TypedUnsigned { .. } => self.convert_typed_unsigned_to_generic(),
             SeqMode::TypedSigned { .. } => self.convert_typed_signed_to_generic(),
             SeqMode::TypedFloat { .. } => self.convert_typed_float_to_generic(),
-            SeqMode::TypedString { .. } => self.convert_typed_string_to_generic(),
+            SeqMode::TypedString => self.convert_typed_string_to_generic(),
             SeqMode::TypedComplex { .. } => self.convert_typed_complex_to_generic(),
         }
     }
 
-    fn header_len_for_typed(&self, patch: Option<SizePatch>) -> usize {
-        if patch.is_some() {
+    fn header_len_for_typed(&self) -> usize {
+        if self.patch.is_some() {
             1 + 8
         } else {
             let len = self
@@ -991,17 +961,13 @@ impl<'a> SeqSerializer<'a> {
     }
 
     fn convert_typed_bool_to_generic(&mut self) -> Result<()> {
-        let (byte_acc, bit_idx, patch, start_pos) = match self.mode {
-            SeqMode::TypedBool {
-                byte_acc,
-                bit_idx,
-                patch,
-                start_pos,
-            } => (byte_acc, bit_idx, patch, start_pos),
+        let (byte_acc, bit_idx) = match self.mode {
+            SeqMode::TypedBool { byte_acc, bit_idx } => (byte_acc, bit_idx),
             _ => return Ok(()),
         };
         let count = self.count;
-        let header_len = self.header_len_for_typed(patch);
+        let start_pos = self.start_pos;
+        let header_len = self.header_len_for_typed();
         let data_start = start_pos + header_len;
         let full_bytes = count / 8;
         let data_bytes = self.ser.buf[data_start..data_start + full_bytes].to_vec();
@@ -1038,16 +1004,13 @@ impl<'a> SeqSerializer<'a> {
     }
 
     fn convert_typed_unsigned_to_generic(&mut self) -> Result<()> {
-        let (byte_code, patch, start_pos) = match self.mode {
-            SeqMode::TypedUnsigned {
-                byte_code,
-                patch,
-                start_pos,
-            } => (byte_code, patch, start_pos),
+        let byte_code = match self.mode {
+            SeqMode::TypedUnsigned { byte_code } => byte_code,
             _ => return Ok(()),
         };
         let bytes_per = 1usize << byte_code;
-        let header_len = self.header_len_for_typed(patch);
+        let start_pos = self.start_pos;
+        let header_len = self.header_len_for_typed();
         let data_start = start_pos + header_len;
         let total_bytes = bytes_per * self.count;
         let data = self.ser.buf[data_start..data_start + total_bytes].to_vec();
@@ -1073,16 +1036,13 @@ impl<'a> SeqSerializer<'a> {
     }
 
     fn convert_typed_signed_to_generic(&mut self) -> Result<()> {
-        let (byte_code, patch, start_pos) = match self.mode {
-            SeqMode::TypedSigned {
-                byte_code,
-                patch,
-                start_pos,
-            } => (byte_code, patch, start_pos),
+        let byte_code = match self.mode {
+            SeqMode::TypedSigned { byte_code } => byte_code,
             _ => return Ok(()),
         };
         let bytes_per = 1usize << byte_code;
-        let header_len = self.header_len_for_typed(patch);
+        let start_pos = self.start_pos;
+        let header_len = self.header_len_for_typed();
         let data_start = start_pos + header_len;
         let total_bytes = bytes_per * self.count;
         let data = self.ser.buf[data_start..data_start + total_bytes].to_vec();
@@ -1114,12 +1074,8 @@ impl<'a> SeqSerializer<'a> {
     }
 
     fn convert_typed_float_to_generic(&mut self) -> Result<()> {
-        let (byte_code, patch, start_pos) = match self.mode {
-            SeqMode::TypedFloat {
-                byte_code,
-                patch,
-                start_pos,
-            } => (byte_code, patch, start_pos),
+        let byte_code = match self.mode {
+            SeqMode::TypedFloat { byte_code } => byte_code,
             _ => return Ok(()),
         };
         let bytes_per = match byte_code {
@@ -1128,7 +1084,8 @@ impl<'a> SeqSerializer<'a> {
             3 => 8,
             _ => return Err(Error::Unsupported("unsupported float width")),
         };
-        let header_len = self.header_len_for_typed(patch);
+        let start_pos = self.start_pos;
+        let header_len = self.header_len_for_typed();
         let data_start = start_pos + header_len;
         let total_bytes = bytes_per * self.count;
         let data = self.ser.buf[data_start..data_start + total_bytes].to_vec();
@@ -1164,11 +1121,11 @@ impl<'a> SeqSerializer<'a> {
     }
 
     fn convert_typed_string_to_generic(&mut self) -> Result<()> {
-        let (patch, start_pos) = match self.mode {
-            SeqMode::TypedString { patch, start_pos } => (patch, start_pos),
-            _ => return Ok(()),
-        };
-        let header_len = self.header_len_for_typed(patch);
+        if !matches!(self.mode, SeqMode::TypedString) {
+            return Ok(());
+        }
+        let start_pos = self.start_pos;
+        let header_len = self.header_len_for_typed();
         let data_start = start_pos + header_len;
         let tail = self.ser.buf[data_start..].to_vec();
         let mut cursor = 0usize;
@@ -1199,16 +1156,13 @@ impl<'a> SeqSerializer<'a> {
     }
 
     fn convert_typed_complex_to_generic(&mut self) -> Result<()> {
-        let (byte_code, patch, start_pos) = match self.mode {
-            SeqMode::TypedComplex {
-                byte_code,
-                patch,
-                start_pos,
-            } => (byte_code, patch, start_pos),
+        let byte_code = match self.mode {
+            SeqMode::TypedComplex { byte_code } => byte_code,
             _ => return Ok(()),
         };
         let elem_bytes = (1usize << byte_code) * 2;
-        let header_len = if patch.is_some() {
+        let start_pos = self.start_pos;
+        let header_len = if self.patch.is_some() {
             2 + 8
         } else {
             let len = self
@@ -1253,6 +1207,7 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
     type SerializeStruct = StructSerializer<'b>;
     type SerializeStructVariant = VariantStructSerializer<'b>;
 
+    #[inline]
     fn serialize_bool(self, v: bool) -> Result<()> {
         if matches!(self.seq.mode, SeqMode::Unknown | SeqMode::TypedBool { .. }) {
             self.seq.start_typed_bool_if_needed();
@@ -1282,41 +1237,53 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
         }
     }
 
+    #[inline]
     fn serialize_i8(self, v: i8) -> Result<()> {
         self.serialize_signed(v, 1)
     }
+    #[inline]
     fn serialize_i16(self, v: i16) -> Result<()> {
         self.serialize_signed(v, 2)
     }
+    #[inline]
     fn serialize_i32(self, v: i32) -> Result<()> {
         self.serialize_signed(v, 4)
     }
+    #[inline]
     fn serialize_i64(self, v: i64) -> Result<()> {
         self.serialize_signed(v, 8)
     }
+    #[inline]
     fn serialize_i128(self, v: i128) -> Result<()> {
         self.serialize_signed(v, 16)
     }
 
+    #[inline]
     fn serialize_u8(self, v: u8) -> Result<()> {
         self.serialize_unsigned(v, 1)
     }
+    #[inline]
     fn serialize_u16(self, v: u16) -> Result<()> {
         self.serialize_unsigned(v, 2)
     }
+    #[inline]
     fn serialize_u32(self, v: u32) -> Result<()> {
         self.serialize_unsigned(v, 4)
     }
+    #[inline]
     fn serialize_u64(self, v: u64) -> Result<()> {
         self.serialize_unsigned(v, 8)
     }
+    #[inline]
     fn serialize_u128(self, v: u128) -> Result<()> {
         self.serialize_unsigned(v, 16)
     }
 
+    #[inline]
     fn serialize_f32(self, v: f32) -> Result<()> {
         self.serialize_float_by(v.to_le_bytes().as_slice(), 2)
     }
+    #[inline]
     fn serialize_f64(self, v: f64) -> Result<()> {
         self.serialize_float_by(v.to_le_bytes().as_slice(), 3)
     }
@@ -1326,11 +1293,9 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
         self.serialize_str(v.encode_utf8(&mut buf))
     }
 
+    #[inline]
     fn serialize_str(self, v: &str) -> Result<()> {
-        if matches!(
-            self.seq.mode,
-            SeqMode::Unknown | SeqMode::TypedString { .. }
-        ) {
+        if matches!(self.seq.mode, SeqMode::Unknown | SeqMode::TypedString) {
             self.seq.start_typed_string_if_needed();
             write_size(v.len() as u64, &mut self.seq.ser.buf);
             self.seq.ser.extend_from_slice(v.as_bytes());
@@ -1502,35 +1467,47 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
 }
 
 impl<'a, 'b> SeqElemSer<'a, 'b> {
+    #[inline(always)]
     fn serialize_signed<T: Into<i128>>(&mut self, v: T, bytes: usize) -> Result<()> {
         let byte_code = Serializer::code_for_bytes(bytes);
         let value: i128 = v.into();
+        if let SeqMode::TypedSigned { byte_code: bc } = self.seq.mode {
+            if bc == byte_code {
+                let bytes_le = value.to_le_bytes();
+                self.seq.ser.extend_from_slice(&bytes_le[..bytes]);
+                self.seq.count += 1;
+                return Ok(());
+            }
+        }
+        self.serialize_signed_cold(value, bytes, byte_code)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn serialize_signed_cold(
+        &mut self,
+        value: i128,
+        bytes: usize,
+        byte_code: u8,
+    ) -> Result<()> {
         match self.seq.mode {
             SeqMode::Unknown => match self.seq.len {
                 Some(n) => {
-                    let start_pos = self.seq.ser.buf.len();
+                    self.seq.start_pos = self.seq.ser.buf.len();
                     self.seq
                         .ser
                         .write_typed_array_header_numeric(ARRAY_SIGNED, byte_code, n);
-                    self.seq.mode = SeqMode::TypedSigned {
-                        byte_code,
-                        patch: None,
-                        start_pos,
-                    };
+                    self.seq.mode = SeqMode::TypedSigned { byte_code };
                 }
                 None => {
-                    let start_pos = self.seq.ser.buf.len();
+                    self.seq.start_pos = self.seq.ser.buf.len();
                     let header = make_header(TYPE_TYPED_ARRAY, ARRAY_SIGNED, byte_code);
                     self.seq.ser.push(header);
-                    let p = self.seq.ser.reserve_size_patch();
-                    self.seq.mode = SeqMode::TypedSigned {
-                        byte_code,
-                        patch: Some(p),
-                        start_pos,
-                    };
+                    self.seq.patch = Some(self.seq.ser.reserve_size_patch());
+                    self.seq.mode = SeqMode::TypedSigned { byte_code };
                 }
             },
-            SeqMode::TypedSigned { byte_code: bc, .. } if bc == byte_code => {}
+            SeqMode::TypedSigned { byte_code: bc } if bc == byte_code => {}
             _ => {
                 self.seq.ensure_generic_mode()?;
                 match bytes {
@@ -1546,41 +1523,52 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
             }
         }
         let bytes_le = value.to_le_bytes();
-        // Stream directly into output; unknown-length arrays use backpatching
         self.seq.ser.extend_from_slice(&bytes_le[..bytes]);
         self.seq.count += 1;
         Ok(())
     }
 
+    #[inline(always)]
     fn serialize_unsigned<T: Into<u128>>(&mut self, v: T, bytes: usize) -> Result<()> {
         let byte_code = Serializer::code_for_bytes(bytes);
         let value: u128 = v.into();
+        if let SeqMode::TypedUnsigned { byte_code: bc } = self.seq.mode {
+            if bc == byte_code {
+                let bytes_le = value.to_le_bytes();
+                self.seq.ser.extend_from_slice(&bytes_le[..bytes]);
+                self.seq.count += 1;
+                return Ok(());
+            }
+        }
+        self.serialize_unsigned_cold(value, bytes, byte_code)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn serialize_unsigned_cold(
+        &mut self,
+        value: u128,
+        bytes: usize,
+        byte_code: u8,
+    ) -> Result<()> {
         match self.seq.mode {
             SeqMode::Unknown => match self.seq.len {
                 Some(n) => {
-                    let start_pos = self.seq.ser.buf.len();
+                    self.seq.start_pos = self.seq.ser.buf.len();
                     self.seq
                         .ser
                         .write_typed_array_header_numeric(ARRAY_UNSIGNED, byte_code, n);
-                    self.seq.mode = SeqMode::TypedUnsigned {
-                        byte_code,
-                        patch: None,
-                        start_pos,
-                    };
+                    self.seq.mode = SeqMode::TypedUnsigned { byte_code };
                 }
                 None => {
-                    let start_pos = self.seq.ser.buf.len();
+                    self.seq.start_pos = self.seq.ser.buf.len();
                     let header = make_header(TYPE_TYPED_ARRAY, ARRAY_UNSIGNED, byte_code);
                     self.seq.ser.push(header);
-                    let p = self.seq.ser.reserve_size_patch();
-                    self.seq.mode = SeqMode::TypedUnsigned {
-                        byte_code,
-                        patch: Some(p),
-                        start_pos,
-                    };
+                    self.seq.patch = Some(self.seq.ser.reserve_size_patch());
+                    self.seq.mode = SeqMode::TypedUnsigned { byte_code };
                 }
             },
-            SeqMode::TypedUnsigned { byte_code: bc, .. } if bc == byte_code => {}
+            SeqMode::TypedUnsigned { byte_code: bc } if bc == byte_code => {}
             _ => {
                 self.seq.ensure_generic_mode()?;
                 match bytes {
@@ -1601,33 +1589,39 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
         Ok(())
     }
 
+    #[inline(always)]
     fn serialize_float_by(&mut self, raw: &[u8], byte_code: u8) -> Result<()> {
+        if let SeqMode::TypedFloat { byte_code: bc } = self.seq.mode {
+            if bc == byte_code {
+                self.seq.ser.extend_from_slice(raw);
+                self.seq.count += 1;
+                return Ok(());
+            }
+        }
+        self.serialize_float_by_cold(raw, byte_code)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn serialize_float_by_cold(&mut self, raw: &[u8], byte_code: u8) -> Result<()> {
         match self.seq.mode {
             SeqMode::Unknown => match self.seq.len {
                 Some(n) => {
-                    let start_pos = self.seq.ser.buf.len();
+                    self.seq.start_pos = self.seq.ser.buf.len();
                     self.seq
                         .ser
                         .write_typed_array_header_numeric(ARRAY_FLOAT, byte_code, n);
-                    self.seq.mode = SeqMode::TypedFloat {
-                        byte_code,
-                        patch: None,
-                        start_pos,
-                    };
+                    self.seq.mode = SeqMode::TypedFloat { byte_code };
                 }
                 None => {
-                    let start_pos = self.seq.ser.buf.len();
+                    self.seq.start_pos = self.seq.ser.buf.len();
                     let header = make_header(TYPE_TYPED_ARRAY, ARRAY_FLOAT, byte_code);
                     self.seq.ser.push(header);
-                    let p = self.seq.ser.reserve_size_patch();
-                    self.seq.mode = SeqMode::TypedFloat {
-                        byte_code,
-                        patch: Some(p),
-                        start_pos,
-                    };
+                    self.seq.patch = Some(self.seq.ser.reserve_size_patch());
+                    self.seq.mode = SeqMode::TypedFloat { byte_code };
                 }
             },
-            SeqMode::TypedFloat { byte_code: bc, .. } if bc == byte_code => {}
+            SeqMode::TypedFloat { byte_code: bc } if bc == byte_code => {}
             _ => {
                 self.seq.ensure_generic_mode()?;
                 match byte_code {
@@ -1669,30 +1663,22 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
         match self.seq.mode {
             SeqMode::Unknown => match self.seq.len {
                 Some(n) => {
-                    let start_pos = self.seq.ser.buf.len();
+                    self.seq.start_pos = self.seq.ser.buf.len();
                     self.seq.ser.push(make_extension_header(EXT_COMPLEX));
                     self.seq
                         .ser
                         .push(Serializer::complex_header(byte_code, true));
                     write_size(n as u64, &mut self.seq.ser.buf);
-                    self.seq.mode = SeqMode::TypedComplex {
-                        byte_code,
-                        patch: None,
-                        start_pos,
-                    };
+                    self.seq.mode = SeqMode::TypedComplex { byte_code };
                 }
                 None => {
-                    let start_pos = self.seq.ser.buf.len();
+                    self.seq.start_pos = self.seq.ser.buf.len();
                     self.seq.ser.push(make_extension_header(EXT_COMPLEX));
                     self.seq
                         .ser
                         .push(Serializer::complex_header(byte_code, true));
-                    let p = self.seq.ser.reserve_size_patch();
-                    self.seq.mode = SeqMode::TypedComplex {
-                        byte_code,
-                        patch: Some(p),
-                        start_pos,
-                    };
+                    self.seq.patch = Some(self.seq.ser.reserve_size_patch());
+                    self.seq.mode = SeqMode::TypedComplex { byte_code };
                 }
             },
             SeqMode::TypedComplex { byte_code: bc, .. } if bc == byte_code => {}
@@ -1716,8 +1702,9 @@ impl<'a> ser::SerializeSeq for SeqSerializer<'a> {
     type Ok = ();
     type Error = Error;
 
+    #[inline]
     fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> {
-        if matches!(self.mode, SeqMode::Generic { .. }) {
+        if matches!(self.mode, SeqMode::Generic) {
             value.serialize(&mut *self.ser)?;
             self.count += 1;
             Ok(())
@@ -1746,33 +1733,13 @@ impl<'a> ser::SerializeSeq for SeqSerializer<'a> {
             self.ser.write_generic_array_header(len);
         }
         if self.len.is_none() {
-            match self.mode {
-                SeqMode::Unknown => {
-                    self.ser.push(TYPE_GENERIC_ARRAY);
-                    let mut tmp = [0u8; 8];
-                    let used = encode_size_to_array(0, &mut tmp);
-                    self.ser.extend_from_slice(&tmp[..used]);
-                }
-                SeqMode::Generic { patch: Some(p) } => self.ser.finalize_size_patch(p, self.count),
-                SeqMode::TypedUnsigned { patch: Some(p), .. } => {
-                    self.ser.finalize_size_patch(p, self.count)
-                }
-                SeqMode::TypedSigned { patch: Some(p), .. } => {
-                    self.ser.finalize_size_patch(p, self.count)
-                }
-                SeqMode::TypedFloat { patch: Some(p), .. } => {
-                    self.ser.finalize_size_patch(p, self.count)
-                }
-                SeqMode::TypedBool { patch: Some(p), .. } => {
-                    self.ser.finalize_size_patch(p, self.count)
-                }
-                SeqMode::TypedString { patch: Some(p), .. } => {
-                    self.ser.finalize_size_patch(p, self.count)
-                }
-                SeqMode::TypedComplex { patch: Some(p), .. } => {
-                    self.ser.finalize_size_patch(p, self.count)
-                }
-                _ => {}
+            if matches!(self.mode, SeqMode::Unknown) {
+                self.ser.push(TYPE_GENERIC_ARRAY);
+                let mut tmp = [0u8; 8];
+                let used = encode_size_to_array(0, &mut tmp);
+                self.ser.extend_from_slice(&tmp[..used]);
+            } else if let Some(p) = self.patch {
+                self.ser.finalize_size_patch(p, self.count);
             }
         }
         Ok(())

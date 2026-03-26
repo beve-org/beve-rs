@@ -112,3 +112,38 @@ pub fn read_size(input: &[u8], pos: &mut usize) -> Result<u64> {
         }
     }
 }
+
+/// Read a SIZE value from a reader (streaming variant of [`read_size`]).
+#[inline]
+pub(crate) fn read_size_from_reader<R: std::io::Read>(reader: &mut R) -> Result<u64> {
+    let mut b0_buf = [0u8; 1];
+    reader.read_exact(&mut b0_buf).map_err(|_| Error::Eof)?;
+    let b0 = b0_buf[0];
+    let code = b0 & 0b11;
+    let mut value: u64 = (b0 >> 2) as u64;
+    match code {
+        0 => Ok(value),
+        1 => {
+            let mut buf = [0u8; 1];
+            reader.read_exact(&mut buf).map_err(|_| Error::Eof)?;
+            value |= (buf[0] as u64) << 6;
+            Ok(value)
+        }
+        2 => {
+            let mut buf = [0u8; 3];
+            reader.read_exact(&mut buf).map_err(|_| Error::Eof)?;
+            value |= (buf[0] as u64) << 6;
+            value |= (buf[1] as u64) << 14;
+            value |= (buf[2] as u64) << 22;
+            Ok(value)
+        }
+        _ => {
+            let mut buf = [0u8; 7];
+            reader.read_exact(&mut buf).map_err(|_| Error::Eof)?;
+            for (i, &b) in buf.iter().enumerate() {
+                value |= (b as u64) << (6 + 8 * i as u64);
+            }
+            Ok(value)
+        }
+    }
+}

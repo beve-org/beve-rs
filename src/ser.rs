@@ -1471,25 +1471,20 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
     fn serialize_signed<T: Into<i128>>(&mut self, v: T, bytes: usize) -> Result<()> {
         let byte_code = Serializer::code_for_bytes(bytes);
         let value: i128 = v.into();
-        if let SeqMode::TypedSigned { byte_code: bc } = self.seq.mode {
-            if bc == byte_code {
-                let bytes_le = value.to_le_bytes();
-                self.seq.ser.extend_from_slice(&bytes_le[..bytes]);
-                self.seq.count += 1;
-                return Ok(());
-            }
+        if let SeqMode::TypedSigned { byte_code: bc } = self.seq.mode
+            && bc == byte_code
+        {
+            let bytes_le = value.to_le_bytes();
+            self.seq.ser.extend_from_slice(&bytes_le[..bytes]);
+            self.seq.count += 1;
+            return Ok(());
         }
         self.serialize_signed_cold(value, bytes, byte_code)
     }
 
     #[cold]
     #[inline(never)]
-    fn serialize_signed_cold(
-        &mut self,
-        value: i128,
-        bytes: usize,
-        byte_code: u8,
-    ) -> Result<()> {
+    fn serialize_signed_cold(&mut self, value: i128, bytes: usize, byte_code: u8) -> Result<()> {
         match self.seq.mode {
             SeqMode::Unknown => match self.seq.len {
                 Some(n) => {
@@ -1532,25 +1527,20 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
     fn serialize_unsigned<T: Into<u128>>(&mut self, v: T, bytes: usize) -> Result<()> {
         let byte_code = Serializer::code_for_bytes(bytes);
         let value: u128 = v.into();
-        if let SeqMode::TypedUnsigned { byte_code: bc } = self.seq.mode {
-            if bc == byte_code {
-                let bytes_le = value.to_le_bytes();
-                self.seq.ser.extend_from_slice(&bytes_le[..bytes]);
-                self.seq.count += 1;
-                return Ok(());
-            }
+        if let SeqMode::TypedUnsigned { byte_code: bc } = self.seq.mode
+            && bc == byte_code
+        {
+            let bytes_le = value.to_le_bytes();
+            self.seq.ser.extend_from_slice(&bytes_le[..bytes]);
+            self.seq.count += 1;
+            return Ok(());
         }
         self.serialize_unsigned_cold(value, bytes, byte_code)
     }
 
     #[cold]
     #[inline(never)]
-    fn serialize_unsigned_cold(
-        &mut self,
-        value: u128,
-        bytes: usize,
-        byte_code: u8,
-    ) -> Result<()> {
+    fn serialize_unsigned_cold(&mut self, value: u128, bytes: usize, byte_code: u8) -> Result<()> {
         match self.seq.mode {
             SeqMode::Unknown => match self.seq.len {
                 Some(n) => {
@@ -1591,12 +1581,12 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
 
     #[inline(always)]
     fn serialize_float_by(&mut self, raw: &[u8], byte_code: u8) -> Result<()> {
-        if let SeqMode::TypedFloat { byte_code: bc } = self.seq.mode {
-            if bc == byte_code {
-                self.seq.ser.extend_from_slice(raw);
-                self.seq.count += 1;
-                return Ok(());
-            }
+        if let SeqMode::TypedFloat { byte_code: bc } = self.seq.mode
+            && bc == byte_code
+        {
+            self.seq.ser.extend_from_slice(raw);
+            self.seq.count += 1;
+            return Ok(());
         }
         self.serialize_float_by_cold(raw, byte_code)
     }

@@ -719,3 +719,313 @@ fn streaming_nested_vec_vec_f64() {
     let expected = beve::to_vec(&v).unwrap();
     assert_eq!(buf, expected);
 }
+
+// ===========================================================================
+// Streaming DESERIALIZATION tests
+// ===========================================================================
+
+/// Helper: serialize with to_vec, then deserialize via from_reader_streaming.
+fn streaming_de_round_trip<T>(value: &T) -> T
+where
+    T: Serialize + serde::de::DeserializeOwned + std::fmt::Debug + PartialEq,
+{
+    let bytes = beve::to_vec(value).unwrap();
+    beve::from_reader_streaming(Cursor::new(bytes)).unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Scalars
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_de_bool() {
+    assert!(streaming_de_round_trip(&true));
+    assert!(!streaming_de_round_trip(&false));
+}
+
+#[test]
+fn streaming_de_u32() {
+    assert_eq!(streaming_de_round_trip(&42u32), 42u32);
+}
+
+#[test]
+fn streaming_de_i64() {
+    assert_eq!(streaming_de_round_trip(&-100i64), -100i64);
+}
+
+#[test]
+fn streaming_de_f64() {
+    assert_eq!(streaming_de_round_trip(&1.5f64), 1.5f64);
+}
+
+#[test]
+fn streaming_de_string() {
+    assert_eq!(
+        streaming_de_round_trip(&"hello world".to_string()),
+        "hello world"
+    );
+}
+
+#[test]
+fn streaming_de_none() {
+    assert_eq!(streaming_de_round_trip(&None::<u32>), None::<u32>);
+}
+
+#[test]
+fn streaming_de_some() {
+    assert_eq!(streaming_de_round_trip(&Some(42u32)), Some(42u32));
+}
+
+#[test]
+fn streaming_de_unit() {
+    streaming_de_round_trip(&());
+}
+
+// ---------------------------------------------------------------------------
+// Structs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_de_point() {
+    let p = Point { x: 1.0, y: -2.5 };
+    assert_eq!(streaming_de_round_trip(&p), p);
+}
+
+#[test]
+fn streaming_de_scalar_fields() {
+    let v = ScalarFields {
+        a: true,
+        b: 42,
+        c: -100,
+        d: 1.5,
+        e: "hello".into(),
+    };
+    assert_eq!(streaming_de_round_trip(&v), v);
+}
+
+#[test]
+fn streaming_de_nested() {
+    let n = Nested {
+        name: "test".into(),
+        point: Point { x: 0.0, y: 1.0 },
+        tags: vec!["a".into(), "b".into(), "c".into()],
+    };
+    assert_eq!(streaming_de_round_trip(&n), n);
+}
+
+// ---------------------------------------------------------------------------
+// Typed arrays
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_de_vec_f64() {
+    let v = vec![1.0f64, 2.0, 3.0, 4.0, 5.0];
+    assert_eq!(streaming_de_round_trip(&v), v);
+}
+
+#[test]
+fn streaming_de_vec_u32() {
+    let v = vec![10u32, 20, 30, 40];
+    assert_eq!(streaming_de_round_trip(&v), v);
+}
+
+#[test]
+fn streaming_de_vec_i8() {
+    let v = vec![-1i8, 0, 1, 127, -128];
+    assert_eq!(streaming_de_round_trip(&v), v);
+}
+
+#[test]
+fn streaming_de_vec_bool() {
+    let v = vec![true, false, true, true, false, false, true, false, true];
+    assert_eq!(streaming_de_round_trip(&v), v);
+}
+
+#[test]
+fn streaming_de_vec_string() {
+    let v = vec!["hello".to_string(), "world".to_string()];
+    assert_eq!(streaming_de_round_trip(&v), v);
+}
+
+#[test]
+fn streaming_de_vec_u8() {
+    let v = vec![1u8, 2, 3, 4, 5];
+    assert_eq!(streaming_de_round_trip(&v), v);
+}
+
+#[test]
+fn streaming_de_empty_vec() {
+    let v: Vec<f64> = vec![];
+    assert_eq!(streaming_de_round_trip(&v), v);
+}
+
+// ---------------------------------------------------------------------------
+// Generic arrays (Vec of structs)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_de_vec_of_structs() {
+    let v = vec![Point { x: 1.0, y: 2.0 }, Point { x: 3.0, y: 4.0 }];
+    assert_eq!(streaming_de_round_trip(&v), v);
+}
+
+// ---------------------------------------------------------------------------
+// Maps
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_de_hashmap_string_keys() {
+    let mut m = HashMap::new();
+    m.insert("x".to_string(), 1.0f64);
+    m.insert("y".to_string(), 2.0);
+    assert_eq!(streaming_de_round_trip(&m), m);
+}
+
+#[test]
+fn streaming_de_u32_key_map() {
+    let mut m = HashMap::new();
+    m.insert(1u32, "one".to_string());
+    m.insert(2u32, "two".to_string());
+    assert_eq!(streaming_de_round_trip(&m), m);
+}
+
+#[test]
+fn streaming_de_i64_key_map() {
+    let mut m = HashMap::new();
+    m.insert(-1i64, 100u32);
+    m.insert(42i64, 200u32);
+    assert_eq!(streaming_de_round_trip(&m), m);
+}
+
+#[test]
+fn streaming_de_empty_map() {
+    let m: HashMap<String, u32> = HashMap::new();
+    assert_eq!(streaming_de_round_trip(&m), m);
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_de_unit_variant() {
+    assert_eq!(streaming_de_round_trip(&Color::Green), Color::Green);
+}
+
+#[test]
+fn streaming_de_newtype_variant() {
+    assert_eq!(
+        streaming_de_round_trip(&Shape::Circle(2.5)),
+        Shape::Circle(2.5)
+    );
+}
+
+#[test]
+fn streaming_de_struct_variant() {
+    let s = Shape::Rect { w: 3.0, h: 4.0 };
+    assert_eq!(streaming_de_round_trip(&s), s);
+}
+
+#[test]
+fn streaming_de_tuple_variant() {
+    let s = Shape::Triangle(3.0, 4.0, 5.0);
+    assert_eq!(streaming_de_round_trip(&s), s);
+}
+
+// ---------------------------------------------------------------------------
+// Tuples
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_de_tuple() {
+    let t = (42u32, "hello".to_string(), true);
+    assert_eq!(streaming_de_round_trip(&t), t);
+}
+
+// ---------------------------------------------------------------------------
+// Optional fields in struct
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_de_optional() {
+    let v = WithOptional {
+        a: Some(42),
+        b: None,
+    };
+    assert_eq!(streaming_de_round_trip(&v), v);
+}
+
+// ---------------------------------------------------------------------------
+// Large data
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_de_large_vec_f64() {
+    let v: Vec<f64> = (0..10_000).map(|i| i as f64).collect();
+    assert_eq!(streaming_de_round_trip(&v), v);
+}
+
+#[test]
+fn streaming_de_large_struct() {
+    let d = SciData {
+        label: "experiment".into(),
+        values: (0..10_000).map(|i| i as f64 * 0.1).collect(),
+        flags: (0..10_000).map(|i| i % 3 == 0).collect(),
+        ids: (0..10_000).map(|i| i as u32).collect(),
+    };
+    assert_eq!(streaming_de_round_trip(&d), d);
+}
+
+// ---------------------------------------------------------------------------
+// Nested containers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_de_map_of_vecs() {
+    let mut m = HashMap::new();
+    m.insert("a".to_string(), vec![1.0f64, 2.0, 3.0]);
+    m.insert("b".to_string(), vec![4.0, 5.0]);
+    assert_eq!(streaming_de_round_trip(&m), m);
+}
+
+#[test]
+fn streaming_de_nested_vec_vec() {
+    let v = vec![vec![1.0f64, 2.0], vec![3.0, 4.0, 5.0]];
+    assert_eq!(streaming_de_round_trip(&v), v);
+}
+
+// ---------------------------------------------------------------------------
+// Full streaming round-trip: to_writer_streaming → from_reader_streaming
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_full_round_trip() {
+    let d = SciData {
+        label: "full_streaming".into(),
+        values: vec![1.0, 2.0, 3.0],
+        flags: vec![true, false],
+        ids: vec![100, 200],
+    };
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &d).unwrap();
+    let d2: SciData = beve::from_reader_streaming(Cursor::new(buf)).unwrap();
+    assert_eq!(d, d2);
+}
+
+// ---------------------------------------------------------------------------
+// EOF handling
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_de_truncated_input() {
+    let bytes = beve::to_vec(&42u32).unwrap();
+    // Truncate to just the header byte
+    let result: beve::Result<u32> = beve::from_reader_streaming(Cursor::new(&bytes[..1]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn streaming_de_empty_input() {
+    let result: beve::Result<u32> = beve::from_reader_streaming(Cursor::new(&[]));
+    assert!(result.is_err());
+}

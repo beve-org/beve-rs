@@ -124,6 +124,15 @@ pub struct Deserializer<'de> {
     pos: usize,
 }
 
+impl<'de> Deserializer<'de> {
+    /// Create a `Deserializer` that starts reading from byte offset `pos`
+    /// within `input`. Used by `from_field` to deserialize at an arbitrary
+    /// position after JSON-Pointer navigation.
+    pub(crate) fn from_slice_at(input: &'de [u8], pos: usize) -> Self {
+        Self { input, pos }
+    }
+}
+
 /// Deserialize a value from a BEVE byte slice.
 ///
 /// Supports zero-copy deserialization: types containing `&'de str` fields

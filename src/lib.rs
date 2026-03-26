@@ -10,6 +10,8 @@
 //! - Enum support via BEVE type-tag extension
 //! - Zero-copy deserialization for `&str` fields (borrow directly from the input buffer)
 //! - Validation helpers for checking BEVE payload integrity without deserialization
+//! - Selective field loading via [JSON Pointer (RFC 6901)](https://datatracker.ietf.org/doc/html/rfc6901)
+//!   with optional array slicing — see [`from_field`] and [`from_field_slice`]
 //!
 //! Example
 //!
@@ -39,6 +41,7 @@ mod de;
 mod error;
 mod ext;
 pub mod fast;
+mod field;
 mod header;
 mod json;
 #[cfg(feature = "mat")]
@@ -50,6 +53,7 @@ mod size;
 mod value;
 
 pub use crate::de::{Deserializer, from_slice, validate_slice};
+pub use crate::field::{from_field, from_field_slice, skip_value};
 pub use crate::error::{Error, Result};
 pub use crate::ext::{
     Complex, ComplexSlice, DecodedMatrix, Matrix, MatrixDecodeMode, MatrixLayout, MatrixOwned,

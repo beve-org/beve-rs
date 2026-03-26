@@ -1,7 +1,7 @@
 use serde::ser::{self, Serialize};
 
 // Helper serializer used to extract raw u16 bits from half-precision newtypes.
-struct U16Extractor;
+pub(crate) struct U16Extractor;
 
 impl ser::Serializer for U16Extractor {
     type Ok = u16;
@@ -169,7 +169,7 @@ impl ser::Serializer for U16Extractor {
 }
 
 // Helper serializer used to extract raw byte payloads from newtype wrappers.
-struct BytesExtractor;
+pub(crate) struct BytesExtractor;
 
 impl ser::Serializer for BytesExtractor {
     type Ok = Vec<u8>;

@@ -50,6 +50,7 @@ pub mod mat;
 mod raw;
 mod ser;
 mod size;
+mod streaming_ser;
 mod value;
 
 pub use crate::de::{Deserializer, from_slice, validate_slice};
@@ -76,6 +77,9 @@ pub use crate::mat::{
 pub use crate::ser::{
     EnumEncoding, Serializer, SerializerOptions, to_vec, to_vec_into, to_vec_into_with_options,
     to_vec_with_options,
+};
+pub use crate::streaming_ser::{
+    StreamingSerializer, to_writer_streaming, to_writer_streaming_with_options,
 };
 pub use crate::value::{
     BigInt, BigIntKey, Key, Number, Object, Value, ValueError, from_value, from_value_ref,

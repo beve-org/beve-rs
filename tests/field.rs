@@ -49,11 +49,11 @@ fn field_nested_object() {
         inner: Inner,
     }
     let data = Outer {
-        inner: Inner { value: 3.14 },
+        inner: Inner { value: 3.125 },
     };
     let bytes = beve::to_vec(&data).unwrap();
     let v: f64 = beve::from_field(&bytes, "/inner/value").unwrap();
-    assert!((v - 3.14).abs() < 1e-12);
+    assert!((v - 3.125).abs() < 1e-12);
 }
 
 // ---- from_field: HashMap ----
@@ -272,9 +272,7 @@ fn field_three_levels_deep() {
         val: u64,
     }
     let data = A {
-        b: B {
-            c: C { val: 999 },
-        },
+        b: B { c: C { val: 999 } },
     };
     let bytes = beve::to_vec(&data).unwrap();
     let v: u64 = beve::from_field(&bytes, "/b/c/val").unwrap();
@@ -567,8 +565,18 @@ fn field_integer_key_nested() {
         data: Vec<f64>,
     }
     let mut map = BTreeMap::new();
-    map.insert(5u32, Inner { data: vec![1.0, 2.0] });
-    map.insert(10u32, Inner { data: vec![3.0, 4.0, 5.0] });
+    map.insert(
+        5u32,
+        Inner {
+            data: vec![1.0, 2.0],
+        },
+    );
+    map.insert(
+        10u32,
+        Inner {
+            data: vec![3.0, 4.0, 5.0],
+        },
+    );
     let bytes = beve::to_vec(&map).unwrap();
 
     let v: Vec<f64> = beve::from_field(&bytes, "/10/data").unwrap();
@@ -593,7 +601,16 @@ fn field_various_numeric_widths() {
         j: f64,
     }
     let data = Nums {
-        a: 1, b: 2, c: 3, d: 4, e: -1, f: -2, g: -3, h: -4, i: 1.5, j: 2.5,
+        a: 1,
+        b: 2,
+        c: 3,
+        d: 4,
+        e: -1,
+        f: -2,
+        g: -3,
+        h: -4,
+        i: 1.5,
+        j: 2.5,
     };
     let bytes = beve::to_vec(&data).unwrap();
 
@@ -691,7 +708,10 @@ fn skip_complex_array() {
     // Build a struct that has a complex array followed by another field.
     // We serialize manually: object with "zs" (complex array) + "after" (string).
     let complexes = vec![
-        Complex { re: 1.0f64, im: 2.0 },
+        Complex {
+            re: 1.0f64,
+            im: 2.0,
+        },
         Complex { re: 3.0, im: 4.0 },
         Complex { re: 5.0, im: 6.0 },
     ];
@@ -1022,9 +1042,21 @@ fn skip_value_advances_correctly() {
         c: Vec<f64>,
     }
     let rows = vec![
-        Row { a: 1, b: "one".into(), c: vec![1.0] },
-        Row { a: 2, b: "two".into(), c: vec![2.0, 2.0] },
-        Row { a: 3, b: "three".into(), c: vec![3.0, 3.0, 3.0] },
+        Row {
+            a: 1,
+            b: "one".into(),
+            c: vec![1.0],
+        },
+        Row {
+            a: 2,
+            b: "two".into(),
+            c: vec![2.0, 2.0],
+        },
+        Row {
+            a: 3,
+            b: "three".into(),
+            c: vec![3.0, 3.0, 3.0],
+        },
     ];
     let bytes = beve::to_vec(&rows).unwrap();
 

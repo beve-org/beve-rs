@@ -53,7 +53,6 @@ mod size;
 mod value;
 
 pub use crate::de::{Deserializer, from_slice, validate_slice};
-pub use crate::field::{from_field, from_field_slice, skip_value};
 pub use crate::error::{Error, Result};
 pub use crate::ext::{
     Complex, ComplexSlice, DecodedMatrix, Matrix, MatrixDecodeMode, MatrixLayout, MatrixOwned,
@@ -64,6 +63,7 @@ pub use crate::fast::{
     to_vec_complex64_slice, to_vec_str_slice, to_vec_string_slice, to_vec_typed_slice,
     write_bool_slice, write_str_slice, write_string_slice, write_typed_slice,
 };
+pub use crate::field::{from_field, from_field_slice, skip_value};
 pub use crate::json::{
     beve_slice_to_json, beve_slice_to_json_string, json_slice_to_beve, json_str_to_beve,
 };

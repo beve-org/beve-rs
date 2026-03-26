@@ -497,9 +497,7 @@ pub fn skip_value(input: &[u8], pos: &mut usize) -> Result<()> {
                         advance(input, pos, total)?;
                     } else {
                         // scalar complex: 2 components
-                        let total = 2usize
-                            .checked_mul(elem_bytes)
-                            .ok_or(Error::InvalidSize)?;
+                        let total = 2usize.checked_mul(elem_bytes).ok_or(Error::InvalidSize)?;
                         advance(input, pos, total)?;
                     }
                 }

@@ -15,7 +15,7 @@ fn decode_utf8<'de>(bytes: &'de [u8], context: &'static str) -> Result<&'de str>
 }
 
 #[inline]
-fn byte_count_to_bytes(code: u8) -> Result<usize> {
+pub(crate) fn byte_count_to_bytes(code: u8) -> Result<usize> {
     match code {
         0 => Ok(1),
         1 => Ok(2),
@@ -27,7 +27,7 @@ fn byte_count_to_bytes(code: u8) -> Result<usize> {
 }
 
 #[derive(Clone, Copy)]
-enum HalfKind {
+pub(crate) enum HalfKind {
     Bf16,
     F16,
 }
@@ -1320,8 +1320,8 @@ impl<'de, 'a> de::VariantAccess<'de> for VariantAccess<'a, 'de> {
     }
 }
 
-struct EnumIndexAccess {
-    idx: u64,
+pub(crate) struct EnumIndexAccess {
+    pub(crate) idx: u64,
 }
 impl<'de> de::EnumAccess<'de> for EnumIndexAccess {
     type Error = Error;
@@ -1350,7 +1350,7 @@ impl<'de> de::EnumAccess<'de> for EnumStrAccess<'de> {
     }
 }
 
-struct VariantAccessNoValue;
+pub(crate) struct VariantAccessNoValue;
 impl<'de> de::VariantAccess<'de> for VariantAccessNoValue {
     type Error = Error;
     fn unit_variant(self) -> Result<()> {
@@ -1373,7 +1373,7 @@ impl<'de> de::VariantAccess<'de> for VariantAccessNoValue {
 
 // =============== Primitive Value Deserializers ===============
 
-enum NumDe {
+pub(crate) enum NumDe {
     Unsigned(u128),
     Signed(i128),
     F32(f32),
@@ -1532,9 +1532,9 @@ impl<'de> de::Deserializer<'de> for NumDe {
     }
 }
 
-struct HalfBitsDeserializer {
-    kind: HalfKind,
-    bits: u16,
+pub(crate) struct HalfBitsDeserializer {
+    pub(crate) kind: HalfKind,
+    pub(crate) bits: u16,
 }
 impl<'de> de::Deserializer<'de> for HalfBitsDeserializer {
     type Error = Error;

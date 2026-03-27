@@ -25,7 +25,7 @@ fn main() -> beve::Result<()> {
     Ok(())
 }
 ```
-You can stream to files or sockets with `beve::to_writer` and read everything back using `beve::from_reader`:
+You can write to files or sockets with `beve::to_writer` and read everything back using `beve::from_reader` (for zero-buffered streaming I/O, see [Streaming](#streaming)):
 ```rust
 fn write_point(p: &Point) -> beve::Result<()> {
     beve::to_writer(std::fs::File::create("out.beve")?, p)?;
@@ -323,10 +323,39 @@ let opts = SerializerOptions { enum_encoding: EnumEncoding::String };
 let bytes = beve::to_vec_with_options(&MyEnum::Struct { a: 1, b: 2 }, opts)?;
 ```
 
+## Streaming
+For large payloads where you don't want to buffer the entire input or output in memory, use the streaming APIs. They read and write directly from `std::io::Read` / `std::io::Write` with zero internal buffering:
+```rust
+use serde::{Serialize, Deserialize};
+use std::io::BufWriter;
+use std::fs::File;
+
+#[derive(Serialize, Deserialize)]
+struct Recording {
+    name: String,
+    samples: Vec<f64>,
+}
+
+fn write_large_recording(rec: &Recording) -> beve::Result<()> {
+    let file = BufWriter::new(File::create("recording.beve")?);
+    beve::to_writer_streaming(file, rec)?;
+    Ok(())
+}
+
+fn read_large_recording() -> beve::Result<Recording> {
+    let file = std::io::BufReader::new(File::open("recording.beve")?);
+    beve::from_reader_streaming(file)
+}
+```
+
+Both directions process data incrementally with no intermediate allocations beyond the output values themselves. Homogeneous sequences (`Vec<f64>`, `Vec<u32>`, `Vec<bool>`, `Vec<String>`, etc.) are automatically encoded as compact typed arrays, producing byte-for-byte identical output to `to_vec`. The streaming serializer requires all containers to have known lengths (structs, `Vec`, `HashMap`, etc.) — this covers virtually all standard Rust types.
+
+Custom serializer options (e.g. string enum encoding) are supported via `to_writer_streaming_with_options`.
+
 ## Supported Data Model
 - Scalars: signed/unsigned integers up to 128-bit, f32/f64, null, bool, and UTF-8 strings
 - Collections: typed arrays (numeric, bool, string), generic sequences, maps with string or integer keys, and nested structs/enums
-- Streaming: `to_writer`, `to_writer_with_options`, and `from_reader` for IO-bound workflows
+- Streaming: `to_writer_streaming` / `from_reader_streaming` for zero-buffered I/O; `to_writer` and `from_reader` for buffered workflows
 - Interop: payloads align with `reference/glaze` and `reference/BEVE.jl`; spec resides in `reference/beve/README.md` and the upstream [BEVE specification](https://github.com/beve-org/beve)
 
 ### Half & BFloat16 Scalars

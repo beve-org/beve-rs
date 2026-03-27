@@ -83,10 +83,17 @@ that pass `None` for sequence/map length will get an error.
 
 **Type mismatch errors.** The streaming serializer commits to a typed array
 encoding after the first element. If a later element has a different type,
-serialization returns an error. The buffered serializer (`to_vec`) handles
-this by converting back to a generic array; the streaming serializer cannot
-because the typed header has already been written. In practice this only
-affects `Vec<Value>` or similar dynamic types.
+serialization returns an error — the message names the expected element type
+and suggests using `to_vec` instead. The buffered serializer (`to_vec`)
+handles this by converting back to a generic array; the streaming serializer
+cannot because the typed header has already been written. In practice this
+affects `Vec<Value>` and similar dynamic types.
+
+**`Vec<Option<T>>` is not supported.** Serde serializes `Some(v)` by
+delegating directly to `v`, so the first `Some(42u32)` commits to a typed
+`u32` array. A subsequent `None` emits a null, which triggers a type mismatch
+error. This happens even when all elements are `Some`. Use `to_vec` for
+sequences of optional values.
 
 ## Deserialization
 
@@ -138,7 +145,7 @@ let v2 = Type2::deserialize(&mut de)?;
 
 | | `to_vec` / `from_slice` | Streaming |
 |---|---|---|
-| Memory | O(payload size) | O(1) beyond output |
+| Memory | O(payload size) | No auxiliary buffers (output values like `String` and `Vec` are still allocated) |
 | Typed arrays | Yes | Yes |
 | Zero-copy strings | Yes (`&str` from buffer) | No (allocates `String`) |
 | Heterogeneous fallback | Converts to generic | Error (serialization) |

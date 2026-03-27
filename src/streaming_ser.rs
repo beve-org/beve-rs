@@ -19,11 +19,6 @@ use crate::size::encode_size_to_array;
 // ---------------------------------------------------------------------------
 
 #[inline]
-fn io_err(e: std::io::Error) -> Error {
-    Error::MessageOwned(e.to_string())
-}
-
-#[inline]
 fn code_for_bytes(n: usize) -> u8 {
     match n {
         1 => 0,
@@ -77,19 +72,19 @@ impl<W: Write> StreamingSerializer<W> {
 
     #[inline]
     fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
-        self.writer.write_all(bytes).map_err(io_err)
+        Ok(self.writer.write_all(bytes)?)
     }
 
     #[inline]
     fn write_byte(&mut self, b: u8) -> Result<()> {
-        self.writer.write_all(&[b]).map_err(io_err)
+        Ok(self.writer.write_all(&[b])?)
     }
 
     #[inline]
     fn write_size(&mut self, n: u64) -> Result<()> {
         let mut buf = [0u8; 8];
         let used = encode_size_to_array(n, &mut buf);
-        self.writer.write_all(&buf[..used]).map_err(io_err)
+        Ok(self.writer.write_all(&buf[..used])?)
     }
 
     // -- BEVE value writers --
@@ -436,6 +431,30 @@ enum SeqMode {
     TypedComplex { byte_code: u8 },
 }
 
+impl SeqMode {
+    fn type_name(&self) -> &'static str {
+        match self {
+            SeqMode::Detecting => "unknown",
+            SeqMode::Generic => "generic",
+            SeqMode::TypedUnsigned { .. } => "unsigned",
+            SeqMode::TypedSigned { .. } => "signed",
+            SeqMode::TypedFloat { .. } => "float",
+            SeqMode::TypedBool { .. } => "bool",
+            SeqMode::TypedString => "string",
+            SeqMode::TypedComplex { .. } => "complex",
+        }
+    }
+}
+
+fn typed_array_mismatch(expected: &SeqMode, got: &str) -> Error {
+    Error::msg(format!(
+        "streaming typed array expected {} elements, got {}; \
+         use to_vec for heterogeneous sequences",
+        expected.type_name(),
+        got
+    ))
+}
+
 pub struct StreamingSeqSerializer<'a, W: Write> {
     ser: &'a mut StreamingSerializer<W>,
     len: usize,
@@ -453,7 +472,7 @@ impl<'a, W: Write> StreamingSeqSerializer<'a, W> {
                 self.mode = SeqMode::Generic;
                 Ok(())
             }
-            _ => Err(Error::Mismatch("type mismatch in streaming typed array")),
+            _ => Err(typed_array_mismatch(&self.mode, "generic")),
         }
     }
 }
@@ -464,8 +483,20 @@ struct StreamingElemSer<'a, 'b, W: Write> {
 }
 
 impl<'a, 'b, W: Write> StreamingElemSer<'a, 'b, W> {
+    #[inline(always)]
     fn emit_signed(&mut self, v: i128, bytes: usize) -> Result<()> {
         let byte_code = code_for_bytes(bytes);
+        if let SeqMode::TypedSigned { byte_code: bc } = self.seq.mode
+            && bc == byte_code
+        {
+            return self.seq.ser.write_all(&v.to_le_bytes()[..bytes]);
+        }
+        self.emit_signed_cold(v, bytes, byte_code)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn emit_signed_cold(&mut self, v: i128, bytes: usize, byte_code: u8) -> Result<()> {
         match self.seq.mode {
             SeqMode::Detecting => {
                 let header = make_header(TYPE_TYPED_ARRAY, ARRAY_SIGNED, byte_code);
@@ -473,14 +504,25 @@ impl<'a, 'b, W: Write> StreamingElemSer<'a, 'b, W> {
                 self.seq.ser.write_size(self.seq.len as u64)?;
                 self.seq.mode = SeqMode::TypedSigned { byte_code };
             }
-            SeqMode::TypedSigned { byte_code: bc, .. } if bc == byte_code => {}
-            _ => return Err(Error::Mismatch("type mismatch in streaming typed array")),
+            _ => return Err(typed_array_mismatch(&self.seq.mode, "signed")),
         }
         self.seq.ser.write_all(&v.to_le_bytes()[..bytes])
     }
 
+    #[inline(always)]
     fn emit_unsigned(&mut self, v: u128, bytes: usize) -> Result<()> {
         let byte_code = code_for_bytes(bytes);
+        if let SeqMode::TypedUnsigned { byte_code: bc } = self.seq.mode
+            && bc == byte_code
+        {
+            return self.seq.ser.write_all(&v.to_le_bytes()[..bytes]);
+        }
+        self.emit_unsigned_cold(v, bytes, byte_code)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn emit_unsigned_cold(&mut self, v: u128, bytes: usize, byte_code: u8) -> Result<()> {
         match self.seq.mode {
             SeqMode::Detecting => {
                 let header = make_header(TYPE_TYPED_ARRAY, ARRAY_UNSIGNED, byte_code);
@@ -488,13 +530,24 @@ impl<'a, 'b, W: Write> StreamingElemSer<'a, 'b, W> {
                 self.seq.ser.write_size(self.seq.len as u64)?;
                 self.seq.mode = SeqMode::TypedUnsigned { byte_code };
             }
-            SeqMode::TypedUnsigned { byte_code: bc, .. } if bc == byte_code => {}
-            _ => return Err(Error::Mismatch("type mismatch in streaming typed array")),
+            _ => return Err(typed_array_mismatch(&self.seq.mode, "unsigned")),
         }
         self.seq.ser.write_all(&v.to_le_bytes()[..bytes])
     }
 
+    #[inline(always)]
     fn emit_float(&mut self, raw: &[u8], byte_code: u8) -> Result<()> {
+        if let SeqMode::TypedFloat { byte_code: bc } = self.seq.mode
+            && bc == byte_code
+        {
+            return self.seq.ser.write_all(raw);
+        }
+        self.emit_float_cold(raw, byte_code)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn emit_float_cold(&mut self, raw: &[u8], byte_code: u8) -> Result<()> {
         match self.seq.mode {
             SeqMode::Detecting => {
                 let header = make_header(TYPE_TYPED_ARRAY, ARRAY_FLOAT, byte_code);
@@ -502,13 +555,24 @@ impl<'a, 'b, W: Write> StreamingElemSer<'a, 'b, W> {
                 self.seq.ser.write_size(self.seq.len as u64)?;
                 self.seq.mode = SeqMode::TypedFloat { byte_code };
             }
-            SeqMode::TypedFloat { byte_code: bc } if bc == byte_code => {}
-            _ => return Err(Error::Mismatch("type mismatch in streaming typed array")),
+            _ => return Err(typed_array_mismatch(&self.seq.mode, "float")),
         }
         self.seq.ser.write_all(raw)
     }
 
+    #[inline(always)]
     fn emit_complex(&mut self, byte_code: u8, payload: &[u8]) -> Result<()> {
+        if let SeqMode::TypedComplex { byte_code: bc } = self.seq.mode
+            && bc == byte_code
+        {
+            return self.seq.ser.write_all(payload);
+        }
+        self.emit_complex_cold(byte_code, payload)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn emit_complex_cold(&mut self, byte_code: u8, payload: &[u8]) -> Result<()> {
         let elem_bytes = (1usize << byte_code) * 2;
         if payload.len() != elem_bytes {
             return Err(Error::Mismatch("invalid complex payload size"));
@@ -522,10 +586,54 @@ impl<'a, 'b, W: Write> StreamingElemSer<'a, 'b, W> {
                 self.seq.ser.write_size(self.seq.len as u64)?;
                 self.seq.mode = SeqMode::TypedComplex { byte_code };
             }
-            SeqMode::TypedComplex { byte_code: bc } if bc == byte_code => {}
-            _ => return Err(Error::Mismatch("type mismatch in streaming typed array")),
+            _ => return Err(typed_array_mismatch(&self.seq.mode, "complex")),
         }
         self.seq.ser.write_all(payload)
+    }
+}
+
+impl<'a, 'b, W: Write> StreamingElemSer<'a, 'b, W> {
+    #[cold]
+    #[inline(never)]
+    fn serialize_bool_cold(&mut self, v: bool) -> Result<()> {
+        match self.seq.mode {
+            SeqMode::Detecting => {
+                let header = make_header(TYPE_TYPED_ARRAY, ARRAY_BOOL_OR_STRING, 0);
+                self.seq.ser.write_byte(header)?;
+                self.seq.ser.write_size(self.seq.len as u64)?;
+                self.seq.mode = SeqMode::TypedBool {
+                    byte_acc: 0,
+                    bit_idx: 0,
+                };
+            }
+            _ => return Err(typed_array_mismatch(&self.seq.mode, "bool")),
+        }
+        // First element — accumulate the bit
+        if v
+            && let SeqMode::TypedBool { byte_acc, .. } = &mut self.seq.mode
+        {
+            *byte_acc |= 1;
+        }
+        if let SeqMode::TypedBool { bit_idx, .. } = &mut self.seq.mode {
+            *bit_idx = 1;
+        }
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn serialize_str_cold(&mut self, v: &str) -> Result<()> {
+        match self.seq.mode {
+            SeqMode::Detecting => {
+                let header = make_header(TYPE_TYPED_ARRAY, ARRAY_BOOL_OR_STRING, 1);
+                self.seq.ser.write_byte(header)?;
+                self.seq.ser.write_size(self.seq.len as u64)?;
+                self.seq.mode = SeqMode::TypedString;
+            }
+            _ => return Err(typed_array_mismatch(&self.seq.mode, "string")),
+        }
+        self.seq.ser.write_size(v.len() as u64)?;
+        self.seq.ser.write_all(v.as_bytes())
     }
 }
 
@@ -541,20 +649,8 @@ impl<'a, 'b, W: Write> ser::Serializer for &'b mut StreamingElemSer<'a, 'b, W> {
     type SerializeStruct = StreamingStructSerializer<'b, W>;
     type SerializeStructVariant = StreamingVariantStructSerializer<'b, W>;
 
+    #[inline]
     fn serialize_bool(self, v: bool) -> Result<()> {
-        match self.seq.mode {
-            SeqMode::Detecting => {
-                let header = make_header(TYPE_TYPED_ARRAY, ARRAY_BOOL_OR_STRING, 0);
-                self.seq.ser.write_byte(header)?;
-                self.seq.ser.write_size(self.seq.len as u64)?;
-                self.seq.mode = SeqMode::TypedBool {
-                    byte_acc: 0,
-                    bit_idx: 0,
-                };
-            }
-            SeqMode::TypedBool { .. } => {}
-            _ => return Err(Error::Mismatch("type mismatch in streaming typed array")),
-        }
         if let SeqMode::TypedBool {
             byte_acc, bit_idx, ..
         } = &mut self.seq.mode
@@ -568,45 +664,58 @@ impl<'a, 'b, W: Write> ser::Serializer for &'b mut StreamingElemSer<'a, 'b, W> {
                 *byte_acc = 0;
                 *bit_idx = 0;
             }
+            return Ok(());
         }
-        Ok(())
+        self.serialize_bool_cold(v)
     }
 
+    #[inline]
     fn serialize_i8(self, v: i8) -> Result<()> {
         self.emit_signed(v as i128, 1)
     }
+    #[inline]
     fn serialize_i16(self, v: i16) -> Result<()> {
         self.emit_signed(v as i128, 2)
     }
+    #[inline]
     fn serialize_i32(self, v: i32) -> Result<()> {
         self.emit_signed(v as i128, 4)
     }
+    #[inline]
     fn serialize_i64(self, v: i64) -> Result<()> {
         self.emit_signed(v as i128, 8)
     }
+    #[inline]
     fn serialize_i128(self, v: i128) -> Result<()> {
         self.emit_signed(v, 16)
     }
 
+    #[inline]
     fn serialize_u8(self, v: u8) -> Result<()> {
         self.emit_unsigned(v as u128, 1)
     }
+    #[inline]
     fn serialize_u16(self, v: u16) -> Result<()> {
         self.emit_unsigned(v as u128, 2)
     }
+    #[inline]
     fn serialize_u32(self, v: u32) -> Result<()> {
         self.emit_unsigned(v as u128, 4)
     }
+    #[inline]
     fn serialize_u64(self, v: u64) -> Result<()> {
         self.emit_unsigned(v as u128, 8)
     }
+    #[inline]
     fn serialize_u128(self, v: u128) -> Result<()> {
         self.emit_unsigned(v, 16)
     }
 
+    #[inline]
     fn serialize_f32(self, v: f32) -> Result<()> {
         self.emit_float(&v.to_le_bytes(), 2)
     }
+    #[inline]
     fn serialize_f64(self, v: f64) -> Result<()> {
         self.emit_float(&v.to_le_bytes(), 3)
     }
@@ -616,19 +725,13 @@ impl<'a, 'b, W: Write> ser::Serializer for &'b mut StreamingElemSer<'a, 'b, W> {
         self.serialize_str(v.encode_utf8(&mut buf))
     }
 
+    #[inline]
     fn serialize_str(self, v: &str) -> Result<()> {
-        match self.seq.mode {
-            SeqMode::Detecting => {
-                let header = make_header(TYPE_TYPED_ARRAY, ARRAY_BOOL_OR_STRING, 1);
-                self.seq.ser.write_byte(header)?;
-                self.seq.ser.write_size(self.seq.len as u64)?;
-                self.seq.mode = SeqMode::TypedString;
-            }
-            SeqMode::TypedString => {}
-            _ => return Err(Error::Mismatch("type mismatch in streaming typed array")),
+        if let SeqMode::TypedString = self.seq.mode {
+            self.seq.ser.write_size(v.len() as u64)?;
+            return self.seq.ser.write_all(v.as_bytes());
         }
-        self.seq.ser.write_size(v.len() as u64)?;
-        self.seq.ser.write_all(v.as_bytes())
+        self.serialize_str_cold(v)
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<()> {
@@ -822,6 +925,7 @@ impl<'a, W: Write> ser::SerializeSeq for StreamingSeqSerializer<'a, W> {
     type Ok = ();
     type Error = Error;
 
+    #[inline]
     fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> {
         if matches!(self.mode, SeqMode::Generic) {
             value.serialize(&mut *self.ser)?;
@@ -1220,7 +1324,7 @@ impl<'a, W: Write> ser::SerializeStructVariant for StreamingVariantStructSeriali
 pub fn to_writer_streaming<W: Write, T: Serialize>(writer: W, value: &T) -> Result<()> {
     let mut ser = StreamingSerializer::new(writer);
     value.serialize(&mut ser)?;
-    ser.into_inner().flush().map_err(io_err)
+    Ok(ser.into_inner().flush()?)
 }
 
 /// Serialize directly to a writer with zero internal buffering and custom options.
@@ -1233,5 +1337,5 @@ pub fn to_writer_streaming_with_options<W: Write, T: Serialize>(
 ) -> Result<()> {
     let mut ser = StreamingSerializer::with_options(writer, opts);
     value.serialize(&mut ser)?;
-    ser.into_inner().flush().map_err(io_err)
+    Ok(ser.into_inner().flush()?)
 }

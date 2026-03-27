@@ -13,16 +13,7 @@ use crate::de::{
 };
 use crate::error::{Error, Result};
 use crate::header::*;
-use crate::size::read_size_from_reader;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-#[inline]
-fn io_err(e: std::io::Error) -> Error {
-    Error::MessageOwned(e.to_string())
-}
+use crate::size::{read_size_from_reader, read_size_from_reader_with_first_byte};
 
 // ---------------------------------------------------------------------------
 // Core streaming deserializer
@@ -76,9 +67,26 @@ impl<R: Read> StreamingDeserializer<R> {
     }
 
     /// Read exactly `n` bytes into a new Vec.
+    ///
+    /// To avoid OOM from untrusted size fields, the initial allocation is capped
+    /// and the buffer grows in chunks as data actually arrives from the reader.
     fn read_exact_vec(&mut self, n: usize) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; n];
+        // Cap initial allocation to avoid OOM on bogus size fields.
+        // 8 MB is large enough for typical payloads while limiting exposure.
+        const INITIAL_CAP: usize = 8 * 1024 * 1024;
+        let initial = n.min(INITIAL_CAP);
+        let mut buf = vec![0u8; initial];
         self.read_exact_into(&mut buf)?;
+        // If more bytes are needed, grow and read in chunks.
+        if n > initial {
+            let remaining = n - initial;
+            buf.try_reserve(remaining)
+                .map_err(|_| Error::Message("allocation failed for streaming read"))?;
+            buf.resize(n, 0);
+            self.reader
+                .read_exact(&mut buf[initial..])
+                .map_err(|e| -> Error { e.into() })?;
+        }
         Ok(buf)
     }
 
@@ -94,42 +102,14 @@ impl<R: Read> StreamingDeserializer<R> {
             0
         };
         if start < buf.len() {
-            self.reader.read_exact(&mut buf[start..]).map_err(io_err)?;
+            self.reader.read_exact(&mut buf[start..])?;
         }
         Ok(())
     }
 
     fn read_size(&mut self) -> Result<u64> {
-        // If there's a peeked byte, we need to handle it since read_size_from_reader
-        // reads its own first byte.
         if let Some(b) = self.peeked.take() {
-            let code = b & 0b11;
-            let mut value: u64 = (b >> 2) as u64;
-            match code {
-                0 => Ok(value),
-                1 => {
-                    let mut buf = [0u8; 1];
-                    self.reader.read_exact(&mut buf).map_err(|_| Error::Eof)?;
-                    value |= (buf[0] as u64) << 6;
-                    Ok(value)
-                }
-                2 => {
-                    let mut buf = [0u8; 3];
-                    self.reader.read_exact(&mut buf).map_err(|_| Error::Eof)?;
-                    value |= (buf[0] as u64) << 6;
-                    value |= (buf[1] as u64) << 14;
-                    value |= (buf[2] as u64) << 22;
-                    Ok(value)
-                }
-                _ => {
-                    let mut buf = [0u8; 7];
-                    self.reader.read_exact(&mut buf).map_err(|_| Error::Eof)?;
-                    for (i, &b) in buf.iter().enumerate() {
-                        value |= (b as u64) << (6 + 8 * i as u64);
-                    }
-                    Ok(value)
-                }
-            }
+            read_size_from_reader_with_first_byte(&mut self.reader, b)
         } else {
             read_size_from_reader(&mut self.reader)
         }

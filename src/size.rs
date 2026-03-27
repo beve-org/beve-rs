@@ -118,7 +118,15 @@ pub fn read_size(input: &[u8], pos: &mut usize) -> Result<u64> {
 pub(crate) fn read_size_from_reader<R: std::io::Read>(reader: &mut R) -> Result<u64> {
     let mut b0_buf = [0u8; 1];
     reader.read_exact(&mut b0_buf).map_err(|_| Error::Eof)?;
-    let b0 = b0_buf[0];
+    read_size_from_reader_with_first_byte(reader, b0_buf[0])
+}
+
+/// Decode a SIZE value given the already-read first byte and a reader for the remaining bytes.
+#[inline]
+pub(crate) fn read_size_from_reader_with_first_byte<R: std::io::Read>(
+    reader: &mut R,
+    b0: u8,
+) -> Result<u64> {
     let code = b0 & 0b11;
     let mut value: u64 = (b0 >> 2) as u64;
     match code {

@@ -609,9 +609,7 @@ impl<'a, 'b, W: Write> StreamingElemSer<'a, 'b, W> {
             _ => return Err(typed_array_mismatch(&self.seq.mode, "bool")),
         }
         // First element — accumulate the bit
-        if v
-            && let SeqMode::TypedBool { byte_acc, .. } = &mut self.seq.mode
-        {
+        if v && let SeqMode::TypedBool { byte_acc, .. } = &mut self.seq.mode {
             *byte_acc |= 1;
         }
         if let SeqMode::TypedBool { bit_idx, .. } = &mut self.seq.mode {

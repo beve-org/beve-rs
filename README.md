@@ -5,7 +5,7 @@ Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specificat
 Grab the crate from [crates.io](https://crates.io/crates/beve) and add it to your project with `cargo add beve` or by editing `Cargo.toml`:
 ```toml
 [dependencies]
-beve = "0.6"
+beve = "0.8"
 ```
 The library only depends on `serde` and requires Rust 1.88 or newer. Half-precision floats via `half::f16` are supported alongside the standard numeric types.
 
@@ -235,7 +235,7 @@ fn encode_science() -> beve::Result<()> {
 Enable the optional `mat` feature to convert BEVE payloads directly into MATLAB v7.3 MAT files:
 ```toml
 [dependencies]
-beve = { version = "0.6", features = ["mat"] }
+beve = { version = "0.8", features = ["mat"] }
 ```
 
 The MAT feature uses a pure-Rust HDF5 writer (`hdf5-pure`) and requires no system libraries.

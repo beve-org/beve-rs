@@ -382,10 +382,12 @@ impl<R: Read> StreamingDeserializer<R> {
                     EXT_COMPLEX => {
                         let ch = self.read_byte()?;
                         let is_array = (ch & 0x01) != 0;
+                        let class = (ch >> 3) & 0x03;
                         let bc = (ch >> 5) & 0x07;
                         if !is_array {
                             visitor.visit_seq(ComplexPairStreaming {
                                 de: self,
+                                class,
                                 byte_code: bc,
                                 state: 0,
                             })
@@ -394,6 +396,7 @@ impl<R: Read> StreamingDeserializer<R> {
                             visitor.visit_seq(SeqAccessComplexStreaming {
                                 de: self,
                                 remaining: len,
+                                class,
                                 byte_code: bc,
                             })
                         }

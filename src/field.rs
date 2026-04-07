@@ -485,6 +485,10 @@ pub fn skip_value(input: &[u8], pos: &mut usize) -> Result<()> {
                 }
                 EXT_COMPLEX => {
                     let ch = read_byte(input, pos)?;
+                    let class = (ch >> 3) & 0x03;
+                    if class > 2 {
+                        return Err(Error::InvalidHeader(ch));
+                    }
                     let is_array = (ch & 0x01) != 0;
                     let cbc = (ch >> 5) & 0x07;
                     let elem_bytes = byte_count_to_bytes(cbc)?;

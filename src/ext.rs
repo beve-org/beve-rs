@@ -163,8 +163,14 @@ pub mod complex {
 
     macro_rules! complex_array_fn {
         ($name:ident, $scalar:ty) => {
+            /// Serialize a slice of layout-compatible complex values as a BEVE complex array.
+            ///
+            /// # Safety contract
+            /// The caller's type `T` must have the same layout as `beve::Complex<$scalar>`
+            /// (two contiguous `$scalar` fields in re, im order). Size and alignment are
+            /// checked at runtime; field order is the caller's responsibility.
             pub fn $name<S: serde::Serializer, T>(
-                data: &Vec<T>,
+                data: &[T],
                 serializer: S,
             ) -> core::result::Result<S::Ok, S::Error> {
                 assert_eq!(

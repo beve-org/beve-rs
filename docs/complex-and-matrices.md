@@ -52,12 +52,12 @@ let arr = [
     Complex { re: 1.0f64, im: 2.0 },
     Complex { re: 3.0, im: 4.0 },
 ];
-let bytes = beve::to_vec_complex64_slice(&arr);
+let bytes = beve::to_vec_complex_slice(&arr);
 let back: Vec<Complex<f64>> = beve::from_slice(&bytes).unwrap();
 assert_eq!(back, arr);
 ```
 
-The generic `to_vec_complex_slice` works for any supported scalar type:
+`to_vec_complex_slice` works for any supported scalar type:
 
 ```rust
 use beve::Complex;
@@ -67,11 +67,6 @@ let bytes = beve::to_vec_complex_slice(&arr);
 let back: Vec<Complex<i32>> = beve::from_slice(&bytes).unwrap();
 assert_eq!(back, arr);
 ```
-
-Type-specific aliases are also available:
-
-- `to_vec_complex32` / `to_vec_complex32_slice` for `Complex<f32>`
-- `to_vec_complex64` / `to_vec_complex64_slice` for `Complex<f64>`
 
 ### Foreign Complex Types
 

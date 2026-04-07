@@ -1,6 +1,6 @@
 #![deny(warnings)]
 
-use beve::{Complex, from_slice, to_vec, to_vec_complex64_slice, to_vec_typed_slice};
+use beve::{Complex, from_slice, to_vec, to_vec_complex_slice, to_vec_typed_slice};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::sample::select;
@@ -99,7 +99,7 @@ proptest! {
 proptest! {
     #[test]
     fn prop_complex_roundtrip(values in vec(complex64_strategy(), 0..48)) {
-        let bytes = to_vec_complex64_slice(&values);
+        let bytes = to_vec_complex_slice(&values);
         let decoded: Vec<Complex<f64>> = from_slice(&bytes).expect("decode complex64 slice");
         prop_assert_eq!(decoded, values);
     }

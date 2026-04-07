@@ -243,29 +243,6 @@ pub fn to_vec_complex_slice<T: BeveTypedSlice>(slice: &[Complex<T>]) -> Vec<u8> 
     out
 }
 
-pub fn to_vec_complex64(re: f64, im: f64) -> Vec<u8> {
-    let mut out = Vec::new();
-    write_complex_header(&mut out, false, ARRAY_FLOAT, 3);
-    out.extend_from_slice(&re.to_le_bytes());
-    out.extend_from_slice(&im.to_le_bytes());
-    out
-}
-
-pub fn to_vec_complex32(re: f32, im: f32) -> Vec<u8> {
-    let mut out = Vec::new();
-    write_complex_header(&mut out, false, ARRAY_FLOAT, 2);
-    out.extend_from_slice(&re.to_le_bytes());
-    out.extend_from_slice(&im.to_le_bytes());
-    out
-}
-
-pub fn to_vec_complex64_slice(slice: &[Complex<f64>]) -> Vec<u8> {
-    to_vec_complex_slice(slice)
-}
-
-pub fn to_vec_complex32_slice(slice: &[Complex<f32>]) -> Vec<u8> {
-    to_vec_complex_slice(slice)
-}
 
 // -------- Matrices (extension) --------
 

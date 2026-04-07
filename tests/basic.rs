@@ -746,7 +746,7 @@ fn validate_reader_rejects_trailing_data() {
 
 #[test]
 fn validate_slice_accepts_complex_extension() {
-    let bytes = beve::to_vec_complex64_slice(&[
+    let bytes = beve::to_vec_complex_slice(&[
         beve::Complex { re: 1.0, im: 2.0 },
         beve::Complex { re: -3.0, im: 4.5 },
     ]);

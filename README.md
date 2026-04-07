@@ -216,7 +216,7 @@ fn encode_science() -> beve::Result<()> {
         Complex { re: 1.0f64, im: -0.5 },
         Complex { re: 0.0, im: 2.0 },
     ];
-    let dense = beve::to_vec_complex64_slice(&complex);
+    let dense = beve::to_vec_complex_slice(&complex);
     let roundtrip: Vec<Complex<f64>> = beve::from_slice(&dense)?;
     assert_eq!(roundtrip, complex);
 

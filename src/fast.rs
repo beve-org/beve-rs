@@ -243,7 +243,6 @@ pub fn to_vec_complex_slice<T: BeveTypedSlice>(slice: &[Complex<T>]) -> Vec<u8> 
     out
 }
 
-
 // -------- Matrices (extension) --------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

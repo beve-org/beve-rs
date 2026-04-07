@@ -198,7 +198,11 @@ fn interop_complex_numbers() {
 
     // Rust -> Glaze
     if glaze_bin().is_some() {
-        let bytes = to_vec(&Complex { re: 1.5f64, im: -2.25 }).unwrap();
+        let bytes = to_vec(&Complex {
+            re: 1.5f64,
+            im: -2.25,
+        })
+        .unwrap();
         let (code, out, err) = run_glaze(&["read", "cplx64"], Some(&bytes)).unwrap();
         assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
         assert_eq!(String::from_utf8_lossy(&out), "OK\n");

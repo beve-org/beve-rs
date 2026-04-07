@@ -389,7 +389,7 @@ fn mat_v73_row_major_matrix_reorders_to_column_major() {
 fn mat_v73_empty_complex_array_uses_complex_dataset_type() {
     let path = temp_path("empty-complex");
     let empty: &[Complex<f64>] = &[];
-    let bytes = beve::to_vec_complex64_slice(empty);
+    let bytes = beve::to_vec_complex_slice(empty);
     beve::beve_slice_to_mat_v73_file(
         &bytes,
         &path,

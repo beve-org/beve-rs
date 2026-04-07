@@ -243,6 +243,129 @@ fn complex_vec_f32_serde_emits_array_extension() {
 }
 
 #[test]
+fn complex_integer_single_roundtrip() {
+    macro_rules! test_complex_single {
+        ($t:ty, $re:expr, $im:expr, $expected_header:expr) => {{
+            let c = beve::Complex::<$t> { re: $re, im: $im };
+            let bytes = beve::to_vec(&c).unwrap();
+            assert_eq!(bytes[0], 0x1e); // EXT_COMPLEX
+            assert_eq!(bytes[1], $expected_header);
+            let back: beve::Complex<$t> = beve::from_slice(&bytes).unwrap();
+            assert_eq!(back, c);
+        }};
+    }
+
+    // Complex header: (byte_code << 5) | (class << 3) | is_array
+    // class: 0=float, 1=signed, 2=unsigned
+    // byte_code: 0=1B, 1=2B, 2=4B, 3=8B, 4=16B
+    test_complex_single!(i8, -1, 2, 0x08); // bc=0, class=1
+    test_complex_single!(i16, -300, 400, 0x28); // bc=1, class=1
+    test_complex_single!(i32, -70000, 80000, 0x48); // bc=2, class=1
+    test_complex_single!(i64, -1_000_000, 2_000_000, 0x68); // bc=3, class=1
+    test_complex_single!(u8, 1, 2, 0x10); // bc=0, class=2
+    test_complex_single!(u16, 1000, 2000, 0x30); // bc=1, class=2
+    test_complex_single!(u32, 70000, 80000, 0x50); // bc=2, class=2
+    test_complex_single!(u64, 1_000_000, 2_000_000, 0x70); // bc=3, class=2
+}
+
+#[test]
+fn complex_integer_vec_roundtrip() {
+    macro_rules! test_complex_vec {
+        ($t:ty, $vals:expr, $expected_header:expr) => {{
+            let values: Vec<beve::Complex<$t>> = $vals;
+            let bytes = beve::to_vec(&values).unwrap();
+            assert_eq!(bytes[0], 0x1e); // EXT_COMPLEX
+            assert_eq!(bytes[1], $expected_header | 0x01); // is_array bit set
+            let back: Vec<beve::Complex<$t>> = beve::from_slice(&bytes).unwrap();
+            assert_eq!(back, values);
+        }};
+    }
+
+    test_complex_vec!(
+        i8,
+        vec![
+            beve::Complex { re: -1, im: 2 },
+            beve::Complex { re: 3, im: -4 }
+        ],
+        0x08
+    );
+    test_complex_vec!(
+        i32,
+        vec![
+            beve::Complex {
+                re: -100_000,
+                im: 200_000,
+            },
+            beve::Complex { re: 0, im: -1 }
+        ],
+        0x48
+    );
+    test_complex_vec!(
+        u16,
+        vec![
+            beve::Complex { re: 1000, im: 2000 },
+            beve::Complex { re: 0, im: 65535 }
+        ],
+        0x30
+    );
+    test_complex_vec!(
+        u64,
+        vec![beve::Complex {
+            re: u64::MAX,
+            im: 0,
+        }],
+        0x70
+    );
+}
+
+#[test]
+fn complex_generic_slice_encoding() {
+    // Test the generic to_vec_complex_slice function
+    let values = vec![
+        beve::Complex { re: 1i32, im: -2 },
+        beve::Complex { re: 3, im: 4 },
+    ];
+    let bytes = beve::to_vec_complex_slice(&values);
+    let back: Vec<beve::Complex<i32>> = beve::from_slice(&bytes).unwrap();
+    assert_eq!(back, values);
+
+    let values = vec![
+        beve::Complex { re: 10u8, im: 20 },
+        beve::Complex { re: 30, im: 40 },
+    ];
+    let bytes = beve::to_vec_complex_slice(&values);
+    let back: Vec<beve::Complex<u8>> = beve::from_slice(&bytes).unwrap();
+    assert_eq!(back, values);
+}
+
+#[test]
+fn complex_fields_in_struct_roundtrip() {
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Measurement {
+        label: String,
+        sample: beve::Complex<f32>,
+        count: u32,
+        buffer: Vec<beve::Complex<i32>>,
+        scale: f64,
+    }
+
+    let m = Measurement {
+        label: "test".to_string(),
+        sample: beve::Complex { re: 1.5, im: -2.5 },
+        count: 42,
+        buffer: vec![
+            beve::Complex { re: 10, im: -20 },
+            beve::Complex { re: 30, im: 40 },
+            beve::Complex { re: -1, im: 0 },
+        ],
+        scale: 3.125,
+    };
+    let bytes = beve::to_vec(&m).unwrap();
+    let back: Measurement = beve::from_slice(&bytes).unwrap();
+    assert_eq!(back, m);
+}
+
+#[test]
 fn matrix_extension_api_roundtrip_and_decode_modes() {
     let owned = beve::MatrixOwned {
         layout: beve::MatrixLayout::Right,
@@ -623,7 +746,7 @@ fn validate_reader_rejects_trailing_data() {
 
 #[test]
 fn validate_slice_accepts_complex_extension() {
-    let bytes = beve::to_vec_complex64_slice(&[
+    let bytes = beve::to_vec_complex_slice(&[
         beve::Complex { re: 1.0, im: 2.0 },
         beve::Complex { re: -3.0, im: 4.5 },
     ]);

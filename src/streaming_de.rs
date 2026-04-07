@@ -382,10 +382,12 @@ impl<R: Read> StreamingDeserializer<R> {
                     EXT_COMPLEX => {
                         let ch = self.read_byte()?;
                         let is_array = (ch & 0x01) != 0;
+                        let class = (ch >> 3) & 0x03;
                         let bc = (ch >> 5) & 0x07;
                         if !is_array {
                             visitor.visit_seq(ComplexPairStreaming {
                                 de: self,
+                                class,
                                 byte_code: bc,
                                 state: 0,
                             })
@@ -394,6 +396,7 @@ impl<R: Read> StreamingDeserializer<R> {
                             visitor.visit_seq(SeqAccessComplexStreaming {
                                 de: self,
                                 remaining: len,
+                                class,
                                 byte_code: bc,
                             })
                         }
@@ -904,6 +907,7 @@ impl<'de> de::EnumAccess<'de> for EnumStrAccessOwned {
 
 struct ComplexPairStreaming<'a, R: Read> {
     de: &'a mut StreamingDeserializer<R>,
+    class: u8,
     byte_code: u8,
     state: u8,
 }
@@ -917,10 +921,15 @@ impl<'de, 'a, R: Read> de::SeqAccess<'de> for ComplexPairStreaming<'a, R> {
             return Ok(None);
         }
         self.state += 1;
-        let deser = match self.byte_code {
-            2 => NumDe::F32(self.de.parse_f32()?),
-            3 => NumDe::F64(self.de.parse_f64()?),
-            _ => return Err(Error::Unsupported("unsupported complex float width")),
+        let deser = match self.class {
+            NUM_FLOAT => match self.byte_code {
+                2 => NumDe::F32(self.de.parse_f32()?),
+                3 => NumDe::F64(self.de.parse_f64()?),
+                _ => return Err(Error::Unsupported("unsupported complex float width")),
+            },
+            NUM_SIGNED => NumDe::Signed(self.de.parse_signed(self.byte_code)?),
+            NUM_UNSIGNED => NumDe::Unsigned(self.de.parse_unsigned(self.byte_code)?),
+            _ => return Err(Error::Unsupported("unsupported complex number class")),
         };
         seed.deserialize(deser).map(Some)
     }
@@ -932,6 +941,7 @@ impl<'de, 'a, R: Read> de::SeqAccess<'de> for ComplexPairStreaming<'a, R> {
 struct SeqAccessComplexStreaming<'a, R: Read> {
     de: &'a mut StreamingDeserializer<R>,
     remaining: usize,
+    class: u8,
     byte_code: u8,
 }
 impl<'de, 'a, R: Read> de::SeqAccess<'de> for SeqAccessComplexStreaming<'a, R> {
@@ -946,6 +956,7 @@ impl<'de, 'a, R: Read> de::SeqAccess<'de> for SeqAccessComplexStreaming<'a, R> {
         self.remaining -= 1;
         seed.deserialize(ComplexElemDeStreaming {
             de: self.de,
+            class: self.class,
             byte_code: self.byte_code,
         })
         .map(Some)
@@ -957,6 +968,7 @@ impl<'de, 'a, R: Read> de::SeqAccess<'de> for SeqAccessComplexStreaming<'a, R> {
 
 struct ComplexElemDeStreaming<'a, R: Read> {
     de: &'a mut StreamingDeserializer<R>,
+    class: u8,
     byte_code: u8,
 }
 impl<'de, 'a, R: Read> serde::Deserializer<'de> for ComplexElemDeStreaming<'a, R> {
@@ -964,6 +976,7 @@ impl<'de, 'a, R: Read> serde::Deserializer<'de> for ComplexElemDeStreaming<'a, R
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         visitor.visit_seq(ComplexPairStreaming {
             de: self.de,
+            class: self.class,
             byte_code: self.byte_code,
             state: 0,
         })

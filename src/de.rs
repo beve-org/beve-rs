@@ -488,17 +488,13 @@ impl<'de> Deserializer<'de> {
                     EXT_COMPLEX => {
                         let ch = self.read_byte()?; // complex header
                         let is_array = (ch & 0x01) != 0;
-                        let ty = (ch >> 3) & 0x03;
+                        let class = (ch >> 3) & 0x03;
                         let bc = (ch >> 5) & 0x07;
-                        if ty != NUM_FLOAT {
-                            return Err(Error::Unsupported(
-                                "only floating point complex supported",
-                            ));
-                        }
                         if !is_array {
                             // single complex -> present as 2-element sequence
                             visitor.visit_seq(ComplexPairAccess {
                                 de: self,
+                                class,
                                 byte_code: bc,
                                 state: 0,
                             })
@@ -507,6 +503,7 @@ impl<'de> Deserializer<'de> {
                             visitor.visit_seq(SeqAccessComplexArray {
                                 de: self,
                                 remaining: len,
+                                class,
                                 byte_code: bc,
                             })
                         }
@@ -1016,6 +1013,7 @@ impl<'de, 'a> de::MapAccess<'de> for MapAccessString<'a, 'de> {
 
 struct ComplexPairAccess<'a, 'de> {
     de: &'a mut Deserializer<'de>,
+    class: u8,
     byte_code: u8,
     state: u8,
 }
@@ -1029,16 +1027,15 @@ impl<'de, 'a> de::SeqAccess<'de> for ComplexPairAccess<'a, 'de> {
             return Ok(None);
         }
         self.state += 1;
-        let deser = match self.byte_code {
-            2 => {
-                let v = self.de.parse_f32()?;
-                NumDe::F32(v)
-            }
-            3 => {
-                let v = self.de.parse_f64()?;
-                NumDe::F64(v)
-            }
-            _ => return Err(Error::Unsupported("unsupported complex float width")),
+        let deser = match self.class {
+            NUM_FLOAT => match self.byte_code {
+                2 => NumDe::F32(self.de.parse_f32()?),
+                3 => NumDe::F64(self.de.parse_f64()?),
+                _ => return Err(Error::Unsupported("unsupported complex float width")),
+            },
+            NUM_SIGNED => NumDe::Signed(self.de.parse_signed(self.byte_code)?),
+            NUM_UNSIGNED => NumDe::Unsigned(self.de.parse_unsigned(self.byte_code)?),
+            _ => return Err(Error::Unsupported("unsupported complex number class")),
         };
         seed.deserialize(deser).map(Some)
     }
@@ -1050,6 +1047,7 @@ impl<'de, 'a> de::SeqAccess<'de> for ComplexPairAccess<'a, 'de> {
 struct SeqAccessComplexArray<'a, 'de> {
     de: &'a mut Deserializer<'de>,
     remaining: usize,
+    class: u8,
     byte_code: u8,
 }
 impl<'de, 'a> de::SeqAccess<'de> for SeqAccessComplexArray<'a, 'de> {
@@ -1064,6 +1062,7 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessComplexArray<'a, 'de> {
         self.remaining -= 1;
         let delem = ComplexElemDe {
             de: self.de,
+            class: self.class,
             byte_code: self.byte_code,
         };
         seed.deserialize(delem).map(Some)
@@ -1075,6 +1074,7 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessComplexArray<'a, 'de> {
 
 struct ComplexElemDe<'a, 'de> {
     de: &'a mut Deserializer<'de>,
+    class: u8,
     byte_code: u8,
 }
 impl<'de, 'a> de::Deserializer<'de> for ComplexElemDe<'a, 'de> {
@@ -1082,6 +1082,7 @@ impl<'de, 'a> de::Deserializer<'de> for ComplexElemDe<'a, 'de> {
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         visitor.visit_seq(ComplexPairAccess {
             de: self.de,
+            class: self.class,
             byte_code: self.byte_code,
             state: 0,
         })

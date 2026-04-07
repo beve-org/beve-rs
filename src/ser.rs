@@ -337,7 +337,7 @@ impl ser::Serializer for BytesExtractor {
 }
 
 use crate::error::{Error, Result};
-use crate::ext::{NT_COMPLEX32, NT_COMPLEX64, NT_RAW_VALUE};
+use crate::ext::{NT_COMPLEX, NT_RAW_VALUE};
 use crate::header::*;
 use crate::size::{encode_size_to_array, read_size, write_size};
 
@@ -570,17 +570,22 @@ impl Serializer {
     }
 
     #[inline]
-    fn complex_header(byte_code: u8, is_array: bool) -> u8 {
-        ((byte_code & 0b111) << 5) | ((NUM_FLOAT & 0b11) << 3) | if is_array { 1 } else { 0 }
+    fn complex_header(class: u8, byte_code: u8, is_array: bool) -> u8 {
+        ((byte_code & 0b111) << 5) | ((class & 0b11) << 3) | if is_array { 1 } else { 0 }
     }
 
-    fn write_complex_single_payload(&mut self, byte_code: u8, payload: &[u8]) -> Result<()> {
+    fn write_complex_single_payload(
+        &mut self,
+        class: u8,
+        byte_code: u8,
+        payload: &[u8],
+    ) -> Result<()> {
         let elem_bytes = (1usize << byte_code) * 2;
         if payload.len() != elem_bytes {
             return Err(Error::Mismatch("invalid complex payload size"));
         }
         self.push(make_extension_header(EXT_COMPLEX));
-        self.push(Self::complex_header(byte_code, false));
+        self.push(Self::complex_header(class, byte_code, false));
         self.extend_from_slice(payload);
         Ok(())
     }
@@ -813,13 +818,12 @@ impl<'a> ser::Serializer for &'a mut Serializer {
                 self.write_float16_bits(bits);
                 Ok(())
             }
-            NT_COMPLEX32 => {
+            NT_COMPLEX => {
                 let payload = value.serialize(BytesExtractor)?;
-                self.write_complex_single_payload(2, &payload)
-            }
-            NT_COMPLEX64 => {
-                let payload = value.serialize(BytesExtractor)?;
-                self.write_complex_single_payload(3, &payload)
+                if payload.len() < 2 {
+                    return Err(Error::Mismatch("invalid complex payload"));
+                }
+                self.write_complex_single_payload(payload[0], payload[1], &payload[2..])
             }
             NT_RAW_VALUE => {
                 let raw = value.serialize(BytesExtractor)?;
@@ -847,7 +851,7 @@ enum SeqMode {
     TypedFloat { byte_code: u8 },
     TypedBool { byte_acc: u8, bit_idx: u8 },
     TypedString,
-    TypedComplex { byte_code: u8 },
+    TypedComplex { class: u8, byte_code: u8 },
 }
 
 pub struct SeqSerializer<'a> {
@@ -1156,8 +1160,8 @@ impl<'a> SeqSerializer<'a> {
     }
 
     fn convert_typed_complex_to_generic(&mut self) -> Result<()> {
-        let byte_code = match self.mode {
-            SeqMode::TypedComplex { byte_code } => byte_code,
+        let (class, byte_code) = match self.mode {
+            SeqMode::TypedComplex { class, byte_code } => (class, byte_code),
             _ => return Ok(()),
         };
         let elem_bytes = (1usize << byte_code) * 2;
@@ -1183,7 +1187,8 @@ impl<'a> SeqSerializer<'a> {
         self.start_generic_if_needed();
         for chunk in data.chunks(elem_bytes) {
             self.ser.push(make_extension_header(EXT_COMPLEX));
-            self.ser.push(Serializer::complex_header(byte_code, false));
+            self.ser
+                .push(Serializer::complex_header(class, byte_code, false));
             self.ser.extend_from_slice(chunk);
             self.count += 1;
         }
@@ -1370,13 +1375,12 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
                 let bytes = bits.to_le_bytes();
                 self.serialize_float_by(bytes.as_slice(), 1)
             }
-            NT_COMPLEX32 => {
+            NT_COMPLEX => {
                 let payload = value.serialize(BytesExtractor)?;
-                self.serialize_complex_payload(2, &payload)
-            }
-            NT_COMPLEX64 => {
-                let payload = value.serialize(BytesExtractor)?;
-                self.serialize_complex_payload(3, &payload)
+                if payload.len() < 2 {
+                    return Err(Error::Mismatch("invalid complex payload"));
+                }
+                self.serialize_complex_payload(payload[0], payload[1], &payload[2..])
             }
             NT_RAW_VALUE => {
                 let raw = value.serialize(BytesExtractor)?;
@@ -1644,7 +1648,12 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
         Ok(())
     }
 
-    fn serialize_complex_payload(&mut self, byte_code: u8, payload: &[u8]) -> Result<()> {
+    fn serialize_complex_payload(
+        &mut self,
+        class: u8,
+        byte_code: u8,
+        payload: &[u8],
+    ) -> Result<()> {
         let elem_bytes = (1usize << byte_code) * 2;
         if payload.len() != elem_bytes {
             return Err(Error::Mismatch("invalid complex payload size"));
@@ -1657,26 +1666,29 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
                     self.seq.ser.push(make_extension_header(EXT_COMPLEX));
                     self.seq
                         .ser
-                        .push(Serializer::complex_header(byte_code, true));
+                        .push(Serializer::complex_header(class, byte_code, true));
                     write_size(n as u64, &mut self.seq.ser.buf);
-                    self.seq.mode = SeqMode::TypedComplex { byte_code };
+                    self.seq.mode = SeqMode::TypedComplex { class, byte_code };
                 }
                 None => {
                     self.seq.start_pos = self.seq.ser.buf.len();
                     self.seq.ser.push(make_extension_header(EXT_COMPLEX));
                     self.seq
                         .ser
-                        .push(Serializer::complex_header(byte_code, true));
+                        .push(Serializer::complex_header(class, byte_code, true));
                     self.seq.patch = Some(self.seq.ser.reserve_size_patch());
-                    self.seq.mode = SeqMode::TypedComplex { byte_code };
+                    self.seq.mode = SeqMode::TypedComplex { class, byte_code };
                 }
             },
-            SeqMode::TypedComplex { byte_code: bc, .. } if bc == byte_code => {}
+            SeqMode::TypedComplex {
+                class: c,
+                byte_code: bc,
+            } if c == class && bc == byte_code => {}
             _ => {
                 self.seq.ensure_generic_mode()?;
                 self.seq
                     .ser
-                    .write_complex_single_payload(byte_code, payload)?;
+                    .write_complex_single_payload(class, byte_code, payload)?;
                 self.seq.count += 1;
                 return Ok(());
             }

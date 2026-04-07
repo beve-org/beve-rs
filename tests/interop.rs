@@ -1,6 +1,6 @@
 #![deny(warnings)]
 
-use beve::{Complex, to_vec_complex64, to_vec_complex64_slice};
+use beve::{Complex, to_vec, to_vec_complex_slice};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -198,13 +198,17 @@ fn interop_complex_numbers() {
 
     // Rust -> Glaze
     if glaze_bin().is_some() {
-        let bytes = to_vec_complex64(1.5, -2.25);
+        let bytes = to_vec(&Complex {
+            re: 1.5f64,
+            im: -2.25,
+        })
+        .unwrap();
         let (code, out, err) = run_glaze(&["read", "cplx64"], Some(&bytes)).unwrap();
         assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
         assert_eq!(String::from_utf8_lossy(&out), "OK\n");
 
         let vec = vec![Complex { re: 1.0, im: 2.0 }, Complex { re: -3.0, im: 4.5 }];
-        let bytes = to_vec_complex64_slice(&vec);
+        let bytes = to_vec_complex_slice(&vec);
         let (code, out, err) = run_glaze(&["read", "vcplx64"], Some(&bytes)).unwrap();
         assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
         assert_eq!(String::from_utf8_lossy(&out), "OK\n");

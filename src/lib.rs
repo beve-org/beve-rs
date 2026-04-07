@@ -58,12 +58,12 @@ pub use crate::de::{Deserializer, from_slice, validate_slice};
 pub use crate::error::{Error, Result};
 pub use crate::ext::{
     Complex, ComplexSlice, DecodedMatrix, Matrix, MatrixDecodeMode, MatrixLayout, MatrixOwned,
-    RawMatrix, decode_matrix_slice,
+    RawMatrix, complex, decode_matrix_slice,
 };
 pub use crate::fast::{
-    BeveTypedSlice, to_vec_bool_slice, to_vec_complex32, to_vec_complex32_slice, to_vec_complex64,
-    to_vec_complex64_slice, to_vec_str_slice, to_vec_string_slice, to_vec_typed_slice,
-    write_bool_slice, write_str_slice, write_string_slice, write_typed_slice,
+    BeveTypedSlice, to_vec_bool_slice, to_vec_complex_slice, to_vec_str_slice, to_vec_string_slice,
+    to_vec_typed_slice, write_bool_slice, write_complex_slice, write_str_slice, write_string_slice,
+    write_typed_slice,
 };
 pub use crate::field::{from_field, from_field_slice, skip_value};
 pub use crate::json::{

@@ -485,7 +485,10 @@ fn malformed_inputs_are_rejected() {
         .to_string();
     assert!(err.contains("invalid utf-8 in key"));
 
-    assert!(beve::validate_slice(&[0x1e, 0x28, 0x00, 0x00, 0x00, 0x00]).is_err());
+    // 0x1e=EXT_COMPLEX, 0x28=signed i16 single complex, 4 data bytes → valid complex<i16>
+    assert!(beve::validate_slice(&[0x1e, 0x28, 0x00, 0x00, 0x00, 0x00]).is_ok());
+    // class=3 is invalid (only 0=float, 1=signed, 2=unsigned are valid)
+    assert!(beve::validate_slice(&[0x1e, 0x18, 0x00, 0x00]).is_err());
 
     let mut bad_matrix =
         beve::fast::to_vec_matrix_f64(beve::fast::MatrixLayoutFast::Left, &[2], &[1.0, 2.0]);

@@ -1055,6 +1055,82 @@ fn streaming_full_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
+// Complex number streaming roundtrips
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_complex_float_roundtrip() {
+    let values = vec![
+        beve::Complex {
+            re: 1.0f32,
+            im: -2.5,
+        },
+        beve::Complex { re: 3.0, im: 0.0 },
+    ];
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &values).unwrap();
+    let back: Vec<beve::Complex<f32>> = beve::from_reader_streaming(Cursor::new(&buf)).unwrap();
+    assert_eq!(back, values);
+}
+
+#[test]
+fn streaming_complex_integer_roundtrip() {
+    // Single integer complex
+    let c = beve::Complex {
+        re: -42i32,
+        im: 100,
+    };
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &c).unwrap();
+    let back: beve::Complex<i32> = beve::from_reader_streaming(Cursor::new(&buf)).unwrap();
+    assert_eq!(back, c);
+
+    // Vec of integer complex
+    let values = vec![
+        beve::Complex { re: 1i16, im: -2 },
+        beve::Complex { re: 300, im: -400 },
+        beve::Complex { re: 0, im: 0 },
+    ];
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &values).unwrap();
+    let back: Vec<beve::Complex<i16>> = beve::from_reader_streaming(Cursor::new(&buf)).unwrap();
+    assert_eq!(back, values);
+
+    // Unsigned complex
+    let values = vec![
+        beve::Complex { re: 10u8, im: 20 },
+        beve::Complex { re: 255, im: 0 },
+    ];
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &values).unwrap();
+    let back: Vec<beve::Complex<u8>> = beve::from_reader_streaming(Cursor::new(&buf)).unwrap();
+    assert_eq!(back, values);
+}
+
+#[test]
+fn streaming_complex_in_struct_roundtrip() {
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Payload {
+        tag: String,
+        sample: beve::Complex<i32>,
+        data: Vec<beve::Complex<u16>>,
+    }
+
+    let p = Payload {
+        tag: "test".to_string(),
+        sample: beve::Complex { re: -1, im: 2 },
+        data: vec![
+            beve::Complex { re: 100, im: 200 },
+            beve::Complex { re: 0, im: 65535 },
+        ],
+    };
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &p).unwrap();
+    let back: Payload = beve::from_reader_streaming(Cursor::new(&buf)).unwrap();
+    assert_eq!(back, p);
+}
+
+// ---------------------------------------------------------------------------
 // EOF handling
 // ---------------------------------------------------------------------------
 

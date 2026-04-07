@@ -206,11 +206,12 @@ fn integer_keys() -> beve::Result<()> {
 ```
 
 ## Complex Numbers and Matrices
-The crate exposes helpers for common scientific types:
+`Complex<T>` supports all numeric scalar types (`f32`, `f64`, `i8`–`i128`, `u8`–`u128`) and works naturally in structs alongside other fields:
 ```rust
 use beve::{Complex, Matrix, MatrixLayout};
 
 fn encode_science() -> beve::Result<()> {
+    // Float complex
     let complex = [
         Complex { re: 1.0f64, im: -0.5 },
         Complex { re: 0.0, im: 2.0 },
@@ -218,6 +219,12 @@ fn encode_science() -> beve::Result<()> {
     let dense = beve::to_vec_complex64_slice(&complex);
     let roundtrip: Vec<Complex<f64>> = beve::from_slice(&dense)?;
     assert_eq!(roundtrip, complex);
+
+    // Integer complex
+    let iq = [Complex { re: 1i16, im: -2 }, Complex { re: 3, im: 4 }];
+    let bytes = beve::to_vec_complex_slice(&iq);
+    let back: Vec<Complex<i16>> = beve::from_slice(&bytes)?;
+    assert_eq!(back, iq);
 
     let matrix = Matrix {
         layout: MatrixLayout::Right,
@@ -229,7 +236,9 @@ fn encode_science() -> beve::Result<()> {
     Ok(())
 }
 ```
-`Matrix` and `MatrixOwned<T>` use the BEVE matrix extension for supported element types (`bool`, numeric scalars, and `Complex<f32/f64>`). For unsupported element types, serialization falls back to a `{ layout, extents, value }` map.
+For foreign complex types (e.g. `num_complex::Complex`), use `#[serde(serialize_with = "beve::complex::f32_array")]` and similar helpers — see the [complex docs](docs/complex-and-matrices.md) for details.
+
+`Matrix` and `MatrixOwned<T>` use the BEVE matrix extension for supported element types (`bool`, numeric scalars, and `Complex<T>`). For unsupported element types, serialization falls back to a `{ layout, extents, value }` map.
 
 ## MATLAB / `.mat` Export
 Enable the optional `mat` feature to convert BEVE payloads directly into MATLAB v7.3 MAT files:
@@ -354,6 +363,7 @@ Custom serializer options (e.g. string enum encoding) are supported via `to_writ
 
 ## Supported Data Model
 - Scalars: signed/unsigned integers up to 128-bit, f32/f64, null, bool, and UTF-8 strings
+- Complex numbers: `Complex<T>` for all numeric scalar types, with typed complex arrays
 - Collections: typed arrays (numeric, bool, string), generic sequences, maps with string or integer keys, and nested structs/enums
 - Streaming: `to_writer_streaming` / `from_reader_streaming` for zero-buffered I/O; `to_writer` and `from_reader` for buffered workflows
 - Interop: payloads align with `reference/glaze` and `reference/BEVE.jl`; spec resides in `reference/beve/README.md` and the upstream [BEVE specification](https://github.com/beve-org/beve)

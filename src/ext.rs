@@ -1,6 +1,6 @@
 use crate::de::from_slice;
 use crate::fast::{
-    to_vec_complex32_slice, to_vec_complex64_slice, write_bool_slice, write_typed_slice,
+    BeveTypedSlice, to_vec_complex_slice, write_bool_slice, write_typed_slice,
 };
 use crate::header::{ARRAY_UNSIGNED, EXT_MATRICES, TYPE_TYPED_ARRAY, make_extension_header};
 use crate::size::write_size;
@@ -10,8 +10,7 @@ use half::{bf16, f16};
 use serde::{Deserialize, Serialize, de, ser};
 
 pub(crate) const NT_RAW_VALUE: &str = "__beve_raw_value";
-pub(crate) const NT_COMPLEX32: &str = "__beve_complex32";
-pub(crate) const NT_COMPLEX64: &str = "__beve_complex64";
+pub(crate) const NT_COMPLEX: &str = "__beve_complex";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatrixDecodeMode {
@@ -47,23 +46,40 @@ pub struct Complex<T> {
     pub im: T,
 }
 
-impl Serialize for Complex<f32> {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> core::result::Result<S::Ok, S::Error> {
-        let mut bytes = [0u8; 8];
-        bytes[..4].copy_from_slice(&self.re.to_le_bytes());
-        bytes[4..].copy_from_slice(&self.im.to_le_bytes());
-        s.serialize_newtype_struct(NT_COMPLEX32, &RawBytes(&bytes))
-    }
+/// Generates `Serialize` for `Complex<$scalar>` using a single `NT_COMPLEX` newtype.
+/// Payload layout: `[class: u8, byte_code: u8, re_le_bytes..., im_le_bytes...]`
+macro_rules! impl_complex_serialize {
+    ($scalar:ty) => {
+        impl Serialize for Complex<$scalar> {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                s: S,
+            ) -> core::result::Result<S::Ok, S::Error> {
+                const ELEM: usize = core::mem::size_of::<$scalar>();
+                const TOTAL: usize = 2 + ELEM * 2;
+                let mut bytes = [0u8; TOTAL];
+                bytes[0] = <$scalar as BeveTypedSlice>::CLASS;
+                bytes[1] = <$scalar as BeveTypedSlice>::BYTE_CODE;
+                bytes[2..2 + ELEM].copy_from_slice(&self.re.to_le_bytes());
+                bytes[2 + ELEM..TOTAL].copy_from_slice(&self.im.to_le_bytes());
+                s.serialize_newtype_struct(NT_COMPLEX, &RawBytes(&bytes))
+            }
+        }
+    };
 }
 
-impl Serialize for Complex<f64> {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> core::result::Result<S::Ok, S::Error> {
-        let mut bytes = [0u8; 16];
-        bytes[..8].copy_from_slice(&self.re.to_le_bytes());
-        bytes[8..].copy_from_slice(&self.im.to_le_bytes());
-        s.serialize_newtype_struct(NT_COMPLEX64, &RawBytes(&bytes))
-    }
-}
+impl_complex_serialize!(f32);
+impl_complex_serialize!(f64);
+impl_complex_serialize!(i8);
+impl_complex_serialize!(i16);
+impl_complex_serialize!(i32);
+impl_complex_serialize!(i64);
+impl_complex_serialize!(i128);
+impl_complex_serialize!(u8);
+impl_complex_serialize!(u16);
+impl_complex_serialize!(u32);
+impl_complex_serialize!(u64);
+impl_complex_serialize!(u128);
 
 impl<'de, T> serde::Deserialize<'de> for Complex<T>
 where
@@ -98,24 +114,96 @@ where
 
 pub struct ComplexSlice<'a, T>(pub &'a [Complex<T>]);
 
-impl<'a> Serialize for ComplexSlice<'a, f32> {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> core::result::Result<S::Ok, S::Error> {
-        let mut seq = s.serialize_seq(Some(self.0.len()))?;
-        for c in self.0 {
-            ser::SerializeSeq::serialize_element(&mut seq, c)?;
+macro_rules! impl_complex_slice_serialize {
+    ($scalar:ty) => {
+        impl<'a> Serialize for ComplexSlice<'a, $scalar> {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                s: S,
+            ) -> core::result::Result<S::Ok, S::Error> {
+                let mut seq = s.serialize_seq(Some(self.0.len()))?;
+                for c in self.0 {
+                    ser::SerializeSeq::serialize_element(&mut seq, c)?;
+                }
+                ser::SerializeSeq::end(seq)
+            }
         }
-        ser::SerializeSeq::end(seq)
-    }
+    };
 }
 
-impl<'a> Serialize for ComplexSlice<'a, f64> {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> core::result::Result<S::Ok, S::Error> {
-        let mut seq = s.serialize_seq(Some(self.0.len()))?;
-        for c in self.0 {
-            ser::SerializeSeq::serialize_element(&mut seq, c)?;
-        }
-        ser::SerializeSeq::end(seq)
+impl_complex_slice_serialize!(f32);
+impl_complex_slice_serialize!(f64);
+impl_complex_slice_serialize!(i8);
+impl_complex_slice_serialize!(i16);
+impl_complex_slice_serialize!(i32);
+impl_complex_slice_serialize!(i64);
+impl_complex_slice_serialize!(i128);
+impl_complex_slice_serialize!(u8);
+impl_complex_slice_serialize!(u16);
+impl_complex_slice_serialize!(u32);
+impl_complex_slice_serialize!(u64);
+impl_complex_slice_serialize!(u128);
+
+/// Serde `serialize_with` helpers for foreign complex types (e.g. `num_complex::Complex`)
+/// that are layout-compatible with `beve::Complex<T>` (two contiguous `T` fields: re then im).
+///
+/// These are only needed for foreign types. `beve::Complex<T>` serializes correctly
+/// without any annotation.
+///
+/// Available helpers: `f32_array`, `f64_array`, `i8_array`, `i16_array`, `i32_array`,
+/// `i64_array`, `i128_array`, `u8_array`, `u16_array`, `u32_array`, `u64_array`, `u128_array`.
+///
+/// # Example
+/// ```ignore
+/// #[serde(serialize_with = "beve::complex::f32_array")]
+/// pub buffer: Vec<num_complex::Complex<f32>>,
+/// ```
+pub mod complex {
+    use super::*;
+
+    macro_rules! complex_array_fn {
+        ($name:ident, $scalar:ty) => {
+            pub fn $name<S: serde::Serializer, T>(
+                data: &Vec<T>,
+                serializer: S,
+            ) -> core::result::Result<S::Ok, S::Error> {
+                assert_eq!(
+                    core::mem::size_of::<T>(),
+                    core::mem::size_of::<Complex<$scalar>>(),
+                    concat!("beve::complex::", stringify!($name), ": type size mismatch")
+                );
+                assert_eq!(
+                    core::mem::align_of::<T>(),
+                    core::mem::align_of::<Complex<$scalar>>(),
+                    concat!(
+                        "beve::complex::",
+                        stringify!($name),
+                        ": type alignment mismatch"
+                    )
+                );
+                let slice: &[Complex<$scalar>] = unsafe {
+                    core::slice::from_raw_parts(
+                        data.as_ptr() as *const Complex<$scalar>,
+                        data.len(),
+                    )
+                };
+                ComplexSlice(slice).serialize(serializer)
+            }
+        };
     }
+
+    complex_array_fn!(f32_array, f32);
+    complex_array_fn!(f64_array, f64);
+    complex_array_fn!(i8_array, i8);
+    complex_array_fn!(i16_array, i16);
+    complex_array_fn!(i32_array, i32);
+    complex_array_fn!(i64_array, i64);
+    complex_array_fn!(i128_array, i128);
+    complex_array_fn!(u8_array, u8);
+    complex_array_fn!(u16_array, u16);
+    complex_array_fn!(u32_array, u32);
+    complex_array_fn!(u64_array, u64);
+    complex_array_fn!(u128_array, u128);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -350,16 +438,28 @@ fn try_encode_matrix_extension<T: Serialize + 'static>(
         return Ok(Some(out));
     }
 
-    if TypeId::of::<T>() == TypeId::of::<Complex<f32>>() {
-        let typed = unsafe { &*(data as *const [T] as *const [Complex<f32>]) };
-        out.extend_from_slice(&to_vec_complex32_slice(typed));
-        return Ok(Some(out));
+    macro_rules! write_complex_value {
+        ($scalar:ty) => {
+            if TypeId::of::<T>() == TypeId::of::<Complex<$scalar>>() {
+                let typed = unsafe { &*(data as *const [T] as *const [Complex<$scalar>]) };
+                out.extend_from_slice(&to_vec_complex_slice(typed));
+                return Ok(Some(out));
+            }
+        };
     }
-    if TypeId::of::<T>() == TypeId::of::<Complex<f64>>() {
-        let typed = unsafe { &*(data as *const [T] as *const [Complex<f64>]) };
-        out.extend_from_slice(&to_vec_complex64_slice(typed));
-        return Ok(Some(out));
-    }
+
+    write_complex_value!(f32);
+    write_complex_value!(f64);
+    write_complex_value!(i8);
+    write_complex_value!(i16);
+    write_complex_value!(i32);
+    write_complex_value!(i64);
+    write_complex_value!(i128);
+    write_complex_value!(u8);
+    write_complex_value!(u16);
+    write_complex_value!(u32);
+    write_complex_value!(u64);
+    write_complex_value!(u128);
 
     Ok(None)
 }

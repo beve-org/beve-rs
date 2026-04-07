@@ -202,16 +202,50 @@ pub fn to_vec_string_slice(slice: &[String]) -> Vec<u8> {
 // -------- Complex numbers (extension) --------
 
 #[inline]
-fn write_complex_header(out: &mut Vec<u8>, is_array: bool, byte_code: u8) {
+fn write_complex_header(out: &mut Vec<u8>, is_array: bool, class: u8, byte_code: u8) {
     // Extension header + complex header
     out.push(((EXT_COMPLEX & 0x1f) << 3) | (TYPE_EXTENSION & 0b111));
-    let h = ((byte_code & 0b111) << 5) | ((NUM_FLOAT & 0b11) << 3) | (if is_array { 1 } else { 0 });
+    let h = ((byte_code & 0b111) << 5) | ((class & 0b11) << 3) | (if is_array { 1 } else { 0 });
     out.push(h);
+}
+
+/// Write a complex array for any scalar type implementing `BeveTypedSlice`.
+pub fn write_complex_slice<T: BeveTypedSlice>(out: &mut Vec<u8>, slice: &[Complex<T>]) {
+    let payload = core::mem::size_of_val(slice);
+    out.reserve(2 + 8 + payload);
+    write_complex_header(out, true, T::CLASS, T::BYTE_CODE);
+    write_size(slice.len() as u64, out);
+    if !slice.is_empty() {
+        #[cfg(target_endian = "little")]
+        {
+            let start = out.len();
+            unsafe {
+                let dst = out.as_mut_ptr().add(start);
+                ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, dst, payload);
+                out.set_len(start + payload);
+            }
+        }
+        #[cfg(not(target_endian = "little"))]
+        {
+            for c in slice {
+                T::write_one_le(&c.re, out);
+                T::write_one_le(&c.im, out);
+            }
+        }
+    }
+}
+
+/// Encode a complex slice to a new Vec<u8> (BEVE complex extension array).
+pub fn to_vec_complex_slice<T: BeveTypedSlice>(slice: &[Complex<T>]) -> Vec<u8> {
+    let payload = core::mem::size_of_val(slice);
+    let mut out = Vec::with_capacity(2 + 8 + payload);
+    write_complex_slice(&mut out, slice);
+    out
 }
 
 pub fn to_vec_complex64(re: f64, im: f64) -> Vec<u8> {
     let mut out = Vec::new();
-    write_complex_header(&mut out, false, 3);
+    write_complex_header(&mut out, false, ARRAY_FLOAT, 3);
     out.extend_from_slice(&re.to_le_bytes());
     out.extend_from_slice(&im.to_le_bytes());
     out
@@ -219,64 +253,18 @@ pub fn to_vec_complex64(re: f64, im: f64) -> Vec<u8> {
 
 pub fn to_vec_complex32(re: f32, im: f32) -> Vec<u8> {
     let mut out = Vec::new();
-    write_complex_header(&mut out, false, 2);
+    write_complex_header(&mut out, false, ARRAY_FLOAT, 2);
     out.extend_from_slice(&re.to_le_bytes());
     out.extend_from_slice(&im.to_le_bytes());
     out
 }
 
 pub fn to_vec_complex64_slice(slice: &[Complex<f64>]) -> Vec<u8> {
-    let payload = core::mem::size_of_val(slice);
-    let mut out = Vec::with_capacity(2 + 8 + payload);
-    write_complex_header(&mut out, true, 3);
-    write_size(slice.len() as u64, &mut out);
-    if !slice.is_empty() {
-        #[cfg(target_endian = "little")]
-        {
-            let start = out.len();
-            unsafe {
-                let dst = out.as_mut_ptr().add(start);
-                ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, dst, payload);
-                out.set_len(start + payload);
-            }
-        }
-        #[cfg(not(target_endian = "little"))]
-        {
-            out.reserve(payload);
-            for c in slice {
-                out.extend_from_slice(&c.re.to_le_bytes());
-                out.extend_from_slice(&c.im.to_le_bytes());
-            }
-        }
-    }
-    out
+    to_vec_complex_slice(slice)
 }
 
 pub fn to_vec_complex32_slice(slice: &[Complex<f32>]) -> Vec<u8> {
-    let payload = core::mem::size_of_val(slice);
-    let mut out = Vec::with_capacity(2 + 8 + payload);
-    write_complex_header(&mut out, true, 2);
-    write_size(slice.len() as u64, &mut out);
-    if !slice.is_empty() {
-        #[cfg(target_endian = "little")]
-        {
-            let start = out.len();
-            unsafe {
-                let dst = out.as_mut_ptr().add(start);
-                ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, dst, payload);
-                out.set_len(start + payload);
-            }
-        }
-        #[cfg(not(target_endian = "little"))]
-        {
-            out.reserve(payload);
-            for c in slice {
-                out.extend_from_slice(&c.re.to_le_bytes());
-                out.extend_from_slice(&c.im.to_le_bytes());
-            }
-        }
-    }
-    out
+    to_vec_complex_slice(slice)
 }
 
 // -------- Matrices (extension) --------

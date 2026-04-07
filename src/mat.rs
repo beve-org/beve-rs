@@ -567,9 +567,15 @@ impl MatWriter {
         path: &str,
     ) -> Result<MatNode> {
         let ComplexHeader {
+            class,
             is_array,
             byte_code,
         } = reader.read_complex_header()?;
+        if class != 0 {
+            return Err(Error::msg(format!(
+                "only floating-point complex supported in MAT conversion at {path}"
+            )));
+        }
         if is_array {
             let len = reader.read_size()?;
             let matlab_dims = vector_dims(len, self.options.one_dimensional_mode);
@@ -674,6 +680,11 @@ impl MatWriter {
         extents: &[usize],
     ) -> Result<MatNode> {
         let info = reader.read_complex_header()?;
+        if info.class != 0 {
+            return Err(Error::msg(format!(
+                "only floating-point complex supported in MAT matrix conversion at {path}"
+            )));
+        }
         if !info.is_array {
             return Err(Error::msg(format!(
                 "matrix complex payload must be an array at {path}"

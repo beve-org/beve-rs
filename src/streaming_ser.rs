@@ -9,7 +9,7 @@ use std::io::Write;
 use serde::ser::{self, Serialize};
 
 use crate::error::{Error, Result};
-use crate::ext::{NT_COMPLEX32, NT_COMPLEX64, NT_RAW_VALUE};
+use crate::ext::{NT_COMPLEX, NT_RAW_VALUE};
 use crate::header::*;
 use crate::ser::{BytesExtractor, EnumEncoding, SerializerOptions, U16Extractor};
 use crate::size::encode_size_to_array;
@@ -31,8 +31,8 @@ fn code_for_bytes(n: usize) -> u8 {
 }
 
 #[inline]
-fn complex_header(byte_code: u8, is_array: bool) -> u8 {
-    ((byte_code & 0b111) << 5) | ((NUM_FLOAT & 0b11) << 3) | u8::from(is_array)
+fn complex_header(class: u8, byte_code: u8, is_array: bool) -> u8 {
+    ((byte_code & 0b111) << 5) | ((class & 0b11) << 3) | u8::from(is_array)
 }
 
 // ---------------------------------------------------------------------------
@@ -160,13 +160,18 @@ impl<W: Write> StreamingSerializer<W> {
         self.write_all(bytes)
     }
 
-    fn write_complex_single_payload(&mut self, byte_code: u8, payload: &[u8]) -> Result<()> {
+    fn write_complex_single_payload(
+        &mut self,
+        class: u8,
+        byte_code: u8,
+        payload: &[u8],
+    ) -> Result<()> {
         let elem_bytes = (1usize << byte_code) * 2;
         if payload.len() != elem_bytes {
             return Err(Error::Mismatch("invalid complex payload size"));
         }
         self.write_byte(make_extension_header(EXT_COMPLEX))?;
-        self.write_byte(complex_header(byte_code, false))?;
+        self.write_byte(complex_header(class, byte_code, false))?;
         self.write_all(payload)
     }
 }
@@ -283,13 +288,12 @@ impl<'a, W: Write> ser::Serializer for &'a mut StreamingSerializer<W> {
                 let bits = value.serialize(U16Extractor)?;
                 self.write_float16_bits(bits)
             }
-            NT_COMPLEX32 => {
+            NT_COMPLEX => {
                 let payload = value.serialize(BytesExtractor)?;
-                self.write_complex_single_payload(2, &payload)
-            }
-            NT_COMPLEX64 => {
-                let payload = value.serialize(BytesExtractor)?;
-                self.write_complex_single_payload(3, &payload)
+                if payload.len() < 2 {
+                    return Err(Error::Mismatch("invalid complex payload"));
+                }
+                self.write_complex_single_payload(payload[0], payload[1], &payload[2..])
             }
             NT_RAW_VALUE => {
                 let raw = value.serialize(BytesExtractor)?;
@@ -428,7 +432,7 @@ enum SeqMode {
     /// Typed string array (size-prefixed UTF-8, no per-element header).
     TypedString,
     /// Typed complex array (extension encoding).
-    TypedComplex { byte_code: u8 },
+    TypedComplex { class: u8, byte_code: u8 },
 }
 
 impl SeqMode {
@@ -561,18 +565,22 @@ impl<'a, 'b, W: Write> StreamingElemSer<'a, 'b, W> {
     }
 
     #[inline(always)]
-    fn emit_complex(&mut self, byte_code: u8, payload: &[u8]) -> Result<()> {
-        if let SeqMode::TypedComplex { byte_code: bc } = self.seq.mode
+    fn emit_complex(&mut self, class: u8, byte_code: u8, payload: &[u8]) -> Result<()> {
+        if let SeqMode::TypedComplex {
+            class: c,
+            byte_code: bc,
+        } = self.seq.mode
+            && c == class
             && bc == byte_code
         {
             return self.seq.ser.write_all(payload);
         }
-        self.emit_complex_cold(byte_code, payload)
+        self.emit_complex_cold(class, byte_code, payload)
     }
 
     #[cold]
     #[inline(never)]
-    fn emit_complex_cold(&mut self, byte_code: u8, payload: &[u8]) -> Result<()> {
+    fn emit_complex_cold(&mut self, class: u8, byte_code: u8, payload: &[u8]) -> Result<()> {
         let elem_bytes = (1usize << byte_code) * 2;
         if payload.len() != elem_bytes {
             return Err(Error::Mismatch("invalid complex payload size"));
@@ -582,9 +590,11 @@ impl<'a, 'b, W: Write> StreamingElemSer<'a, 'b, W> {
                 self.seq
                     .ser
                     .write_byte(make_extension_header(EXT_COMPLEX))?;
-                self.seq.ser.write_byte(complex_header(byte_code, true))?;
+                self.seq
+                    .ser
+                    .write_byte(complex_header(class, byte_code, true))?;
                 self.seq.ser.write_size(self.seq.len as u64)?;
-                self.seq.mode = SeqMode::TypedComplex { byte_code };
+                self.seq.mode = SeqMode::TypedComplex { class, byte_code };
             }
             _ => return Err(typed_array_mismatch(&self.seq.mode, "complex")),
         }
@@ -779,13 +789,12 @@ impl<'a, 'b, W: Write> ser::Serializer for &'b mut StreamingElemSer<'a, 'b, W> {
                 let bits = value.serialize(U16Extractor)?;
                 self.emit_float(&bits.to_le_bytes(), 1)
             }
-            NT_COMPLEX32 => {
+            NT_COMPLEX => {
                 let payload = value.serialize(BytesExtractor)?;
-                self.emit_complex(2, &payload)
-            }
-            NT_COMPLEX64 => {
-                let payload = value.serialize(BytesExtractor)?;
-                self.emit_complex(3, &payload)
+                if payload.len() < 2 {
+                    return Err(Error::Mismatch("invalid complex payload"));
+                }
+                self.emit_complex(payload[0], payload[1], &payload[2..])
             }
             NT_RAW_VALUE => {
                 self.seq.ensure_generic()?;

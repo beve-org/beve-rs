@@ -29,6 +29,7 @@ pub(crate) struct TypedArrayHeader {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ComplexHeader {
+    pub(crate) class: u8,
     pub(crate) is_array: bool,
     pub(crate) byte_code: u8,
 }
@@ -140,13 +141,8 @@ impl<'a> Reader<'a> {
 
     pub(crate) fn read_complex_header(&mut self) -> Result<ComplexHeader> {
         let header = self.read_byte()?;
-        let class = (header >> 3) & 0b11;
-        if class != NUM_FLOAT {
-            return Err(Error::Unsupported(
-                "only floating-point complex values are supported",
-            ));
-        }
         Ok(ComplexHeader {
+            class: (header >> 3) & 0b11,
             is_array: (header & 0x01) != 0,
             byte_code: (header >> 5) & 0b111,
         })

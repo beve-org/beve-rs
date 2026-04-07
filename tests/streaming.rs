@@ -1061,7 +1061,10 @@ fn streaming_full_round_trip() {
 #[test]
 fn streaming_complex_float_roundtrip() {
     let values = vec![
-        beve::Complex { re: 1.0f32, im: -2.5 },
+        beve::Complex {
+            re: 1.0f32,
+            im: -2.5,
+        },
         beve::Complex { re: 3.0, im: 0.0 },
     ];
     let mut buf = Vec::new();
@@ -1073,7 +1076,10 @@ fn streaming_complex_float_roundtrip() {
 #[test]
 fn streaming_complex_integer_roundtrip() {
     // Single integer complex
-    let c = beve::Complex { re: -42i32, im: 100 };
+    let c = beve::Complex {
+        re: -42i32,
+        im: 100,
+    };
     let mut buf = Vec::new();
     beve::to_writer_streaming(&mut buf, &c).unwrap();
     let back: beve::Complex<i32> = beve::from_reader_streaming(Cursor::new(&buf)).unwrap();

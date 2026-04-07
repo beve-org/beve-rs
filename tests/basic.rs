@@ -258,12 +258,12 @@ fn complex_integer_single_roundtrip() {
     // Complex header: (byte_code << 5) | (class << 3) | is_array
     // class: 0=float, 1=signed, 2=unsigned
     // byte_code: 0=1B, 1=2B, 2=4B, 3=8B, 4=16B
-    test_complex_single!(i8, -1, 2, 0x08);       // bc=0, class=1
-    test_complex_single!(i16, -300, 400, 0x28);   // bc=1, class=1
+    test_complex_single!(i8, -1, 2, 0x08); // bc=0, class=1
+    test_complex_single!(i16, -300, 400, 0x28); // bc=1, class=1
     test_complex_single!(i32, -70000, 80000, 0x48); // bc=2, class=1
     test_complex_single!(i64, -1_000_000, 2_000_000, 0x68); // bc=3, class=1
-    test_complex_single!(u8, 1, 2, 0x10);         // bc=0, class=2
-    test_complex_single!(u16, 1000, 2000, 0x30);  // bc=1, class=2
+    test_complex_single!(u8, 1, 2, 0x10); // bc=0, class=2
+    test_complex_single!(u16, 1000, 2000, 0x30); // bc=1, class=2
     test_complex_single!(u32, 70000, 80000, 0x50); // bc=2, class=2
     test_complex_single!(u64, 1_000_000, 2_000_000, 0x70); // bc=3, class=2
 }
@@ -296,10 +296,7 @@ fn complex_integer_vec_roundtrip() {
                 re: -100_000,
                 im: 200_000,
             },
-            beve::Complex {
-                re: 0,
-                im: -1,
-            }
+            beve::Complex { re: 0, im: -1 }
         ],
         0x48
     );
@@ -361,7 +358,7 @@ fn complex_fields_in_struct_roundtrip() {
             beve::Complex { re: 30, im: 40 },
             beve::Complex { re: -1, im: 0 },
         ],
-        scale: 3.14,
+        scale: 3.125,
     };
     let bytes = beve::to_vec(&m).unwrap();
     let back: Measurement = beve::from_slice(&bytes).unwrap();

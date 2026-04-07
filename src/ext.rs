@@ -1,7 +1,5 @@
 use crate::de::from_slice;
-use crate::fast::{
-    BeveTypedSlice, to_vec_complex_slice, write_bool_slice, write_typed_slice,
-};
+use crate::fast::{BeveTypedSlice, to_vec_complex_slice, write_bool_slice, write_typed_slice};
 use crate::header::{ARRAY_UNSIGNED, EXT_MATRICES, TYPE_TYPED_ARRAY, make_extension_header};
 use crate::size::write_size;
 use crate::value::Value;

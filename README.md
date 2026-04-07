@@ -5,7 +5,7 @@ Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specificat
 Grab the crate from [crates.io](https://crates.io/crates/beve) and add it to your project with `cargo add beve` or by editing `Cargo.toml`:
 ```toml
 [dependencies]
-beve = "0.8"
+beve = "1"
 ```
 The library only depends on `serde` and requires Rust 1.88 or newer. Half-precision floats via `half::f16` are supported alongside the standard numeric types.
 

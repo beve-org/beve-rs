@@ -107,6 +107,17 @@ impl<R: Read> StreamingDeserializer<R> {
         Ok(())
     }
 
+    /// Skip any leading data delimiter bytes (extension 0).
+    fn skip_delimiters(&mut self) -> Result<()> {
+        loop {
+            let b = self.peek_byte()?;
+            if b != make_extension_header(EXT_DELIMITER) {
+                return Ok(());
+            }
+            self.read_byte()?; // consume the delimiter
+        }
+    }
+
     fn read_size(&mut self) -> Result<u64> {
         if let Some(b) = self.peeked.take() {
             read_size_from_reader_with_first_byte(&mut self.reader, b)
@@ -219,6 +230,7 @@ impl<R: Read> StreamingDeserializer<R> {
     // -- main value dispatch --
 
     fn deserialize_value<'de, V: Visitor<'de>>(&mut self, visitor: V) -> Result<V::Value> {
+        self.skip_delimiters()?;
         let header = self.read_byte()?;
         let ty = parse_type(header);
         match ty {
@@ -378,7 +390,6 @@ impl<R: Read> StreamingDeserializer<R> {
                         let tag = self.read_enum_tag()?;
                         visitor.visit_enum(EnumAccessStreaming { de: self, tag })
                     }
-                    EXT_DELIMITER => visitor.visit_unit(),
                     EXT_COMPLEX => {
                         let ch = self.read_byte()?;
                         let is_array = (ch & 0x01) != 0;
@@ -429,6 +440,7 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
     }
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.skip_delimiters()?;
         let header = self.read_byte()?;
         if is_bool(header) {
             visitor.visit_bool((header & 0b10000) != 0)
@@ -438,6 +450,7 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.skip_delimiters()?;
         let header = self.peek_byte()?;
         if header == 0 {
             self.read_byte()?;
@@ -448,6 +461,7 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
     }
 
     fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.skip_delimiters()?;
         let header = self.read_byte()?;
         if header == 0 {
             visitor.visit_unit()
@@ -482,6 +496,7 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
+        self.skip_delimiters()?;
         let header = self.peek_byte()?;
         let ty = parse_type(header);
         match ty {
@@ -522,6 +537,7 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
     }
 
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.skip_delimiters()?;
         let header = self.peek_byte()?;
         let ty = parse_type(header);
         if ty == TYPE_TYPED_ARRAY

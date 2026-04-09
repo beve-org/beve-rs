@@ -361,6 +361,31 @@ Both directions process data incrementally with no intermediate allocations beyo
 
 Custom serializer options (e.g. string enum encoding) are supported via `to_writer_streaming_with_options`.
 
+### Data Delimiters
+When writing multiple values to the same stream, use `beve::write_delimiter` to insert the BEVE data delimiter byte (`0x06`) between entries — analogous to `\n` in NDJSON. `from_slice` and `from_reader_streaming` skip delimiters transparently during deserialization (note: `validate_slice` expects a single value and will reject delimiter-separated streams):
+```rust
+use serde::{Serialize, Deserialize};
+use std::io::Cursor;
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Record { id: u32, value: f64 }
+
+let mut buf = Vec::new();
+let r1 = Record { id: 1, value: 1.5 };
+let r2 = Record { id: 2, value: 2.5 };
+
+beve::to_writer_streaming(&mut buf, &r1)?;
+beve::write_delimiter(&mut buf)?;
+beve::to_writer_streaming(&mut buf, &r2)?;
+
+// Read back — delimiters are skipped automatically
+let mut cursor = Cursor::new(&buf);
+let back1: Record = beve::from_reader_streaming(&mut cursor)?;
+let back2: Record = beve::from_reader_streaming(&mut cursor)?;
+assert_eq!(back1, r1);
+assert_eq!(back2, r2);
+```
+
 ## Supported Data Model
 - Scalars: signed/unsigned integers up to 128-bit, f32/f64, null, bool, and UTF-8 strings
 - Complex numbers: `Complex<T>` for all numeric scalar types, with typed complex arrays

@@ -197,6 +197,15 @@ impl<'de> Deserializer<'de> {
         self.input.get(self.pos).copied().ok_or(Error::Eof)
     }
 
+    /// Skip any leading data delimiter bytes (extension 0).
+    fn skip_delimiters(&mut self) {
+        while self.pos < self.input.len()
+            && self.input[self.pos] == make_extension_header(EXT_DELIMITER)
+        {
+            self.pos += 1;
+        }
+    }
+
     #[inline]
     fn read_byte(&mut self) -> Result<u8> {
         if self.pos >= self.input.len() {
@@ -334,6 +343,7 @@ impl<'de> Deserializer<'de> {
     }
 
     fn deserialize_value<V: Visitor<'de>>(&mut self, visitor: V) -> Result<V::Value> {
+        self.skip_delimiters();
         let header = self.read_byte()?;
         let ty = parse_type(header);
         match ty {
@@ -484,7 +494,6 @@ impl<'de> Deserializer<'de> {
                         let access = EnumAccess { de: self, tag };
                         visitor.visit_enum(access)
                     }
-                    EXT_DELIMITER => visitor.visit_unit(),
                     EXT_COMPLEX => {
                         let ch = self.read_byte()?; // complex header
                         let is_array = (ch & 0x01) != 0;
@@ -533,6 +542,7 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
     }
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.skip_delimiters();
         let header = self.read_byte()?;
         if is_bool(header) {
             visitor.visit_bool(self.parse_bool(header)?)
@@ -587,6 +597,7 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
         self.deserialize_any(visitor)
     }
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.skip_delimiters();
         let header = self.peek_byte()?;
         let ty = parse_type(header);
         if ty == TYPE_TYPED_ARRAY
@@ -614,6 +625,7 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
         self.deserialize_any(visitor)
     }
     fn deserialize_byte_buf<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.skip_delimiters();
         let header = self.peek_byte()?;
         let ty = parse_type(header);
         if ty == TYPE_TYPED_ARRAY
@@ -640,6 +652,7 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.skip_delimiters();
         let header = self.peek_byte()?;
         if header == 0 {
             self.read_byte()?;
@@ -650,6 +663,7 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
     }
 
     fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        self.skip_delimiters();
         let header = self.read_byte()?;
         if header == 0 {
             visitor.visit_unit()
@@ -711,6 +725,7 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
+        self.skip_delimiters();
         let header = self.peek_byte()?;
         let ty = parse_type(header);
         match ty {

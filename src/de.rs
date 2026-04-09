@@ -156,6 +156,7 @@ pub fn from_slice<'de, T: Deserialize<'de>>(bytes: &'de [u8]) -> Result<T> {
         input: bytes,
         pos: 0,
     };
+    de.skip_delimiters();
     let t = T::deserialize(&mut de)?;
     if de.pos != de.input.len() {
         // trailing bytes allowed? We'll ignore for now
@@ -343,7 +344,6 @@ impl<'de> Deserializer<'de> {
     }
 
     fn deserialize_value<V: Visitor<'de>>(&mut self, visitor: V) -> Result<V::Value> {
-        self.skip_delimiters();
         let header = self.read_byte()?;
         let ty = parse_type(header);
         match ty {
@@ -542,7 +542,6 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
     }
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        self.skip_delimiters();
         let header = self.read_byte()?;
         if is_bool(header) {
             visitor.visit_bool(self.parse_bool(header)?)
@@ -597,7 +596,6 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
         self.deserialize_any(visitor)
     }
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        self.skip_delimiters();
         let header = self.peek_byte()?;
         let ty = parse_type(header);
         if ty == TYPE_TYPED_ARRAY
@@ -625,7 +623,6 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
         self.deserialize_any(visitor)
     }
     fn deserialize_byte_buf<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        self.skip_delimiters();
         let header = self.peek_byte()?;
         let ty = parse_type(header);
         if ty == TYPE_TYPED_ARRAY
@@ -652,7 +649,6 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        self.skip_delimiters();
         let header = self.peek_byte()?;
         if header == 0 {
             self.read_byte()?;
@@ -663,7 +659,6 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
     }
 
     fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        self.skip_delimiters();
         let header = self.read_byte()?;
         if header == 0 {
             visitor.visit_unit()
@@ -725,7 +720,6 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
-        self.skip_delimiters();
         let header = self.peek_byte()?;
         let ty = parse_type(header);
         match ty {

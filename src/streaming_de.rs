@@ -230,7 +230,6 @@ impl<R: Read> StreamingDeserializer<R> {
     // -- main value dispatch --
 
     fn deserialize_value<'de, V: Visitor<'de>>(&mut self, visitor: V) -> Result<V::Value> {
-        self.skip_delimiters()?;
         let header = self.read_byte()?;
         let ty = parse_type(header);
         match ty {
@@ -440,7 +439,6 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
     }
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        self.skip_delimiters()?;
         let header = self.read_byte()?;
         if is_bool(header) {
             visitor.visit_bool((header & 0b10000) != 0)
@@ -450,7 +448,6 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        self.skip_delimiters()?;
         let header = self.peek_byte()?;
         if header == 0 {
             self.read_byte()?;
@@ -461,7 +458,6 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
     }
 
     fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        self.skip_delimiters()?;
         let header = self.read_byte()?;
         if header == 0 {
             visitor.visit_unit()
@@ -496,7 +492,6 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
-        self.skip_delimiters()?;
         let header = self.peek_byte()?;
         let ty = parse_type(header);
         match ty {
@@ -537,7 +532,6 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
     }
 
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        self.skip_delimiters()?;
         let header = self.peek_byte()?;
         let ty = parse_type(header);
         if ty == TYPE_TYPED_ARRAY
@@ -1130,5 +1124,6 @@ impl<'de, 'a, R: Read> serde::Deserializer<'de> for SeqDeserializerWrapper<'a, R
 /// ```
 pub fn from_reader_streaming<R: Read, T: DeserializeOwned>(reader: R) -> Result<T> {
     let mut de = StreamingDeserializer::new(reader);
+    de.skip_delimiters()?;
     T::deserialize(&mut de)
 }

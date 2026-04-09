@@ -1131,6 +1131,164 @@ fn streaming_complex_in_struct_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
+// Data delimiter (streaming records)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn data_delimiter_constant_is_correct() {
+    // Extension type = 6, ext_id 0 → (0 << 3) | 6 = 0x06
+    assert_eq!(beve::DATA_DELIMITER, 0x06);
+}
+
+#[test]
+fn streaming_delimiter_separates_records() {
+    let r1 = Point { x: 1.0, y: 2.0 };
+    let r2 = Point { x: 3.0, y: 4.0 };
+    let r3 = Point { x: 5.0, y: 6.0 };
+
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &r1).unwrap();
+    beve::write_delimiter(&mut buf).unwrap();
+    beve::to_writer_streaming(&mut buf, &r2).unwrap();
+    beve::write_delimiter(&mut buf).unwrap();
+    beve::to_writer_streaming(&mut buf, &r3).unwrap();
+
+    let mut cursor = Cursor::new(&buf);
+    let back1: Point = beve::from_reader_streaming(&mut cursor).unwrap();
+    let back2: Point = beve::from_reader_streaming(&mut cursor).unwrap();
+    let back3: Point = beve::from_reader_streaming(&mut cursor).unwrap();
+    assert_eq!(back1, r1);
+    assert_eq!(back2, r2);
+    assert_eq!(back3, r3);
+}
+
+#[test]
+fn streaming_delimiter_with_heterogeneous_types() {
+    let header = ScalarFields {
+        a: true,
+        b: 42,
+        c: -100,
+        d: 1.5,
+        e: "metadata".into(),
+    };
+    let batch = vec![1.0f64, 2.0, 3.0];
+
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &header).unwrap();
+    beve::write_delimiter(&mut buf).unwrap();
+    beve::to_writer_streaming(&mut buf, &batch).unwrap();
+
+    let mut cursor = Cursor::new(&buf);
+    let back_header: ScalarFields = beve::from_reader_streaming(&mut cursor).unwrap();
+    let back_batch: Vec<f64> = beve::from_reader_streaming(&mut cursor).unwrap();
+    assert_eq!(back_header, header);
+    assert_eq!(back_batch, batch);
+}
+
+#[test]
+fn streaming_delimiter_before_enum_value() {
+    let c1 = Color::Red;
+    let c2 = Color::Blue;
+    let s1 = Shape::Rect { w: 3.0, h: 4.0 };
+
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &c1).unwrap();
+    beve::write_delimiter(&mut buf).unwrap();
+    beve::to_writer_streaming(&mut buf, &c2).unwrap();
+    beve::write_delimiter(&mut buf).unwrap();
+    beve::to_writer_streaming(&mut buf, &s1).unwrap();
+
+    let mut cursor = Cursor::new(&buf);
+    let back1: Color = beve::from_reader_streaming(&mut cursor).unwrap();
+    let back2: Color = beve::from_reader_streaming(&mut cursor).unwrap();
+    let back3: Shape = beve::from_reader_streaming(&mut cursor).unwrap();
+    assert_eq!(back1, c1);
+    assert_eq!(back2, c2);
+    assert_eq!(back3, s1);
+}
+
+#[test]
+fn slice_delimiter_before_enum_value() {
+    let c1 = Color::Green;
+    let c2 = Color::Blue;
+
+    let mut buf = Vec::new();
+    buf.push(beve::DATA_DELIMITER); // leading delimiter
+    buf.extend_from_slice(&beve::to_vec(&c1).unwrap());
+    buf.push(beve::DATA_DELIMITER);
+    buf.extend_from_slice(&beve::to_vec(&c2).unwrap());
+
+    // from_slice with a leading delimiter
+    let back1: Color = beve::from_slice(&buf[..]).unwrap();
+    assert_eq!(back1, c1);
+}
+
+#[test]
+fn streaming_multiple_consecutive_delimiters() {
+    let p = Point { x: 1.0, y: 2.0 };
+
+    let mut buf = Vec::new();
+    // Write 5 consecutive delimiters before the value
+    for _ in 0..5 {
+        beve::write_delimiter(&mut buf).unwrap();
+    }
+    beve::to_writer_streaming(&mut buf, &p).unwrap();
+
+    let mut cursor = Cursor::new(&buf);
+    let back: Point = beve::from_reader_streaming(&mut cursor).unwrap();
+    assert_eq!(back, p);
+}
+
+#[test]
+fn streaming_trailing_delimiter_returns_eof() {
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &42u32).unwrap();
+    beve::write_delimiter(&mut buf).unwrap(); // trailing delimiter, no value after
+
+    let mut cursor = Cursor::new(&buf);
+    let _v: u32 = beve::from_reader_streaming(&mut cursor).unwrap();
+    // Next read should fail with EOF, not hang
+    let result: beve::Result<u32> = beve::from_reader_streaming(&mut cursor);
+    assert!(result.is_err());
+}
+
+#[test]
+fn streaming_delimiter_before_scalars() {
+    let mut buf = Vec::new();
+
+    beve::to_writer_streaming(&mut buf, &42u32).unwrap();
+    beve::write_delimiter(&mut buf).unwrap();
+    beve::to_writer_streaming(&mut buf, &2.78f64).unwrap();
+    beve::write_delimiter(&mut buf).unwrap();
+    beve::to_writer_streaming(&mut buf, &true).unwrap();
+    beve::write_delimiter(&mut buf).unwrap();
+    beve::to_writer_streaming(&mut buf, &"hello").unwrap();
+    beve::write_delimiter(&mut buf).unwrap();
+    beve::to_writer_streaming(&mut buf, &vec![1u8, 2, 3]).unwrap();
+
+    let mut cursor = Cursor::new(&buf);
+    let v1: u32 = beve::from_reader_streaming(&mut cursor).unwrap();
+    let v2: f64 = beve::from_reader_streaming(&mut cursor).unwrap();
+    let v3: bool = beve::from_reader_streaming(&mut cursor).unwrap();
+    let v4: String = beve::from_reader_streaming(&mut cursor).unwrap();
+    let v5: Vec<u8> = beve::from_reader_streaming(&mut cursor).unwrap();
+    assert_eq!(v1, 42);
+    assert_eq!(v2, 2.78);
+    assert!(v3);
+    assert_eq!(v4, "hello");
+    assert_eq!(v5, vec![1, 2, 3]);
+}
+
+#[test]
+fn slice_multiple_consecutive_delimiters() {
+    let mut buf = vec![beve::DATA_DELIMITER; 3];
+    buf.extend_from_slice(&beve::to_vec(&99i64).unwrap());
+
+    let v: i64 = beve::from_slice(&buf).unwrap();
+    assert_eq!(v, 99);
+}
+
+// ---------------------------------------------------------------------------
 // EOF handling
 // ---------------------------------------------------------------------------
 

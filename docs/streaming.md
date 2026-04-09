@@ -119,6 +119,53 @@ are read directly into the output with no temporary buffer. Strings are
 allocated as owned `String` values (zero-copy borrowing is not possible
 when reading from a stream; use `from_slice` for zero-copy).
 
+## Data Delimiters
+
+When writing multiple values to the same stream (e.g. a header followed by
+data batches), use `beve::write_delimiter` to separate entries. This writes
+the BEVE data delimiter byte (`0x06`), analogous to `\n` in Newline
+Delimited JSON (NDJSON).
+
+`from_slice` and `from_reader_streaming` skip delimiters transparently
+during deserialization. Note that `validate_slice` expects a single value
+and will reject delimiter-separated streams.
+
+```rust
+use serde::{Serialize, Deserialize};
+use std::io::{BufWriter, BufReader, Cursor};
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Header { channels: u32 }
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Batch { index: u64, data: Vec<f64> }
+
+// Write header + batches with delimiters
+let mut buf = Vec::new();
+let header = Header { channels: 3 };
+beve::to_writer_streaming(&mut buf, &header)?;
+
+for i in 0..3 {
+    beve::write_delimiter(&mut buf)?;
+    let batch = Batch { index: i, data: vec![i as f64; 10] };
+    beve::to_writer_streaming(&mut buf, &batch)?;
+}
+
+// Read back — delimiters are skipped automatically
+let mut cursor = Cursor::new(&buf);
+let h: Header = beve::from_reader_streaming(&mut cursor)?;
+assert_eq!(h, header);
+
+let mut batches = Vec::new();
+while let Ok(b) = beve::from_reader_streaming::<_, Batch>(&mut cursor) {
+    batches.push(b);
+}
+assert_eq!(batches.len(), 3);
+```
+
+The constant `beve::DATA_DELIMITER` (`0x06`) is also available for
+direct use.
+
 ## Direct Access
 
 For advanced use cases (e.g. multiple values in the same stream), use the

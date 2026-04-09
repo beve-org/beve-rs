@@ -27,6 +27,7 @@ pub const ARRAY_UNSIGNED: u8 = 2;
 pub const ARRAY_BOOL_OR_STRING: u8 = 3;
 
 // Extension ids (bits 3..7)
+/// Data delimiter extension id (like newline in NDJSON).
 pub const EXT_DELIMITER: u8 = 0;
 pub const EXT_TYPE_TAG: u8 = 1;
 pub const EXT_MATRICES: u8 = 2;
@@ -39,7 +40,7 @@ pub fn make_header(ty: u8, subtype: u8, byte_count_code: u8) -> u8 {
 }
 
 #[inline]
-pub fn make_extension_header(ext_id: u8) -> u8 {
+pub const fn make_extension_header(ext_id: u8) -> u8 {
     ((ext_id & 0x1f) << 3) | TYPE_EXTENSION
 }
 

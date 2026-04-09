@@ -92,6 +92,53 @@ pub mod util {
     pub use crate::ext::MatrixLayout;
 }
 
+/// The single-byte data delimiter (BEVE extension 0).
+///
+/// Analogous to `\n` in Newline Delimited JSON (NDJSON). Write this byte
+/// between consecutive BEVE values in a stream so that readers can
+/// unambiguously identify record boundaries.
+///
+/// [`from_slice`], [`from_reader_streaming`], and their underlying
+/// deserializers skip delimiter bytes transparently during deserialization.
+/// Note that [`validate_slice`] expects exactly one value with no trailing
+/// bytes, so it will reject delimiter-separated streams.
+pub const DATA_DELIMITER: u8 = crate::header::make_extension_header(crate::header::EXT_DELIMITER);
+
+/// Write a data delimiter byte to the given writer.
+///
+/// This is a convenience wrapper around writing [`DATA_DELIMITER`]. Use it
+/// between consecutive BEVE values when streaming to a file.
+///
+/// # Example
+///
+/// ```rust
+/// use serde::{Serialize, Deserialize};
+/// use std::io::Cursor;
+///
+/// #[derive(Serialize, Deserialize, Debug, PartialEq)]
+/// struct Record { id: u32, value: f64 }
+///
+/// let mut buf = Vec::new();
+/// let r1 = Record { id: 1, value: 1.5 };
+/// let r2 = Record { id: 2, value: 2.5 };
+///
+/// beve::to_writer_streaming(&mut buf, &r1).unwrap();
+/// beve::write_delimiter(&mut buf).unwrap();
+/// beve::to_writer_streaming(&mut buf, &r2).unwrap();
+///
+/// // Read back sequentially
+/// let mut cursor = Cursor::new(&buf);
+/// let back1: Record = beve::from_reader_streaming(&mut cursor).unwrap();
+/// let back2: Record = beve::from_reader_streaming(&mut cursor).unwrap();
+/// assert_eq!(back1, r1);
+/// assert_eq!(back2, r2);
+/// ```
+pub fn write_delimiter<W: Write>(mut writer: W) -> Result<()> {
+    writer
+        .write_all(&[DATA_DELIMITER])
+        .map_err(|e| Error::MessageOwned(e.to_string()))
+}
+
 use std::io::{Read, Write};
 
 /// Serialize a value to any writer. For unknown-length containers, this uses an internal buffer.

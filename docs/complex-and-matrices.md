@@ -80,7 +80,7 @@ use num_complex::Complex32;
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize)]
-struct RxData {
+struct Signal {
     #[serde(serialize_with = "beve::complex::f32_array")]
     pub buffer: Vec<Complex32>,
 }

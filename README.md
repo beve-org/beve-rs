@@ -244,7 +244,7 @@ For foreign complex types (e.g. `num_complex::Complex`), use `#[serde(serialize_
 Enable the optional `mat` feature to convert BEVE payloads directly into MATLAB v7.3 MAT files:
 ```toml
 [dependencies]
-beve = { version = "0.8", features = ["mat"] }
+beve = { version = "1.2", features = ["mat"] }
 ```
 
 The MAT feature uses a pure-Rust HDF5 writer (`hdf5-pure`) and requires no system libraries.

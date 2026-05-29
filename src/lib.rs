@@ -141,7 +141,19 @@ pub fn write_delimiter<W: Write>(mut writer: W) -> Result<()> {
 
 use std::io::{Read, Write};
 
-/// Serialize a value to any writer. For unknown-length containers, this uses an internal buffer.
+/// Serialize a value into any writer.
+///
+/// This serializes into an internal [`Vec<u8>`] in a single pass and then writes
+/// those bytes into `writer`; it does **not** encode directly into the writer. The
+/// name follows serde's `to_writer` convention (it accepts any [`Write`]) and is a
+/// convenience, not a zero-copy guarantee.
+///
+/// For direct encoding into the writer with no intermediate `Vec`, use
+/// [`to_writer_streaming`]. That path writes each BEVE token straight to the writer
+/// in a single pass; the trade-off is that every container must have a known length
+/// (it errors on `serialize_seq(None)` / `serialize_map(None)`), whereas this
+/// function also supports unknown-length containers by back-patching sizes in the
+/// buffer.
 pub fn to_writer<W: Write, T: serde::Serialize>(mut writer: W, value: &T) -> Result<()> {
     let bytes = to_vec(value)?;
     writer
@@ -149,7 +161,11 @@ pub fn to_writer<W: Write, T: serde::Serialize>(mut writer: W, value: &T) -> Res
         .map_err(|e| Error::MessageOwned(e.to_string()))
 }
 
-/// Serialize a value to any writer with custom options.
+/// Serialize a value into any writer with custom options.
+///
+/// Like [`to_writer`], this serializes into an intermediate [`Vec<u8>`] before
+/// writing into `writer` rather than encoding directly. For direct, single-pass
+/// streaming with no intermediate buffer, see [`to_writer_streaming_with_options`].
 pub fn to_writer_with_options<W: Write, T: serde::Serialize>(
     mut writer: W,
     value: &T,

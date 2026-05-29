@@ -42,6 +42,33 @@ pub fn write_size(mut n: u64, out: &mut Vec<u8>) {
     }
 }
 
+/// Number of bytes the SIZE codec emits for `n`.
+///
+/// This is the width [`write_size`] / [`encode_size_to_array`] would produce for
+/// `n`, computed without writing any bytes. It shares the same 1/2/4/8-byte
+/// thresholds so an analytic size (e.g. [`crate::typed_slice_size`]) cannot drift
+/// from what the encoders actually emit.
+#[inline]
+pub fn size_encoded_len(n: u64) -> usize {
+    if n < (1 << 6) {
+        1
+    } else if n < (1 << 14) {
+        2
+    } else if n < (1 << 30) {
+        4
+    } else {
+        8
+    }
+}
+
+/// Write a SIZE value directly to a writer (streaming counterpart of [`write_size`]).
+#[inline]
+pub(crate) fn write_size_to_writer<W: std::io::Write>(w: &mut W, n: u64) -> std::io::Result<()> {
+    let mut buf = [0u8; 8];
+    let used = encode_size_to_array(n, &mut buf);
+    w.write_all(&buf[..used])
+}
+
 /// Encode SIZE into the provided 8-byte buffer and return the number of bytes used.
 #[inline]
 pub fn encode_size_to_array(mut n: u64, out: &mut [u8; 8]) -> usize {

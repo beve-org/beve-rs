@@ -9,9 +9,11 @@ use std::io::Write;
 use serde::ser::{self, Serialize};
 
 use crate::error::{Error, Result};
-use crate::ext::{NT_COMPLEX, NT_RAW_VALUE};
+use crate::ext::{NT_COMPLEX, NT_RAW_VALUE, typed_array_tag};
 use crate::header::*;
-use crate::ser::{BytesExtractor, EnumEncoding, SerializerOptions, U16Extractor};
+use crate::ser::{
+    BytesExtractor, EnumEncoding, SerializerOptions, TypedArrayWriteSink, U16Extractor,
+};
 use crate::size::encode_size_to_array;
 
 // ---------------------------------------------------------------------------
@@ -160,6 +162,32 @@ impl<W: Write> StreamingSerializer<W> {
         self.write_all(bytes)
     }
 
+    /// Write a typed numeric array from an already little-endian byte payload in a
+    /// single bulk `write_all`.
+    ///
+    /// The element count for the SIZE prefix is `payload.len() / elem_size`, exact
+    /// by construction. Used by the [`crate::TypedSlice`] bulk-write dispatch: the
+    /// borrowed payload is written without an intermediate copy, so with a counting
+    /// sink the body costs one `len +=` (the O(1) measure).
+    fn write_typed_array_bytes(
+        &mut self,
+        class: u8,
+        byte_code: u8,
+        elem_size: usize,
+        payload: &[u8],
+    ) -> Result<()> {
+        let header = make_header(TYPE_TYPED_ARRAY, class, byte_code);
+        self.write_byte(header)?;
+        debug_assert_eq!(
+            payload.len() % elem_size,
+            0,
+            "typed-array payload must be a whole number of elements"
+        );
+        let count = payload.len() / elem_size;
+        self.write_size(count as u64)?;
+        self.write_all(payload)
+    }
+
     fn write_complex_single_payload(
         &mut self,
         class: u8,
@@ -299,7 +327,17 @@ impl<'a, W: Write> ser::Serializer for &'a mut StreamingSerializer<W> {
                 let raw = value.serialize(BytesExtractor)?;
                 self.write_all(&raw)
             }
-            _ => value.serialize(self),
+            _ => {
+                if let Some((class, byte_code, elem_size)) = typed_array_tag(name) {
+                    // `TypedSlice<T>` field: write the borrowed payload straight to
+                    // the writer with no copy (one `write_all` of the body).
+                    value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
+                        self.write_typed_array_bytes(class, byte_code, elem_size, bytes)
+                    }))
+                } else {
+                    value.serialize(self)
+                }
+            }
         }
     }
 
@@ -801,7 +839,19 @@ impl<'a, 'b, W: Write> ser::Serializer for &'b mut StreamingElemSer<'a, 'b, W> {
                 let raw = value.serialize(BytesExtractor)?;
                 self.seq.ser.write_all(&raw)
             }
-            _ => value.serialize(self),
+            _ => {
+                if let Some((class, byte_code, elem_size)) = typed_array_tag(name) {
+                    // A typed array is a full VALUE, so it becomes a generic-array
+                    // element (matching how `NT_RAW_VALUE` is handled here).
+                    self.seq.ensure_generic()?;
+                    let ser = &mut *self.seq.ser;
+                    value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
+                        ser.write_typed_array_bytes(class, byte_code, elem_size, bytes)
+                    }))
+                } else {
+                    value.serialize(self)
+                }
+            }
         }
     }
 

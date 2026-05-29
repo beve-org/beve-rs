@@ -2,23 +2,17 @@ use crate::error::Result;
 use crate::ext::Complex;
 use crate::header::*;
 use crate::size::{size_encoded_len, write_size, write_size_to_writer};
+// Only the little-endian bulk-copy paths use raw `ptr`; on big-endian they fall
+// back to per-element conversion, so the import would otherwise be unused there.
+#[cfg(target_endian = "little")]
 use core::ptr;
 use half::{bf16, f16};
 use std::io::Write;
 
-/// Compute the typed numeric array header byte for the given class and byte code.
-///
-/// Shared by the `Vec<u8>` and `W: Write` primitives so the header layout has a
-/// single definition.
-#[inline]
-fn typed_array_header_byte(class: u8, byte_code: u8) -> u8 {
-    ((byte_code & 0b111) << 5) | ((class & 0b11) << 3) | (TYPE_TYPED_ARRAY & 0b111)
-}
-
 /// Write a typed array header and length for numeric arrays.
 #[inline]
 fn write_typed_array_header_numeric(out: &mut Vec<u8>, class: u8, byte_code: u8, len: usize) {
-    out.push(typed_array_header_byte(class, byte_code));
+    out.push(make_header(TYPE_TYPED_ARRAY, class, byte_code));
     write_size(len as u64, out);
 }
 
@@ -172,7 +166,7 @@ pub fn to_vec_typed_slice<T: BeveTypedSlice>(slice: &[T]) -> Vec<u8> {
 /// assert_eq!(back, data);
 /// ```
 pub fn to_writer_typed_slice<W: Write, T: BeveTypedSlice>(mut w: W, slice: &[T]) -> Result<()> {
-    w.write_all(&[typed_array_header_byte(T::CLASS, T::BYTE_CODE)])?;
+    w.write_all(&[make_header(TYPE_TYPED_ARRAY, T::CLASS, T::BYTE_CODE)])?;
     write_size_to_writer(&mut w, slice.len() as u64)?;
     if slice.is_empty() {
         return Ok(());

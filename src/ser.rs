@@ -711,6 +711,11 @@ impl Serializer {
     ) {
         let header = make_header(TYPE_TYPED_ARRAY, class, byte_code);
         self.push(header);
+        debug_assert_eq!(
+            payload.len() % elem_size,
+            0,
+            "typed-array payload must be a whole number of elements"
+        );
         let count = payload.len() / elem_size;
         write_size(count as u64, &mut self.buf);
         self.extend_from_slice(payload);

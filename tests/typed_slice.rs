@@ -289,9 +289,9 @@ fn layer3_bulk_path_collapses_to_constant_write_count() {
 }
 
 /// An empty `TypedSlice` still encodes a typed array of the element type (matching
-/// the bulk primitive), whereas an empty `Vec<T>` encodes a generic array. Both
-/// decode back to an empty `Vec<T>`. This documents and pins the one length at
-/// which the bulk path and the per-element path diverge.
+/// the bulk primitive) on every target, whereas an empty `Vec<T>` encodes a
+/// generic array. Both decode back to an empty `Vec<T>`. This documents and pins
+/// the one length at which `TypedSlice` and a bare `Vec<T>` diverge.
 #[test]
 fn empty_typed_slice_is_typed_array_not_generic() {
     #[derive(Serialize)]
@@ -309,6 +309,21 @@ fn empty_typed_slice_is_typed_array_not_generic() {
     to_writer_typed_slice(&mut bulk, &empty).unwrap();
     assert_eq!(bulk, beve::to_vec_typed_slice(&empty));
     assert_eq!(typed_slice_size(&empty), bulk.len() as u64);
+
+    // The serde wrapper reaches the same typed-array bytes as the bulk primitive
+    // for an empty slice on every target (an empty payload needs no endianness
+    // handling), so it never silently degrades to a generic empty array.
+    let mut wrapper = Vec::new();
+    beve::to_writer_streaming(&mut wrapper, &TypedSlice(&empty)).unwrap();
+    assert_eq!(
+        wrapper, bulk,
+        "empty TypedSlice (streaming) must equal the bulk primitive"
+    );
+    assert_eq!(
+        beve::to_vec(&TypedSlice(&empty)).unwrap(),
+        bulk,
+        "empty TypedSlice (buffered) must equal the bulk primitive"
+    );
 
     let mut a = Vec::new();
     beve::to_writer_streaming(

@@ -167,18 +167,19 @@ impl_complex_slice_serialize!(u128);
 /// ```
 ///
 /// On little-endian targets the payload is handed to the serializer as borrowed
-/// bytes and written with one `write_all` (no copy, no allocation); on
-/// big-endian targets it falls back to the per-element sequence path. For a
+/// bytes and written with one `write_all` (no copy, no allocation); on big-endian
+/// targets a non-empty slice falls back to the per-element sequence path. For a
 /// non-empty slice the encoded bytes are identical to serializing the equivalent
-/// `Vec<T>`. For an *empty* slice they differ: `TypedSlice` still emits a typed
-/// array of the element's type, whereas a bare empty `Vec<T>` has no element from
-/// which to detect the type and encodes as a generic empty array. Both decode
-/// back to an empty `Vec<T>`.
+/// `Vec<T>` on either target. For an *empty* slice they differ, on every target:
+/// `TypedSlice` still emits a typed array of the element's type, whereas a bare
+/// empty `Vec<T>` has no element from which to detect the type and encodes as a
+/// generic empty array. Both decode back to an empty `Vec<T>`.
 pub struct TypedSlice<'a, T>(pub &'a [T]);
 
 /// Shared `Serialize` body for every `TypedSlice<T>`: on little-endian, borrow the
 /// slice as bytes and tag it by `name`; on big-endian, fall back to the
-/// per-element sequence path.
+/// per-element sequence path (except an empty slice, which has no bytes to convert
+/// and so takes the little-endian typed-array path on every target).
 #[inline]
 fn serialize_typed_slice<S, T>(
     slice: &[T],
@@ -202,7 +203,15 @@ where
     }
     #[cfg(not(target_endian = "little"))]
     {
-        let _ = name;
+        // On big-endian the in-memory bytes are not little-endian, so a non-empty
+        // slice is converted element-by-element through the sequence path. An
+        // *empty* slice has no payload bytes to convert, so it takes the same
+        // typed-array newtype path as little-endian, keeping `TypedSlice`
+        // byte-identical to `to_writer_typed_slice` (a typed empty array, never a
+        // generic one) on every target.
+        if slice.is_empty() {
+            return s.serialize_newtype_struct(name, &RawBytes(&[]));
+        }
         use serde::ser::SerializeSeq;
         let mut seq = s.serialize_seq(Some(slice.len()))?;
         for v in slice {

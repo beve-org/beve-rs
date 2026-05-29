@@ -125,7 +125,7 @@ The (class, byte-code) pair travels in the **newtype name**, one name per `BeveT
 
 Note the element count the SIZE prefix needs is recovered as `bytes.len() / elem_size` (with `elem_size` derived from `byte_code`); the division is exact by construction, so the borrowed byte payload alone carries everything the header needs — no extra fields, no per-call state.
 
-On big-endian targets `TypedSlice` cannot hand over a borrowed little-endian view, so its `Serialize` falls back to emitting through `serialize_seq` (the existing per-element path) — correct, O(N), and rare.
+On big-endian targets `TypedSlice` cannot hand over a borrowed little-endian view, so a *non-empty* slice falls back to emitting through `serialize_seq` (the existing per-element path) — correct, O(N), and rare. An empty slice has no payload bytes to byte-swap, so it takes the same typed-array newtype path as little-endian, keeping the empty encoding identical on every target.
 
 The cost of this choice is ~14 generated name constants and lookup arms. That is mechanical (one macro), keeps each serializer's dispatch a single `typed_array_tag` call with no per-call state, and needs no new extractor variant beyond the writing sink — the right trade for a path on the hot loop.
 
@@ -181,7 +181,7 @@ Ship Layers 1–2 and stop. Covers REPE bodies that *are* a top-level typed slic
 ## Implementation checklist
 
 - [x] Extract/define `size_encoded_len(n: u64) -> usize` in `src/size.rs`.
-- [x] Add `to_writer_typed_slice` and `typed_slice_size` (Layers 1–2) in `src/fast.rs`, sharing header logic with the existing `Vec` primitive (the new `typed_array_header_byte` helper).
+- [x] Add `to_writer_typed_slice` and `typed_slice_size` (Layers 1–2) in `src/fast.rs`, sharing header logic with the existing `Vec` primitive (both build the byte via the shared `make_header` constructor).
 - [x] Re-export both from `src/lib.rs`.
 - [x] Tests 1, 2, 6 (and a simulated 5) for Layers 1–2 in `tests/typed_slice.rs`.
 - [x] (Layer 3) Macro in `src/ext.rs` generating, per `BeveTypedSlice` type, the `NT_TYPED_ARRAY_<T>` constant, the `Serialize for TypedSlice<'_, T>` impl (LE bulk via borrowed `RawBytes` / BE per-element), and an arm of the shared `typed_array_tag(name) -> Option<(class, byte_code, elem_size)>` lookup.
@@ -195,8 +195,10 @@ Where the shipped code refined this proposal:
 
 - **Location.** Layers 1–2 (`to_writer_typed_slice`, `typed_slice_size`) live in
   `src/fast.rs` (next to `write_typed_slice`/`BeveTypedSlice`), not
-  `streaming_ser.rs`, and are re-exported from `lib.rs`. The header byte has one
-  definition, `typed_array_header_byte`, shared with the `Vec<u8>` primitive.
+  `streaming_ser.rs`, and are re-exported from `lib.rs`. The typed-array header
+  byte has one definition: every path (the `Vec<u8>` and `W: Write` primitives and
+  the serde `write_typed_array_bytes` dispatch) builds it via the shared
+  `make_header` constructor in `src/header.rs`.
 - **`typed_array_tag` returns `elem_size`, not just `(class, byte_code)`.** The
   element width is **not** always `1 << byte_code`: `bf16` uses `byte_code` 0
   (the brain-float special case) but is 2 bytes wide. The lookup therefore carries
@@ -221,4 +223,7 @@ Where the shipped code refined this proposal:
   element from which the streaming serializer can detect the type and so emits a
   generic empty array. Both decode back to an empty `Vec<T>`. This is the single
   length at which "byte-for-byte identical to the element-by-element path" does
-  not hold, and it is documented on `TypedSlice` and pinned by a test.
+  not hold, and it is documented on `TypedSlice` and pinned by a test. It holds on
+  every target: a big-endian empty `TypedSlice` also takes the typed-array path
+  (an empty payload needs no endianness conversion), so it never degrades to a
+  generic array.

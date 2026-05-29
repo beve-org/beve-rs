@@ -178,6 +178,11 @@ impl<W: Write> StreamingSerializer<W> {
     ) -> Result<()> {
         let header = make_header(TYPE_TYPED_ARRAY, class, byte_code);
         self.write_byte(header)?;
+        debug_assert_eq!(
+            payload.len() % elem_size,
+            0,
+            "typed-array payload must be a whole number of elements"
+        );
         let count = payload.len() / elem_size;
         self.write_size(count as u64)?;
         self.write_all(payload)

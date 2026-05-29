@@ -142,6 +142,134 @@ impl_complex_slice_serialize!(u32);
 impl_complex_slice_serialize!(u64);
 impl_complex_slice_serialize!(u128);
 
+// -------- Typed numeric slices (opt-in zero-copy serde bulk path) --------
+
+/// An opt-in wrapper that serializes a contiguous numeric slice `&[T]` as a BEVE
+/// typed array via a single bulk write, rather than element-by-element.
+///
+/// serde delivers sequence elements one at a time and never exposes the backing
+/// slice, so a plain `Vec<T>` / `&[T]` field cannot be bulk-written
+/// automatically; like `serde_bytes` for `&[u8]`, this wrapper is the opt-in.
+/// Use it as a derived-struct field to get the bulk path through
+/// [`crate::to_writer_streaming`] / [`crate::to_vec`]:
+///
+/// ```rust
+/// use serde::Serialize;
+///
+/// #[derive(Serialize)]
+/// struct Frame<'a> {
+///     samples: beve::TypedSlice<'a, f64>,
+/// }
+///
+/// let data = vec![1.0f64, 2.0, 3.0];
+/// let mut buf = Vec::new();
+/// beve::to_writer_streaming(&mut buf, &Frame { samples: beve::TypedSlice(&data) }).unwrap();
+/// ```
+///
+/// On little-endian targets the payload is handed to the serializer as borrowed
+/// bytes and written with one `write_all` (no copy, no allocation); on
+/// big-endian targets it falls back to the per-element sequence path. For a
+/// non-empty slice the encoded bytes are identical to serializing the equivalent
+/// `Vec<T>`. For an *empty* slice they differ: `TypedSlice` still emits a typed
+/// array of the element's type, whereas a bare empty `Vec<T>` has no element from
+/// which to detect the type and encodes as a generic empty array. Both decode
+/// back to an empty `Vec<T>`.
+pub struct TypedSlice<'a, T>(pub &'a [T]);
+
+/// Shared `Serialize` body for every `TypedSlice<T>`: on little-endian, borrow the
+/// slice as bytes and tag it by `name`; on big-endian, fall back to the
+/// per-element sequence path.
+#[inline]
+fn serialize_typed_slice<S, T>(
+    slice: &[T],
+    name: &'static str,
+    s: S,
+) -> core::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+    T: Serialize,
+{
+    #[cfg(target_endian = "little")]
+    {
+        // Sound: `BeveTypedSlice` types are fixed-width no-padding scalars with
+        // every bit pattern valid; this mirrors the `fast` module's
+        // reinterpret-as-bytes. The borrowed view is only read inside
+        // `serialize_newtype_struct`, during which `slice` stays alive.
+        let payload: &[u8] = unsafe {
+            core::slice::from_raw_parts(slice.as_ptr() as *const u8, core::mem::size_of_val(slice))
+        };
+        s.serialize_newtype_struct(name, &RawBytes(payload))
+    }
+    #[cfg(not(target_endian = "little"))]
+    {
+        let _ = name;
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(Some(slice.len()))?;
+        for v in slice {
+            seq.serialize_element(v)?;
+        }
+        seq.end()
+    }
+}
+
+/// Generates, per scalar type: the typed-array newtype-name constant, the
+/// `Serialize for TypedSlice<'_, T>` impl, and an arm of the shared
+/// [`typed_array_tag`] lookup. The lookup is the single source of truth that both
+/// serializers consult, so neither hand-maintains a per-type dispatch table.
+macro_rules! impl_typed_slice_serialize {
+    ($( ($scalar:ty, $nt_const:ident, $nt_name:literal) ),* $(,)?) => {
+        $(
+            pub(crate) const $nt_const: &str = $nt_name;
+
+            impl<'a> Serialize for TypedSlice<'a, $scalar> {
+                fn serialize<S: serde::Serializer>(
+                    &self,
+                    s: S,
+                ) -> core::result::Result<S::Ok, S::Error> {
+                    serialize_typed_slice(self.0, $nt_const, s)
+                }
+            }
+        )*
+
+        /// Map a beve typed-array newtype name (the tag [`TypedSlice`] sets via
+        /// `serialize_newtype_struct`) to its `(class, byte_code, elem_size)`.
+        ///
+        /// `elem_size` is the true element width, which is **not** always
+        /// `1 << byte_code` (e.g. `bf16` uses `byte_code` 0 but is 2 bytes), so
+        /// the writing sink divides the borrowed payload length by it to recover
+        /// the element count for the SIZE prefix.
+        pub(crate) fn typed_array_tag(name: &str) -> Option<(u8, u8, usize)> {
+            match name {
+                $(
+                    $nt_const => Some((
+                        <$scalar as BeveTypedSlice>::CLASS,
+                        <$scalar as BeveTypedSlice>::BYTE_CODE,
+                        <$scalar as BeveTypedSlice>::ELEM_SIZE,
+                    )),
+                )*
+                _ => None,
+            }
+        }
+    };
+}
+
+impl_typed_slice_serialize! {
+    (i8,   NT_TYPED_ARRAY_I8,   "__beve_typed_array_i8"),
+    (i16,  NT_TYPED_ARRAY_I16,  "__beve_typed_array_i16"),
+    (i32,  NT_TYPED_ARRAY_I32,  "__beve_typed_array_i32"),
+    (i64,  NT_TYPED_ARRAY_I64,  "__beve_typed_array_i64"),
+    (i128, NT_TYPED_ARRAY_I128, "__beve_typed_array_i128"),
+    (u8,   NT_TYPED_ARRAY_U8,   "__beve_typed_array_u8"),
+    (u16,  NT_TYPED_ARRAY_U16,  "__beve_typed_array_u16"),
+    (u32,  NT_TYPED_ARRAY_U32,  "__beve_typed_array_u32"),
+    (u64,  NT_TYPED_ARRAY_U64,  "__beve_typed_array_u64"),
+    (u128, NT_TYPED_ARRAY_U128, "__beve_typed_array_u128"),
+    (f32,  NT_TYPED_ARRAY_F32,  "__beve_typed_array_f32"),
+    (f64,  NT_TYPED_ARRAY_F64,  "__beve_typed_array_f64"),
+    (f16,  NT_TYPED_ARRAY_F16,  "__beve_typed_array_f16"),
+    (bf16, NT_TYPED_ARRAY_BF16, "__beve_typed_array_bf16"),
+}
+
 /// Serde `serialize_with` helpers for foreign complex types (e.g. `num_complex::Complex`)
 /// that are layout-compatible with `beve::Complex<T>` (two contiguous `T` fields: re then im).
 ///

@@ -337,9 +337,165 @@ impl ser::Serializer for BytesExtractor {
 }
 
 use crate::error::{Error, Result};
-use crate::ext::{NT_COMPLEX, NT_RAW_VALUE};
+use crate::ext::{NT_COMPLEX, NT_RAW_VALUE, typed_array_tag};
 use crate::header::*;
 use crate::size::{encode_size_to_array, read_size, write_size};
+
+/// A serializer that captures a single `serialize_bytes` call and forwards the
+/// borrowed payload to `F`, copying nothing. Used to write a typed numeric array
+/// from a [`crate::TypedSlice`]'s borrowed little-endian bytes: the closure emits
+/// `header + SIZE + write_all(payload)` straight into the destination, so the
+/// payload is never materialized into a temporary `Vec` (unlike [`BytesExtractor`],
+/// whose `serialize_bytes` does `to_vec`).
+pub(crate) struct TypedArrayWriteSink<F>(pub(crate) F);
+
+impl<F> ser::Serializer for TypedArrayWriteSink<F>
+where
+    F: FnOnce(&[u8]) -> Result<()>,
+{
+    type Ok = ();
+    type Error = Error;
+
+    type SerializeSeq = ser::Impossible<(), Error>;
+    type SerializeTuple = ser::Impossible<(), Error>;
+    type SerializeTupleStruct = ser::Impossible<(), Error>;
+    type SerializeTupleVariant = ser::Impossible<(), Error>;
+    type SerializeMap = ser::Impossible<(), Error>;
+    type SerializeStruct = ser::Impossible<(), Error>;
+    type SerializeStructVariant = ser::Impossible<(), Error>;
+
+    #[inline]
+    fn serialize_bytes(self, v: &[u8]) -> Result<()> {
+        (self.0)(v)
+    }
+
+    #[inline]
+    fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<()> {
+        value.serialize(self)
+    }
+
+    #[inline]
+    fn serialize_newtype_struct<T: ?Sized + Serialize>(
+        self,
+        _name: &'static str,
+        value: &T,
+    ) -> Result<()> {
+        value.serialize(self)
+    }
+
+    fn serialize_bool(self, _v: bool) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_i8(self, _v: i8) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_i16(self, _v: i16) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_i32(self, _v: i32) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_i64(self, _v: i64) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_i128(self, _v: i128) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_u8(self, _v: u8) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_u16(self, _v: u16) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_u32(self, _v: u32) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_u64(self, _v: u64) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_u128(self, _v: u128) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_f32(self, _v: f32) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_f64(self, _v: f64) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_char(self, _v: char) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_str(self, _v: &str) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_none(self) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_unit(self) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+    ) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_newtype_variant<T: ?Sized + Serialize>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _value: &T,
+    ) -> Result<()> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleStruct> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleVariant> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant> {
+        Err(Error::Mismatch("expected typed-array byte payload"))
+    }
+
+    fn is_human_readable(&self) -> bool {
+        false
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnumEncoding {
@@ -538,6 +694,26 @@ impl Serializer {
         self.push(header);
         write_size(bytes.len() as u64, &mut self.buf);
         self.extend_from_slice(bytes);
+    }
+
+    /// Write a typed numeric array from an already little-endian byte payload.
+    ///
+    /// The element count for the SIZE prefix is `payload.len() / elem_size`, which
+    /// is exact by construction (the payload is `count * elem_size` bytes). Used by
+    /// the [`crate::TypedSlice`] bulk-write dispatch, which hands over borrowed
+    /// bytes so the body is appended with a single copy.
+    fn write_typed_array_bytes(
+        &mut self,
+        class: u8,
+        byte_code: u8,
+        elem_size: usize,
+        payload: &[u8],
+    ) {
+        let header = make_header(TYPE_TYPED_ARRAY, class, byte_code);
+        self.push(header);
+        let count = payload.len() / elem_size;
+        write_size(count as u64, &mut self.buf);
+        self.extend_from_slice(payload);
     }
 
     fn write_generic_array_header(&mut self, len: usize) {
@@ -830,7 +1006,17 @@ impl<'a> ser::Serializer for &'a mut Serializer {
                 self.write_raw_value(&raw);
                 Ok(())
             }
-            _ => value.serialize(self),
+            _ => {
+                if let Some((class, byte_code, elem_size)) = typed_array_tag(name) {
+                    // `TypedSlice<T>` field: write the borrowed payload in place.
+                    value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
+                        self.write_typed_array_bytes(class, byte_code, elem_size, bytes);
+                        Ok(())
+                    }))
+                } else {
+                    value.serialize(self)
+                }
+            }
         }
     }
 
@@ -1389,7 +1575,22 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
                 self.seq.count += 1;
                 Ok(())
             }
-            _ => value.serialize(self),
+            _ => {
+                if let Some((class, byte_code, elem_size)) = typed_array_tag(name) {
+                    // A typed array is a full VALUE, so it becomes a generic-array
+                    // element (matching how `NT_RAW_VALUE` is handled here).
+                    self.seq.ensure_generic_mode()?;
+                    let ser = &mut *self.seq.ser;
+                    value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
+                        ser.write_typed_array_bytes(class, byte_code, elem_size, bytes);
+                        Ok(())
+                    }))?;
+                    self.seq.count += 1;
+                    Ok(())
+                } else {
+                    value.serialize(self)
+                }
+            }
         }
     }
 

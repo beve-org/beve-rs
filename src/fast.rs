@@ -1,14 +1,24 @@
+use crate::error::Result;
 use crate::ext::Complex;
 use crate::header::*;
-use crate::size::write_size;
+use crate::size::{size_encoded_len, write_size, write_size_to_writer};
 use core::ptr;
 use half::{bf16, f16};
+use std::io::Write;
+
+/// Compute the typed numeric array header byte for the given class and byte code.
+///
+/// Shared by the `Vec<u8>` and `W: Write` primitives so the header layout has a
+/// single definition.
+#[inline]
+fn typed_array_header_byte(class: u8, byte_code: u8) -> u8 {
+    ((byte_code & 0b111) << 5) | ((class & 0b11) << 3) | (TYPE_TYPED_ARRAY & 0b111)
+}
 
 /// Write a typed array header and length for numeric arrays.
 #[inline]
 fn write_typed_array_header_numeric(out: &mut Vec<u8>, class: u8, byte_code: u8, len: usize) {
-    let header = ((byte_code & 0b111) << 5) | ((class & 0b11) << 3) | (TYPE_TYPED_ARRAY & 0b111);
-    out.push(header);
+    out.push(typed_array_header_byte(class, byte_code));
     write_size(len as u64, out);
 }
 
@@ -136,6 +146,80 @@ pub fn to_vec_typed_slice<T: BeveTypedSlice>(slice: &[T]) -> Vec<u8> {
     let mut out = Vec::with_capacity(1 + 8 + payload);
     write_typed_slice(&mut out, slice);
     out
+}
+
+/// Write a BEVE typed numeric array straight to a writer in a single bulk write.
+///
+/// Emits the typed-array header byte, the SIZE prefix, then the element payload.
+/// On little-endian targets the payload is written with one `write_all` of the
+/// slice reinterpreted as bytes (no allocation, no per-element conversion); on
+/// big-endian targets it falls back to per-element little-endian conversion.
+///
+/// The bytes produced are identical to [`write_typed_slice`] (the `Vec<u8>`
+/// primitive) and, for a non-empty slice, to serializing the equivalent
+/// `Vec<T>` through [`crate::to_writer_streaming`]. See [`typed_slice_size`] for
+/// the matching analytic length, and [`crate::TypedSlice`] to reach this path
+/// through serde for a slice nested inside a derived struct.
+///
+/// # Example
+///
+/// ```rust
+/// let data = [1.0f64, 2.0, 3.0];
+/// let mut buf = Vec::new();
+/// beve::to_writer_typed_slice(&mut buf, &data).unwrap();
+/// assert_eq!(buf.len() as u64, beve::typed_slice_size(&data));
+/// let back: Vec<f64> = beve::from_slice(&buf).unwrap();
+/// assert_eq!(back, data);
+/// ```
+pub fn to_writer_typed_slice<W: Write, T: BeveTypedSlice>(mut w: W, slice: &[T]) -> Result<()> {
+    w.write_all(&[typed_array_header_byte(T::CLASS, T::BYTE_CODE)])?;
+    write_size_to_writer(&mut w, slice.len() as u64)?;
+    if slice.is_empty() {
+        return Ok(());
+    }
+    #[cfg(target_endian = "little")]
+    {
+        // Sound: every `BeveTypedSlice` type is a fixed-width scalar with no
+        // padding and every bit pattern valid, so reinterpreting the slice as
+        // bytes mirrors `write_typed_slice`'s `copy_nonoverlapping`. `size_of_val`
+        // gives the exact payload length.
+        let bytes = unsafe {
+            core::slice::from_raw_parts(slice.as_ptr() as *const u8, core::mem::size_of_val(slice))
+        };
+        w.write_all(bytes)?;
+    }
+    #[cfg(not(target_endian = "little"))]
+    {
+        // Rare big-endian path: convert each element to little-endian. One small
+        // reused scratch buffer, no per-element allocation.
+        let mut scratch = Vec::with_capacity(T::ELEM_SIZE);
+        for v in slice {
+            scratch.clear();
+            T::write_one_le(v, &mut scratch);
+            w.write_all(&scratch)?;
+        }
+    }
+    Ok(())
+}
+
+/// Exact streaming-encoded byte length of [`to_writer_typed_slice`] for `slice`.
+///
+/// Closed-form and O(1) in the element count: `header byte + SIZE prefix width +
+/// payload`. The SIZE width reuses the same codec thresholds as the bytes the
+/// primitive actually writes, so the two cannot drift.
+///
+/// # Example
+///
+/// ```rust
+/// let data = [1u32, 2, 3, 4];
+/// let mut buf = Vec::new();
+/// beve::to_writer_typed_slice(&mut buf, &data).unwrap();
+/// assert_eq!(beve::typed_slice_size(&data), buf.len() as u64);
+/// ```
+pub fn typed_slice_size<T: BeveTypedSlice>(slice: &[T]) -> u64 {
+    1 // header byte
+        + size_encoded_len(slice.len() as u64) as u64 // SIZE prefix width
+        + core::mem::size_of_val(slice) as u64 // payload
 }
 
 /// Write a boolean typed array (bit-packed) to `out`.

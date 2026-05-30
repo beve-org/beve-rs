@@ -41,7 +41,7 @@ mod de;
 mod error;
 mod ext;
 pub mod fast;
-mod field;
+pub mod field;
 mod header;
 mod json;
 #[cfg(feature = "mat")]

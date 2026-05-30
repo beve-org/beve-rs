@@ -325,6 +325,11 @@ fn typed_slice_bodies() {
 
 #[test]
 fn size_prefix_boundaries() {
+    // Covers the 1->2-byte (63/64) and 2->4-byte (16383/16384) prefix thresholds.
+    // The 4->8-byte threshold (2^30 elements/bytes) is omitted on purpose: it would
+    // need a ~1 GiB+ allocation per case, and the prefix-width logic it exercises is
+    // already covered by the lower boundaries. Measure and write share that logic, so
+    // a regression at 2^30 would have to be specific to the 8-byte arm alone.
     for n in [0usize, 1, 63, 64, 16_383, 16_384] {
         // Typed-array element-count prefix.
         let arr: Vec<u16> = vec![7u16; n];

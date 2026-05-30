@@ -1446,8 +1446,12 @@ impl Write for CountingWriter {
 /// The primary use is length-prefixed framing over a non-seekable transport
 /// (e.g. a socket): measure the body, write the frame's length field, then stream
 /// the body in a single pass with no intermediate `Vec<u8>`. Because both calls
-/// share one encoder, the streamed body is guaranteed to be exactly
-/// `serialized_size(value)` bytes long.
+/// share one encoder, the streamed body is exactly `serialized_size(value)` bytes
+/// long — *provided `value` serializes identically on both passes*. That holds for
+/// any pure `Serialize` impl; a value backed by external or interior-mutable state,
+/// or mutated between the measure and the write, can change length between the two
+/// passes and so corrupt the frame. The measure and the write must see the same
+/// value and the same [`SerializerOptions`].
 ///
 /// Returns `u64` (not `usize`) to match the on-wire SIZE domain and stay
 /// meaningful on 32-bit targets.
@@ -1494,7 +1498,9 @@ impl Write for CountingWriter {
 /// assert_eq!(beve::serialized_size(&data).unwrap(), buf.len() as u64);
 /// ```
 ///
-/// Length-prefixed framing (single encode, zero intermediate buffer):
+/// Length-prefixed framing (single encode to output, zero intermediate buffer).
+/// Wrap a raw transport (e.g. a `TcpStream`) in a [`BufWriter`](std::io::BufWriter)
+/// so a nested body does not become one syscall per field:
 ///
 /// ```rust
 /// # use std::io::Write;

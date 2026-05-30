@@ -139,7 +139,13 @@ fn tuples_and_heterogeneous() {
     // Outer seq whose elements are themselves seqs -> generic array of typed arrays.
     assert_size_eq(&vec![vec![1i32, 2], vec![3, 4, 5]]);
     // Heterogeneous tuple containing a nested struct.
-    assert_size_eq(&("label".to_string(), Inner { a: 1.0, b: "z".into() }));
+    assert_size_eq(&(
+        "label".to_string(),
+        Inner {
+            a: 1.0,
+            b: "z".into(),
+        },
+    ));
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -264,15 +270,27 @@ fn enum_variants_options_parity() {
 fn half_floats_and_complex() {
     assert_size_eq(&bf16::from_f32(1.5));
     assert_size_eq(&f16::from_f32(2.5));
-    assert_size_eq(&Complex { re: 1.0f64, im: -2.0f64 });
-    assert_size_eq(&Complex { re: 3.0f32, im: 4.0f32 });
+    assert_size_eq(&Complex {
+        re: 1.0f64,
+        im: -2.0f64,
+    });
+    assert_size_eq(&Complex {
+        re: 3.0f32,
+        im: 4.0f32,
+    });
     // Typed complex array (extension encoding).
     assert_size_eq(&vec![
-        Complex { re: 1.0f64, im: 2.0 },
+        Complex {
+            re: 1.0f64,
+            im: 2.0,
+        },
         Complex { re: 3.0, im: 4.0 },
     ]);
     assert_size_eq(&vec![
-        Complex { re: 0.5f32, im: -0.5 },
+        Complex {
+            re: 0.5f32,
+            im: -0.5,
+        },
         Complex { re: 1.5, im: 2.5 },
     ]);
 }

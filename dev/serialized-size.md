@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed.
+Implemented (beve side). The remaining repe-side adoption (last checklist item) is
+tracked separately.
 
 ## Summary
 
@@ -373,12 +374,11 @@ The central invariant is exactness, so the primary tests assert
 
 ## Implementation checklist
 
-- [ ] Add `CountingWriter` (private) to `src/streaming_ser.rs`.
-- [ ] Add `serialized_size` / `serialized_size_with_options` in `src/streaming_ser.rs`.
-- [ ] Re-export both from `src/lib.rs`.
-- [ ] Tests per the strategy above (`tests/streaming.rs` or a new
-      `tests/serialized_size.rs`).
-- [ ] Rustdoc on both functions: exact-dual-of-`to_writer_streaming` contract,
+- [x] Add `CountingWriter` (private) to `src/streaming_ser.rs`.
+- [x] Add `serialized_size` / `serialized_size_with_options` in `src/streaming_ser.rs`.
+- [x] Re-export both from `src/lib.rs`.
+- [x] Tests per the strategy above (new `tests/serialized_size.rs`).
+- [x] Rustdoc on both functions: exact-dual-of-`to_writer_streaming` contract,
       the leaf-O(1)/structure-O(payload) cost note, and the REPE usage example.
 - [ ] (repe, separate change) bump the `beve` dependency and adopt the
       measure-then-stream call site.

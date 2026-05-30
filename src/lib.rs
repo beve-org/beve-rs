@@ -41,7 +41,7 @@ mod de;
 mod error;
 mod ext;
 pub mod fast;
-mod field;
+pub mod field;
 mod header;
 mod json;
 #[cfg(feature = "mat")]
@@ -81,7 +81,8 @@ pub use crate::ser::{
 };
 pub use crate::streaming_de::{StreamingDeserializer, from_reader_streaming};
 pub use crate::streaming_ser::{
-    StreamingSerializer, to_writer_streaming, to_writer_streaming_with_options,
+    StreamingSerializer, serialized_size, serialized_size_with_options, to_writer_streaming,
+    to_writer_streaming_with_options,
 };
 pub use crate::value::{
     BigInt, BigIntKey, Key, Number, Object, Value, ValueError, from_value, from_value_ref,

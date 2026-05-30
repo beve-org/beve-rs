@@ -134,7 +134,7 @@ pub fn write_typed_slice<T: BeveTypedSlice>(out: &mut Vec<u8>, slice: &[T]) {
     }
 }
 
-/// Encode a typed numeric slice to a new Vec<u8> (BEVE typed array).
+/// Encode a typed numeric slice to a new `Vec<u8>` (BEVE typed array).
 pub fn to_vec_typed_slice<T: BeveTypedSlice>(slice: &[T]) -> Vec<u8> {
     let payload = slice.len() * T::ELEM_SIZE;
     let mut out = Vec::with_capacity(1 + 8 + payload);
@@ -238,7 +238,7 @@ pub fn write_bool_slice(out: &mut Vec<u8>, slice: &[bool]) {
     }
 }
 
-/// Encode a boolean slice to a new Vec<u8> (BEVE typed boolean array).
+/// Encode a boolean slice to a new `Vec<u8>` (BEVE typed boolean array).
 pub fn to_vec_bool_slice(slice: &[bool]) -> Vec<u8> {
     let mut out = Vec::new();
     write_bool_slice(&mut out, slice);
@@ -254,7 +254,7 @@ pub fn write_str_slice(out: &mut Vec<u8>, slice: &[&str]) {
     }
 }
 
-/// Encode `&[&str]` to a new Vec<u8> (BEVE typed string array).
+/// Encode `&[&str]` to a new `Vec<u8>` (BEVE typed string array).
 pub fn to_vec_str_slice(slice: &[&str]) -> Vec<u8> {
     let mut out = Vec::new();
     write_str_slice(&mut out, slice);
@@ -270,7 +270,7 @@ pub fn write_string_slice(out: &mut Vec<u8>, slice: &[String]) {
     }
 }
 
-/// Encode `&[String]` to a new Vec<u8> (BEVE typed string array).
+/// Encode `&[String]` to a new `Vec<u8>` (BEVE typed string array).
 pub fn to_vec_string_slice(slice: &[String]) -> Vec<u8> {
     let mut out = Vec::new();
     write_string_slice(&mut out, slice);
@@ -313,7 +313,7 @@ pub fn write_complex_slice<T: BeveTypedSlice>(out: &mut Vec<u8>, slice: &[Comple
     }
 }
 
-/// Encode a complex slice to a new Vec<u8> (BEVE complex extension array).
+/// Encode a complex slice to a new `Vec<u8>` (BEVE complex extension array).
 pub fn to_vec_complex_slice<T: BeveTypedSlice>(slice: &[Complex<T>]) -> Vec<u8> {
     let payload = core::mem::size_of_val(slice);
     let mut out = Vec::with_capacity(2 + 8 + payload);

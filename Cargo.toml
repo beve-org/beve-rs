@@ -31,3 +31,7 @@ name = "beve-cli"
 [[bench]]
 name = "serialization"
 harness = false
+
+[[bench]]
+name = "serialized_size"
+harness = false

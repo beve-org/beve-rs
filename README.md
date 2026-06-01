@@ -217,7 +217,10 @@ fn encode_science() -> beve::Result<()> {
         Complex { re: 0.0, im: 2.0 },
     ];
     let dense = beve::to_vec_complex_slice(&complex);
-    let roundtrip: Vec<Complex<f64>> = beve::from_slice(&dense)?;
+    // `read_complex_slice` is the bulk decode counterpart of
+    // `to_vec_complex_slice`: one bounds-checked contiguous read instead of
+    // element-by-element serde. `from_slice` still works if you prefer serde.
+    let roundtrip = beve::read_complex_slice::<f64>(&dense)?;
     assert_eq!(roundtrip, complex);
 
     // Integer complex

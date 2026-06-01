@@ -178,6 +178,36 @@ fn bench_numeric_arrays(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_complex_arrays(c: &mut Criterion) {
+    let values: Vec<Complex<f64>> = (0..4096)
+        .map(|i| Complex {
+            re: (i as f64 * 0.25).cos(),
+            im: (i as f64 * 0.125).sin(),
+        })
+        .collect();
+    let slice = values.as_slice();
+    let complex_bytes = beve::to_vec_complex_slice(slice);
+
+    let mut group = c.benchmark_group("complex_arrays_f64");
+    // Decode: generic serde (nested per-element visitors) vs the bulk reader
+    // (one bounds check + one contiguous copy). Same input bytes.
+    group.bench_function("serde_from_slice", |b| {
+        b.iter(|| {
+            let decoded: Vec<Complex<f64>> =
+                beve::from_slice(black_box(&complex_bytes)).expect("decode complex slice");
+            black_box(decoded);
+        });
+    });
+    group.bench_function("read_complex_slice", |b| {
+        b.iter(|| {
+            let decoded = beve::read_complex_slice::<f64>(black_box(&complex_bytes))
+                .expect("bulk decode complex slice");
+            black_box(decoded);
+        });
+    });
+    group.finish();
+}
+
 fn bench_bool_arrays(c: &mut Criterion) {
     let flags: Vec<bool> = (0..8192).map(|i| (i % 3 == 0) ^ (i % 5 == 0)).collect();
     let slice = flags.as_slice();
@@ -387,6 +417,7 @@ criterion_group!(
     benches,
     bench_struct_roundtrip,
     bench_numeric_arrays,
+    bench_complex_arrays,
     bench_bool_arrays,
     bench_string_arrays,
     bench_matrix_payloads,

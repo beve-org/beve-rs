@@ -1,7 +1,7 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::ext::Complex;
 use crate::header::*;
-use crate::size::{size_encoded_len, write_size, write_size_to_writer};
+use crate::size::{read_size, size_encoded_len, write_size, write_size_to_writer};
 // Only the little-endian bulk-copy paths use raw `ptr`; on big-endian they fall
 // back to per-element conversion, so the import would otherwise be unused there.
 #[cfg(target_endian = "little")]
@@ -319,6 +319,106 @@ pub fn to_vec_complex_slice<T: BeveTypedSlice>(slice: &[Complex<T>]) -> Vec<u8> 
     let mut out = Vec::with_capacity(2 + 8 + payload);
     write_complex_slice(&mut out, slice);
     out
+}
+
+/// Decode a BEVE complex array (the bytes produced by [`write_complex_slice`] /
+/// [`to_vec_complex_slice`]) into a `Vec<Complex<T>>` in a single bounds-checked
+/// bulk read — the read counterpart of the zero-copy writer.
+///
+/// Like the writer, this is opt-in and requires the caller to name the element
+/// type `T`: serde's `Deserialize` for `Vec<Complex<T>>` pulls elements one at a
+/// time through nested visitors and never sees the contiguous little-endian
+/// block, so the generic `from_slice` path cannot take it automatically. On
+/// little-endian targets the whole payload is moved with one `copy_nonoverlapping`
+/// after a single bounds check; on big-endian targets it falls back to
+/// per-element little-endian decode.
+///
+/// Errors if `input` is not a complex *array* extension, if the on-wire
+/// class/byte-code do not match `T`, or if the payload is truncated. Any bytes
+/// after the array are ignored, so the value may be read from the head of a
+/// larger buffer.
+///
+/// # Example
+///
+/// ```rust
+/// use beve::Complex;
+/// let data = [Complex { re: 1.0f64, im: -2.0 }, Complex { re: 3.5, im: 4.25 }];
+/// let bytes = beve::to_vec_complex_slice(&data);
+/// let back = beve::read_complex_slice::<f64>(&bytes).unwrap();
+/// assert_eq!(back, data);
+/// ```
+pub fn read_complex_slice<T: BeveTypedSlice>(input: &[u8]) -> Result<Vec<Complex<T>>> {
+    let mut pos = 0usize;
+
+    // Extension header byte: must be the complex extension.
+    let header = *input.get(pos).ok_or(Error::Eof)?;
+    pos += 1;
+    if parse_type(header) != TYPE_EXTENSION || parse_extension_id(header) != EXT_COMPLEX {
+        return Err(Error::InvalidType("not a complex extension"));
+    }
+
+    // Complex header byte: bit0 = array flag, bits3-4 = class, bits5-7 = byte code.
+    let ch = *input.get(pos).ok_or(Error::Eof)?;
+    pos += 1;
+    let is_array = (ch & 0x01) != 0;
+    let class = (ch >> 3) & 0x03;
+    let byte_code = (ch >> 5) & 0x07;
+    if !is_array {
+        return Err(Error::InvalidType(
+            "expected a complex array, found a scalar complex",
+        ));
+    }
+    if class != T::CLASS || byte_code != T::BYTE_CODE {
+        return Err(Error::Mismatch("complex element type does not match T"));
+    }
+
+    let len = read_size(input, &mut pos)? as usize;
+    // Two scalars (re, im) per complex value.
+    let payload = len
+        .checked_mul(2 * T::ELEM_SIZE)
+        .ok_or(Error::InvalidSize)?;
+    if input.len() - pos < payload {
+        return Err(Error::Eof);
+    }
+    let src = &input[pos..pos + payload];
+
+    let mut out: Vec<Complex<T>> = Vec::with_capacity(len);
+    if len != 0 {
+        // `Complex<T>` is `#[repr(C)]` over two fixed-width, no-padding scalars, so
+        // `len` values occupy exactly `payload` contiguous bytes laid out as
+        // [re, im, re, im, ...] — the same layout `write_complex_slice` writes. The
+        // destination `Vec` is allocated with `Complex<T>`'s alignment, and `src` is
+        // exactly `payload` bytes by the bounds check above.
+        #[cfg(target_endian = "little")]
+        {
+            // The wire payload is little-endian and so is the target, so the bytes
+            // are already the in-memory representation: one bulk copy, no per-element
+            // work — the mirror of the writer's `copy_nonoverlapping`.
+            unsafe {
+                ptr::copy_nonoverlapping(src.as_ptr(), out.as_mut_ptr() as *mut u8, payload);
+                out.set_len(len);
+            }
+        }
+        #[cfg(not(target_endian = "little"))]
+        {
+            // Big-endian fallback: copy the little-endian payload, then byte-reverse
+            // each scalar in place. On a big-endian target the native byte order is
+            // the reverse of the wire's little-endian, and every scalar is exactly
+            // `ELEM_SIZE` wide with no padding, so reversing each `ELEM_SIZE` chunk
+            // across the whole payload yields the correct native values. Correct, and
+            // the rare path (matching the writer, whose bulk copy is also LE-only).
+            unsafe {
+                let dst = out.as_mut_ptr() as *mut u8;
+                core::ptr::copy_nonoverlapping(src.as_ptr(), dst, payload);
+                let bytes = core::slice::from_raw_parts_mut(dst, payload);
+                for elem in bytes.chunks_exact_mut(T::ELEM_SIZE) {
+                    elem.reverse();
+                }
+                out.set_len(len);
+            }
+        }
+    }
+    Ok(out)
 }
 
 // -------- Matrices (extension) --------

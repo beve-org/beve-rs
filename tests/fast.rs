@@ -1,5 +1,6 @@
 #![deny(warnings)]
 
+use beve::Complex;
 use serde::{Deserialize, Serialize};
 
 // Minimal SIZE encoder for tests (matches src/size.rs behavior)
@@ -161,6 +162,86 @@ fn fast_numeric_in_struct_vs_serde() {
     check!(i64, vec![-1, 0, 1]);
     check!(f32, vec![1.0, -2.5, 3.25]);
     check!(f64, vec![1.0, -2.5, 3.25]);
+}
+
+#[test]
+fn read_complex_slice_roundtrips_writer() {
+    macro_rules! check {
+        ($t:ty, $val:expr) => {
+            let v: Vec<Complex<$t>> = $val;
+            let bytes = beve::to_vec_complex_slice(&v);
+
+            // Bulk reader round-trips the bulk writer.
+            let bulk = beve::read_complex_slice::<$t>(&bytes).unwrap();
+            assert_eq!(
+                bulk,
+                v,
+                "bulk read mismatch for {}",
+                std::any::type_name::<$t>()
+            );
+
+            // ...and agrees with the generic serde decode of the same bytes.
+            let via_serde: Vec<Complex<$t>> = beve::from_slice(&bytes).unwrap();
+            assert_eq!(
+                bulk,
+                via_serde,
+                "bulk vs serde mismatch for {}",
+                std::any::type_name::<$t>()
+            );
+        };
+    }
+
+    check!(
+        f32,
+        vec![
+            Complex { re: 1.0, im: -2.0 },
+            Complex { re: 3.5, im: 4.25 },
+            Complex { re: -0.0, im: 1e9 },
+        ]
+    );
+    check!(
+        f64,
+        vec![Complex { re: 1.0, im: -2.0 }, Complex { re: 3.5, im: 4.25 },]
+    );
+    check!(
+        i32,
+        vec![
+            Complex { re: -1, im: 0 },
+            Complex {
+                re: 1,
+                im: 1_000_000
+            },
+        ]
+    );
+    check!(
+        u16,
+        vec![Complex { re: 0, im: 65535 }, Complex { re: 7, im: 9 }]
+    );
+    // Empty array: header only, no payload.
+    check!(f64, vec![]);
+}
+
+#[test]
+fn read_complex_slice_rejects_mismatched_and_truncated() {
+    let v = vec![
+        Complex {
+            re: 1.0f64,
+            im: 2.0,
+        },
+        Complex { re: 3.0, im: 4.0 },
+    ];
+    let bytes = beve::to_vec_complex_slice(&v);
+
+    // Wrong element width (decoding an f64 array as f32) is a type mismatch, not
+    // a silent reinterpretation.
+    assert!(beve::read_complex_slice::<f32>(&bytes).is_err());
+
+    // A truncated payload is an EOF, not an out-of-bounds read.
+    assert!(beve::read_complex_slice::<f64>(&bytes[..bytes.len() - 1]).is_err());
+
+    // A non-complex value (a plain typed numeric array) is rejected.
+    let typed = beve::to_vec_typed_slice(&[1.0f64, 2.0, 3.0]);
+    assert!(beve::read_complex_slice::<f64>(&typed).is_err());
 }
 
 #[test]

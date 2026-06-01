@@ -57,7 +57,30 @@ let back: Vec<Complex<f64>> = beve::from_slice(&bytes).unwrap();
 assert_eq!(back, arr);
 ```
 
-`to_vec_complex_slice` works for any supported scalar type:
+`from_slice` decodes a complex array element-by-element through serde. When
+the element type is known up front, `read_complex_slice` is the bulk decode
+counterpart of `to_vec_complex_slice`: it validates the header and then reads
+the whole contiguous little-endian block in a single bounds-checked copy,
+which is dramatically faster for large arrays (see `benches/serialization.rs`):
+
+```rust
+use beve::Complex;
+
+let arr = [
+    Complex { re: 1.0f64, im: 2.0 },
+    Complex { re: 3.0, im: 4.0 },
+];
+let bytes = beve::to_vec_complex_slice(&arr);
+let back = beve::read_complex_slice::<f64>(&bytes).unwrap();
+assert_eq!(back, arr);
+```
+
+Like the writer, it is opt-in and requires you to name the element type,
+because serde's `Deserialize` for `Vec<Complex<T>>` never exposes the backing
+block to the deserializer. It errors if the bytes are not a complex array, if
+the on-wire element type does not match `T`, or if the payload is truncated.
+
+`to_vec_complex_slice` / `read_complex_slice` work for any supported scalar type:
 
 ```rust
 use beve::Complex;

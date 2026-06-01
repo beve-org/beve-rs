@@ -323,20 +323,22 @@ pub fn to_vec_complex_slice<T: BeveTypedSlice>(slice: &[Complex<T>]) -> Vec<u8> 
 
 /// Decode a BEVE complex array (the bytes produced by [`write_complex_slice`] /
 /// [`to_vec_complex_slice`]) into a `Vec<Complex<T>>` in a single bounds-checked
-/// bulk read — the read counterpart of the zero-copy writer.
+/// bulk read — the read counterpart of the bulk writer.
 ///
 /// Like the writer, this is opt-in and requires the caller to name the element
 /// type `T`: serde's `Deserialize` for `Vec<Complex<T>>` pulls elements one at a
 /// time through nested visitors and never sees the contiguous little-endian
 /// block, so the generic `from_slice` path cannot take it automatically. On
-/// little-endian targets the whole payload is moved with one `copy_nonoverlapping`
-/// after a single bounds check; on big-endian targets it falls back to
-/// per-element little-endian decode.
+/// little-endian targets the whole payload is moved into the result with one
+/// `copy_nonoverlapping` after a single bounds check (a single bulk copy, not
+/// zero-copy: the input bytes may be unaligned for `Complex<T>`); on big-endian
+/// targets it copies and then byte-reverses each scalar in place.
 ///
 /// Errors if `input` is not a complex *array* extension, if the on-wire
 /// class/byte-code do not match `T`, or if the payload is truncated. Any bytes
-/// after the array are ignored, so the value may be read from the head of a
-/// larger buffer.
+/// after the array are ignored (matching [`crate::from_slice`]); the function
+/// returns only the decoded `Vec`, so it does not report how many bytes were
+/// consumed.
 ///
 /// # Example
 ///

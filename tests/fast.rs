@@ -242,6 +242,23 @@ fn read_complex_slice_rejects_mismatched_and_truncated() {
     // A non-complex value (a plain typed numeric array) is rejected.
     let typed = beve::to_vec_typed_slice(&[1.0f64, 2.0, 3.0]);
     assert!(beve::read_complex_slice::<f64>(&typed).is_err());
+
+    // Same width, different class: an i64 complex array decoded as u64 trips the
+    // class half of the type check independently of byte width (both byte_code 3).
+    let signed = beve::to_vec_complex_slice(&[Complex { re: -1i64, im: 2 }]);
+    assert!(beve::read_complex_slice::<u64>(&signed).is_err());
+
+    // A scalar (non-array) complex is rejected: serde encodes a bare `Complex`
+    // as a complex extension with the array flag clear.
+    let scalar = beve::to_vec(&Complex {
+        re: 1.0f64,
+        im: 2.0,
+    })
+    .unwrap();
+    assert!(beve::read_complex_slice::<f64>(&scalar).is_err());
+
+    // Empty input: there is not even a header byte to read.
+    assert!(beve::read_complex_slice::<f64>(&[]).is_err());
 }
 
 #[test]

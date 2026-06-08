@@ -320,7 +320,10 @@ fn read_typed_slice_rejects_mismatched_and_truncated() {
     assert!(beve::read_typed_slice::<i64>(&unsigned).is_err());
 
     // A complex array (extension type) is not a plain typed array and is rejected.
-    let complex = beve::to_vec_complex_slice(&[Complex { re: 1.0f64, im: 2.0 }]);
+    let complex = beve::to_vec_complex_slice(&[Complex {
+        re: 1.0f64,
+        im: 2.0,
+    }]);
     assert!(beve::read_typed_slice::<f64>(&complex).is_err());
 
     // A bit-packed boolean array shares the typed-array type tag but uses the

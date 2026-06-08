@@ -1038,6 +1038,8 @@ impl<'de, 'a> de::SeqAccess<'de> for ComplexPairAccess<'a, 'de> {
         self.state += 1;
         let deser = match self.class {
             NUM_FLOAT => match self.byte_code {
+                0 => NumDe::Half(HalfKind::Bf16, self.de.parse_bf16_bits()?),
+                1 => NumDe::Half(HalfKind::F16, self.de.parse_f16_bits()?),
                 2 => NumDe::F32(self.de.parse_f32()?),
                 3 => NumDe::F64(self.de.parse_f64()?),
                 _ => return Err(Error::Unsupported("unsupported complex float width")),

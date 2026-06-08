@@ -761,7 +761,7 @@ impl Serializer {
         byte_code: u8,
         payload: &[u8],
     ) -> Result<()> {
-        let elem_bytes = (1usize << byte_code) * 2;
+        let elem_bytes = complex_elem_bytes(class, byte_code);
         if payload.len() != elem_bytes {
             return Err(Error::Mismatch("invalid complex payload size"));
         }
@@ -775,6 +775,26 @@ impl Serializer {
     fn write_raw_value(&mut self, raw: &[u8]) {
         self.extend_from_slice(raw);
     }
+}
+
+/// Byte size of one complex value (`re` + `im`) for a given numeric `class` and
+/// `byte_code`.
+///
+/// The FLOAT class encodes the two 2-byte half floats with `byte_code` 0 (bf16)
+/// and 1 (f16); these do **not** follow the generic `1 << byte_code` scalar width
+/// (which would give 1 and 2 bytes), they are both 2 bytes. Every other
+/// class/byte_code follows `1 << byte_code` (0:1, 1:2, 2:4, 3:8, 4:16). Using the
+/// generic formula for the complex payload size silently mis-sizes a bf16 complex
+/// (and only by coincidence sizes f16 correctly), so all three complex-payload
+/// paths route through here.
+#[inline]
+fn complex_elem_bytes(class: u8, byte_code: u8) -> usize {
+    let scalar = if class == NUM_FLOAT && byte_code <= 1 {
+        2 // bf16 (byte_code 0) and f16 (byte_code 1) are both 2 bytes
+    } else {
+        1usize << byte_code
+    };
+    scalar * 2
 }
 
 pub fn to_vec<T: Serialize>(value: &T) -> Result<Vec<u8>> {
@@ -1355,7 +1375,7 @@ impl<'a> SeqSerializer<'a> {
             SeqMode::TypedComplex { class, byte_code } => (class, byte_code),
             _ => return Ok(()),
         };
-        let elem_bytes = (1usize << byte_code) * 2;
+        let elem_bytes = complex_elem_bytes(class, byte_code);
         let start_pos = self.start_pos;
         let header_len = if self.patch.is_some() {
             2 + 8
@@ -1860,7 +1880,7 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
         byte_code: u8,
         payload: &[u8],
     ) -> Result<()> {
-        let elem_bytes = (1usize << byte_code) * 2;
+        let elem_bytes = complex_elem_bytes(class, byte_code);
         if payload.len() != elem_bytes {
             return Err(Error::Mismatch("invalid complex payload size"));
         }

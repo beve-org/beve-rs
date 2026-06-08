@@ -243,6 +243,116 @@ fn complex_vec_f32_serde_emits_array_extension() {
 }
 
 #[test]
+fn complex_half_single_roundtrip() {
+    // FLOAT class (0), byte_code 0 = bf16 and 1 = f16 — both 2-byte, distinguished
+    // only by byte_code. The scalar complex header is `(byte_code << 5) | (class
+    // << 3) | is_array`, so bf16 = 0x00 and f16 = 0x20.
+    let cb = beve::Complex {
+        re: bf16::from_f32(1.5),
+        im: bf16::from_f32(-2.25),
+    };
+    let bytes = beve::to_vec(&cb).unwrap();
+    assert_eq!(bytes[0], 0x1e);
+    assert_eq!(bytes[1], 0x00);
+    let back: beve::Complex<bf16> = beve::from_slice(&bytes).unwrap();
+    assert_eq!(back, cb);
+
+    let cf = beve::Complex {
+        re: f16::from_f32(1.5),
+        im: f16::from_f32(-2.25),
+    };
+    let bytes = beve::to_vec(&cf).unwrap();
+    assert_eq!(bytes[0], 0x1e);
+    assert_eq!(bytes[1], 0x20);
+    let back: beve::Complex<f16> = beve::from_slice(&bytes).unwrap();
+    assert_eq!(back, cf);
+}
+
+#[test]
+fn complex_half_vec_roundtrip() {
+    // bf16's byte_code 0 is the case that regressed: the serializer sized the
+    // complex payload as `(1 << byte_code) * 2`, giving 2 bytes instead of 4, so a
+    // bf16 complex failed to encode at all. f16's byte_code 1 sized correctly only
+    // by coincidence. Assert both encode, round-trip, and agree byte-for-byte with
+    // the bulk encoder (`to_vec_complex_slice`).
+    macro_rules! check {
+        ($t:ty, $vals:expr, $array_header:expr) => {{
+            let values: Vec<beve::Complex<$t>> = $vals;
+            let bytes = beve::to_vec(&values).unwrap();
+            assert_eq!(bytes[0], 0x1e);
+            assert_eq!(bytes[1], $array_header);
+            // serde encoder agrees with the bulk encoder, and both decode paths
+            // recover the values from the serde bytes.
+            assert_eq!(bytes, beve::to_vec_complex_slice(&values));
+            let via_serde: Vec<beve::Complex<$t>> = beve::from_slice(&bytes).unwrap();
+            assert_eq!(via_serde, values);
+            let via_bulk = beve::read_complex_slice::<$t>(&bytes).unwrap();
+            assert_eq!(via_bulk, values);
+        }};
+    }
+
+    check!(
+        bf16,
+        vec![
+            beve::Complex {
+                re: bf16::from_f32(1.0),
+                im: bf16::from_f32(2.0)
+            },
+            beve::Complex {
+                re: bf16::from_f32(-3.5),
+                im: bf16::from_f32(0.25)
+            },
+        ],
+        0x01
+    );
+    check!(
+        f16,
+        vec![
+            beve::Complex {
+                re: f16::from_f32(1.0),
+                im: f16::from_f32(2.0)
+            },
+            beve::Complex {
+                re: f16::from_f32(-3.5),
+                im: f16::from_f32(0.25)
+            },
+        ],
+        0x21
+    );
+}
+
+#[test]
+fn complex_half_in_struct_roundtrip() {
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Frame {
+        label: String,
+        sample: beve::Complex<bf16>,
+        series: Vec<beve::Complex<f16>>,
+    }
+
+    let f = Frame {
+        label: "half".to_string(),
+        sample: beve::Complex {
+            re: bf16::from_f32(2.0),
+            im: bf16::from_f32(-1.5),
+        },
+        series: vec![
+            beve::Complex {
+                re: f16::from_f32(1.0),
+                im: f16::from_f32(2.0),
+            },
+            beve::Complex {
+                re: f16::from_f32(3.0),
+                im: f16::from_f32(4.0),
+            },
+        ],
+    };
+    let bytes = beve::to_vec(&f).unwrap();
+    let back: Frame = beve::from_slice(&bytes).unwrap();
+    assert_eq!(back, f);
+}
+
+#[test]
 fn complex_integer_single_roundtrip() {
     macro_rules! test_complex_single {
         ($t:ty, $re:expr, $im:expr, $expected_header:expr) => {{

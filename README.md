@@ -164,7 +164,13 @@ let packed = beve::to_vec_bool_slice(&flags);
 let names = ["alpha", "beta", "gamma"];
 let encoded = beve::to_vec_str_slice(&names);
 ```
-The resulting payloads match serde output, so `beve::from_slice::<Vec<T>>` continues to work.
+The resulting payloads match serde output, so `beve::from_slice::<Vec<T>>` continues to work. For the decode side, `read_typed_slice` is the bulk counterpart of `to_vec_typed_slice` (and `read_complex_slice` of `to_vec_complex_slice`): one bounds-checked contiguous read into a `Vec<T>` instead of element-by-element serde, when the whole body is a numeric array.
+```rust
+let floats = [1.0f32, 3.5, -2.25];
+let bytes = beve::to_vec_typed_slice(&floats);
+let back = beve::read_typed_slice::<f32>(&bytes).unwrap();
+assert_eq!(back, floats);
+```
 
 ### Typed Arrays Inside Structs
 Struct fields automatically use the packed typed-array fast paths, so you get compact encodings without custom serializers:

@@ -1,6 +1,7 @@
 #![deny(warnings)]
 
 use beve::Complex;
+use half::{bf16, f16};
 use serde::{Deserialize, Serialize};
 
 // Minimal SIZE encoder for tests (matches src/size.rs behavior)
@@ -217,8 +218,30 @@ fn read_complex_slice_roundtrips_writer() {
         u16,
         vec![Complex { re: 0, im: 65535 }, Complex { re: 7, im: 9 }]
     );
+    // Widest width / only byte_code above 3 (16 bytes), where a `2 * ELEM_SIZE`
+    // stride miscalculation would surface first.
+    check!(
+        u128,
+        vec![Complex {
+            re: 0u128,
+            im: u128::MAX
+        }]
+    );
+    check!(
+        i128,
+        vec![Complex {
+            re: i128::MIN,
+            im: i128::MAX
+        }]
+    );
     // Empty array: header only, no payload.
     check!(f64, vec![]);
+    // Note: the half-float complex types (`Complex<f16>` / `Complex<bf16>`) are
+    // intentionally omitted here. The bulk path (`to_vec_complex_slice` /
+    // `read_complex_slice`) handles them, but `Complex<half>` does not implement
+    // serde `Serialize`/`Deserialize`, so this macro's `from_slice` cross-check
+    // cannot cover them. See `read_typed_slice_roundtrips_writer` for full
+    // half-float coverage on the (serde-supported) non-complex path.
 }
 
 #[test]
@@ -259,6 +282,105 @@ fn read_complex_slice_rejects_mismatched_and_truncated() {
 
     // Empty input: there is not even a header byte to read.
     assert!(beve::read_complex_slice::<f64>(&[]).is_err());
+}
+
+#[test]
+fn read_typed_slice_roundtrips_writer() {
+    macro_rules! check {
+        ($t:ty, $val:expr) => {
+            let v: Vec<$t> = $val;
+            let bytes = beve::to_vec_typed_slice(&v);
+
+            // Bulk reader round-trips the bulk writer.
+            let bulk = beve::read_typed_slice::<$t>(&bytes).unwrap();
+            assert_eq!(
+                bulk,
+                v,
+                "bulk read mismatch for {}",
+                std::any::type_name::<$t>()
+            );
+
+            // ...and agrees with the generic serde decode of the same bytes.
+            let via_serde: Vec<$t> = beve::from_slice(&bytes).unwrap();
+            assert_eq!(
+                bulk,
+                via_serde,
+                "bulk vs serde mismatch for {}",
+                std::any::type_name::<$t>()
+            );
+        };
+    }
+
+    check!(u8, vec![0, 1, 2, 255]);
+    check!(u16, vec![0, 1, 1024, 65535]);
+    check!(u32, vec![0, 1, 1_000_000]);
+    check!(u64, vec![0, 1, u64::MAX]);
+    check!(i8, vec![-128, -1, 0, 1, 127]);
+    check!(i16, vec![-1, 0, 1, 1024]);
+    check!(i32, vec![-1, 0, 1, 1_000_000]);
+    check!(i64, vec![i64::MIN, -1, 0, 1, i64::MAX]);
+    check!(f32, vec![1.0, -2.5, 3.25, -0.0]);
+    check!(f64, vec![1.0, -2.5, 3.25, 1e9]);
+    // The widest width (16 bytes) and the only `byte_code` above 3, where a
+    // payload-stride miscalculation would surface first.
+    check!(u128, vec![0, 1, u128::MAX]);
+    check!(i128, vec![i128::MIN, -1, 0, 1, i128::MAX]);
+    // The two 2-byte floats: same width and class, distinguished *only* by
+    // `byte_code` (bf16 = 0, f16 = 1), so a round-trip locks that the reader keys
+    // the right one. bf16's code-0 is the library's special case.
+    check!(
+        bf16,
+        vec![
+            bf16::from_f32(1.0),
+            bf16::from_f32(-2.5),
+            bf16::from_f32(3.25)
+        ]
+    );
+    check!(
+        f16,
+        vec![f16::from_f32(1.0), f16::from_f32(-2.5), f16::from_f32(3.25)]
+    );
+    // Empty array: header only, no payload.
+    check!(f64, vec![]);
+}
+
+#[test]
+fn read_typed_slice_rejects_mismatched_and_truncated() {
+    let v = vec![1.0f64, 2.0, 3.0];
+    let bytes = beve::to_vec_typed_slice(&v);
+
+    // Wrong element width (decoding an f64 array as f32) is a type mismatch, not a
+    // silent reinterpretation.
+    assert!(beve::read_typed_slice::<f32>(&bytes).is_err());
+
+    // A truncated payload is an EOF, not an out-of-bounds read.
+    assert!(beve::read_typed_slice::<f64>(&bytes[..bytes.len() - 1]).is_err());
+
+    // Same width, different class: a u64 array decoded as i64 trips the class half
+    // of the type check independently of byte width (both byte_code 3).
+    let unsigned = beve::to_vec_typed_slice(&[1u64, 2, 3]);
+    assert!(beve::read_typed_slice::<i64>(&unsigned).is_err());
+
+    // Same width *and* class, different byte_code: a bf16 array (2-byte float,
+    // byte_code 0) decoded as f16 (2-byte float, byte_code 1) trips the byte_code
+    // half of the check, locking bf16's special-case code-0 against f16's code-1.
+    let bf = beve::to_vec_typed_slice(&[bf16::from_f32(1.0), bf16::from_f32(2.0)]);
+    assert!(beve::read_typed_slice::<f16>(&bf).is_err());
+
+    // A complex array (extension type) is not a plain typed array and is rejected.
+    let complex = beve::to_vec_complex_slice(&[Complex {
+        re: 1.0f64,
+        im: 2.0,
+    }]);
+    assert!(beve::read_typed_slice::<f64>(&complex).is_err());
+
+    // A bit-packed boolean array shares the typed-array type tag but uses the
+    // bool/string class, so it is rejected rather than misread as numbers.
+    let bools = beve::to_vec_bool_slice(&[true, false, true]);
+    assert!(beve::read_typed_slice::<u8>(&bools).is_err());
+
+    // Empty input: there is not even a header byte to read.
+    assert!(beve::read_typed_slice::<f64>(&[]).is_err());
 }
 
 #[test]

@@ -168,10 +168,19 @@ fn bench_numeric_arrays(c: &mut Criterion) {
             black_box(bytes);
         });
     });
+    // Decode: generic serde (per-element visitor) vs the bulk reader (one bounds
+    // check + one contiguous copy). Same input bytes.
     group.bench_function("from_slice", |b| {
         b.iter(|| {
             let decoded: Vec<f64> =
                 beve::from_slice(black_box(&typed_bytes)).expect("decode f64 slice");
+            black_box(decoded);
+        });
+    });
+    group.bench_function("read_typed_slice", |b| {
+        b.iter(|| {
+            let decoded = beve::read_typed_slice::<f64>(black_box(&typed_bytes))
+                .expect("bulk decode f64 slice");
             black_box(decoded);
         });
     });

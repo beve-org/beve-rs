@@ -42,6 +42,25 @@ let bytes = beve::to_vec_str_slice(&names);
 The resulting payloads are byte-identical to what serde produces, so
 `beve::from_slice::<Vec<T>>` works on both.
 
+For the decode side, `read_typed_slice` is the bulk counterpart of the
+numeric writers -- a single bounds-checked read that moves the whole
+contiguous block into a `Vec<T>` in one `copy_nonoverlapping` (on
+little-endian targets), the mirror of `to_vec_typed_slice`:
+
+```rust
+let bytes = beve::to_vec_typed_slice(&[1.0f64, -2.5, 3.25]);
+let back = beve::read_typed_slice::<f64>(&bytes).unwrap();
+assert_eq!(back, vec![1.0, -2.5, 3.25]);
+```
+
+Like the writer, it is opt-in and requires naming the element type `T`:
+serde hands the deserializer one element at a time and never sees the
+contiguous block, so the generic `from_slice` path cannot take it
+automatically. Use it when the whole body is a numeric array and you want
+to skip per-element deserialization; `from_slice::<Vec<T>>` remains the
+right choice for an array nested inside a larger structure. The complex
+counterpart is `read_complex_slice`.
+
 ## Slicing with `from_field_slice`
 
 Typed numeric arrays support efficient sub-range extraction via

@@ -216,6 +216,95 @@ pub fn typed_slice_size<T: BeveTypedSlice>(slice: &[T]) -> u64 {
         + core::mem::size_of_val(slice) as u64 // payload
 }
 
+/// Decode a BEVE typed numeric array (the bytes produced by [`write_typed_slice`]
+/// / [`to_vec_typed_slice`] / [`to_writer_typed_slice`], or by serializing a
+/// `Vec<T>` of a supported scalar) into a `Vec<T>` in a single bounds-checked
+/// bulk read — the read counterpart of the bulk writers.
+///
+/// Like the writers, this is opt-in and requires the caller to name the element
+/// type `T`: serde's `Deserialize` for `Vec<T>` pulls elements one at a time
+/// through a visitor and never sees the contiguous little-endian block, so the
+/// generic `from_slice` path cannot take it automatically. On little-endian
+/// targets the whole payload is moved into the result with one
+/// `copy_nonoverlapping` after a single bounds check (a single bulk copy, not
+/// zero-copy: the input bytes may be unaligned for `T`); on big-endian targets it
+/// copies and then byte-reverses each element in place.
+///
+/// Errors if `input` is not a typed *numeric* array, if the on-wire class /
+/// byte-code do not match `T`, or if the payload is truncated. Any bytes after
+/// the array are ignored (matching [`crate::from_slice`]); the function returns
+/// only the decoded `Vec`, so it does not report how many bytes were consumed.
+/// Boolean and string arrays use a different on-wire layout (bit-packed /
+/// length-prefixed) and are not `BeveTypedSlice` types, so they are rejected by
+/// the class check rather than misread.
+///
+/// # Example
+///
+/// ```rust
+/// let data = [1.0f64, -2.5, 3.25];
+/// let bytes = beve::to_vec_typed_slice(&data);
+/// let back = beve::read_typed_slice::<f64>(&bytes).unwrap();
+/// assert_eq!(back, data);
+/// ```
+pub fn read_typed_slice<T: BeveTypedSlice>(input: &[u8]) -> Result<Vec<T>> {
+    let mut pos = 0usize;
+
+    // Header byte: must be a typed array whose class and byte-code name `T`.
+    let header = *input.get(pos).ok_or(Error::Eof)?;
+    pos += 1;
+    if parse_type(header) != TYPE_TYPED_ARRAY {
+        return Err(Error::InvalidType("not a typed array"));
+    }
+    if parse_subtype(header) != T::CLASS || parse_byte_count_code(header) != T::BYTE_CODE {
+        return Err(Error::Mismatch("typed array element type does not match T"));
+    }
+
+    let len = read_size(input, &mut pos)? as usize;
+    let payload = len.checked_mul(T::ELEM_SIZE).ok_or(Error::InvalidSize)?;
+    if input.len() - pos < payload {
+        return Err(Error::Eof);
+    }
+    let src = &input[pos..pos + payload];
+
+    let mut out: Vec<T> = Vec::with_capacity(len);
+    if len != 0 {
+        // Every `BeveTypedSlice` type is a fixed-width scalar with no padding and
+        // every bit pattern valid, so `len` values occupy exactly `payload`
+        // contiguous bytes — the same layout the writers emit. The destination
+        // `Vec` is allocated with `T`'s alignment, and `src` is exactly `payload`
+        // bytes by the bounds check above.
+        #[cfg(target_endian = "little")]
+        {
+            // Wire payload and target are both little-endian, so the bytes are
+            // already the in-memory representation: one bulk copy, no per-element
+            // work — the mirror of the writer's `copy_nonoverlapping`.
+            unsafe {
+                ptr::copy_nonoverlapping(src.as_ptr(), out.as_mut_ptr() as *mut u8, payload);
+                out.set_len(len);
+            }
+        }
+        #[cfg(not(target_endian = "little"))]
+        {
+            // Big-endian fallback: copy the little-endian payload, then byte-reverse
+            // each element in place. On a big-endian target the native byte order is
+            // the reverse of the wire's little-endian, and every element is exactly
+            // `ELEM_SIZE` wide with no padding, so reversing each `ELEM_SIZE` chunk
+            // across the whole payload yields the correct native values. Correct, and
+            // the rare path (matching the writer, whose bulk copy is also LE-only).
+            unsafe {
+                let dst = out.as_mut_ptr() as *mut u8;
+                core::ptr::copy_nonoverlapping(src.as_ptr(), dst, payload);
+                let bytes = core::slice::from_raw_parts_mut(dst, payload);
+                for elem in bytes.chunks_exact_mut(T::ELEM_SIZE) {
+                    elem.reverse();
+                }
+                out.set_len(len);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Write a boolean typed array (bit-packed) to `out`.
 pub fn write_bool_slice(out: &mut Vec<u8>, slice: &[bool]) {
     write_typed_array_header_bool(out, slice.len());

@@ -1,6 +1,6 @@
 [package]
 name = "beve"
-version = "1.6.0"
+version = "2.0.0"
 edition = "2024"
 description = "Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specification with serde support"
 license = "MIT OR Apache-2.0"
@@ -9,7 +9,10 @@ homepage = "https://github.com/beve-org/beve-rs"
 readme = "README.md"
 
 [features]
-default = ["mat"]
+# Lean core by default. The `mat` feature (MATLAB v7.3 / HDF5 file interop) is
+# opt-in because it pulls in `hdf5-pure` and its compression stack
+# (flate2/miniz_oxide/crc32fast), which the core BEVE ser/de does not need.
+default = []
 mat = ["dep:hdf5-pure", "hdf5-pure/serde"]
 
 [dependencies]
@@ -23,7 +26,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 criterion = "0.5"
 proptest = "1.4"
-hdf5-pure = { version = "0.5" }
+# `hdf5-pure` is not a dev-dependency: the only test that uses it directly
+# (`tests/mat_v73.rs`) is gated behind `#[cfg(feature = "mat")]`, and enabling
+# `mat` turns on the optional `hdf5-pure` dependency, which is then nameable from
+# the integration test. So a mat-off `cargo test` pulls in no HDF5 stack at all.
 
 [[bin]]
 name = "beve-cli"

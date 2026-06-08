@@ -42,11 +42,22 @@ jobs:
         if: matrix.toolchain == 'stable'
         run: cargo fmt --all -- --check
 
-      - name: cargo clippy
+      - name: cargo clippy (all features)
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
-      - name: cargo test
+      - name: cargo test (all features)
         run: cargo test --locked --all --all-features
+
+      # Guard the default (mat-off) build: it is what most consumers get, and it
+      # is the only configuration that compiles the `#[cfg(not(feature = "mat"))]`
+      # paths, which `--all-features` never exercises.
+      - name: cargo clippy (default features)
+        if: matrix.toolchain == 'stable'
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: cargo test (default features)
+        if: matrix.toolchain == 'stable'
+        run: cargo test --locked
 
   msrv:
     name: MSRV (Rust 1.88.0)
@@ -66,5 +77,8 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: cargo check
+      - name: cargo check (all features)
         run: cargo check --locked --all-targets --all-features
+
+      - name: cargo check (default features)
+        run: cargo check --locked --all-targets

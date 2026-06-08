@@ -11,7 +11,13 @@ fn main() {
 
     let result = match args[1].as_str() {
         "to-json" => cmd_to_json(&args[2..]),
+        #[cfg(feature = "mat")]
         "to-mat" => cmd_to_mat(&args[2..]),
+        #[cfg(not(feature = "mat"))]
+        "to-mat" => Err(
+            "`to-mat` requires the `mat` feature; rebuild with `cargo install beve --features mat`"
+                .into(),
+        ),
         "from-json" => cmd_from_json(&args[2..]),
         other => {
             eprintln!("error: unknown command: {other}");
@@ -32,13 +38,17 @@ fn print_usage() {
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  to-json    Convert BEVE to JSON");
-    eprintln!("  to-mat     Convert BEVE to MATLAB v7.3 MAT");
+    if cfg!(feature = "mat") {
+        eprintln!("  to-mat     Convert BEVE to MATLAB v7.3 MAT");
+    }
     eprintln!("  from-json  Convert JSON to BEVE");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  beve-cli to-json data.beve              # writes data.json");
-    eprintln!("  beve-cli to-mat data.beve               # writes data.mat");
-    eprintln!("  beve-cli to-mat data.beve output.mat    # explicit output path");
+    if cfg!(feature = "mat") {
+        eprintln!("  beve-cli to-mat data.beve               # writes data.mat");
+        eprintln!("  beve-cli to-mat data.beve output.mat    # explicit output path");
+    }
     eprintln!("  beve-cli from-json data.json             # writes data.beve");
     eprintln!();
     eprintln!("Run `beve-cli <command> --help` for command-specific options.");
@@ -93,9 +103,10 @@ fn cmd_from_json(args: &[String]) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// to-mat
+// to-mat (requires the `mat` feature)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "mat")]
 fn cmd_to_mat(args: &[String]) -> Result<(), String> {
     if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
         eprintln!("Usage: beve to-mat [options] <input.beve> [output.mat]");

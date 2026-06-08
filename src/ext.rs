@@ -66,6 +66,8 @@ macro_rules! impl_complex_serialize {
     };
 }
 
+impl_complex_serialize!(f16);
+impl_complex_serialize!(bf16);
 impl_complex_serialize!(f32);
 impl_complex_serialize!(f64);
 impl_complex_serialize!(i8);
@@ -129,6 +131,8 @@ macro_rules! impl_complex_slice_serialize {
     };
 }
 
+impl_complex_slice_serialize!(f16);
+impl_complex_slice_serialize!(bf16);
 impl_complex_slice_serialize!(f32);
 impl_complex_slice_serialize!(f64);
 impl_complex_slice_serialize!(i8);

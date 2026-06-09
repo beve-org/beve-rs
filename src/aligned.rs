@@ -29,7 +29,7 @@
 //! The padding is computed from the absolute byte offset within the *whole*
 //! message buffer, so [`write_aligned_typed_slice`] uses `out.len()` as that
 //! offset: append it into the actual destination buffer (whatever fixed prefix is
-//! already there) and the payload is padded correctly in place. [`crate::to_vec_aligned_slice`]
+//! already there) and the payload is padded correctly in place. [`crate::to_vec_aligned_typed_slice`]
 //! is the offset-0 convenience.
 //!
 //! Padding only makes the payload aligned *relative to the buffer base*. A
@@ -118,7 +118,7 @@ pub fn write_aligned_typed_slice<T: BeveTypedSlice>(out: &mut Vec<u8>, slice: &[
 /// that a zero-copy borrow of the result requires the `Vec`'s own allocation to
 /// be aligned; the in-place [`write_aligned_typed_slice`] into an aligned message
 /// buffer is the path that guarantees it.
-pub fn to_vec_aligned_slice<T: BeveTypedSlice>(slice: &[T]) -> Vec<u8> {
+pub fn to_vec_aligned_typed_slice<T: BeveTypedSlice>(slice: &[T]) -> Vec<u8> {
     let mut out = Vec::new();
     write_aligned_typed_slice(&mut out, slice);
     out
@@ -219,11 +219,18 @@ pub fn read_aligned_typed_slice<T: BeveTypedSlice>(input: &[u8]) -> Result<Vec<T
 /// runtime, not just relative to the buffer start), this returns a view directly
 /// into `input` with zero copying and zero allocation.
 ///
-/// Returns [`Error::Unsupported`] — not a panic or unsoundness — when the payload
-/// is not aligned in memory (the caller's buffer base was not aligned) or on a
-/// big-endian target (where the little-endian wire bytes are not the native
-/// representation). In both cases fall back to [`read_aligned_typed_slice`], which
-/// copies. Other errors match [`read_aligned_typed_slice`].
+/// Returns [`Error::Unsupported`] — not a panic or unsoundness — when a zero-copy
+/// borrow cannot be served: either the payload is not aligned in memory (the
+/// caller's buffer base was not aligned) or the target is big-endian (where the
+/// little-endian wire bytes are not the native representation). Both are
+/// recoverable, and the fallback is the same in both cases: **any `Unsupported`
+/// from this function means "retry with [`read_aligned_typed_slice`]"**, which
+/// copies and always succeeds. (The two cases carry distinct messages but are not
+/// otherwise meant to be told apart — the big-endian case will never succeed as a
+/// borrow, the unaligned case might in a differently-aligned buffer, but the
+/// caller's recovery is identical.) All other error conditions (not an aligned
+/// typed array, element-type mismatch, truncation) match
+/// [`read_aligned_typed_slice`].
 pub fn read_aligned_typed_slice_ref<T: BeveTypedSlice>(input: &[u8]) -> Result<&[T]> {
     let (data, len) = parse_aligned_header::<T>(input)?;
     #[cfg(not(target_endian = "little"))]
@@ -284,7 +291,7 @@ mod tests {
     #[test]
     fn roundtrip_owned_offset0() {
         let data: Vec<f64> = (0..100).map(|i| i as f64 * 0.5).collect();
-        let bytes = to_vec_aligned_slice(&data);
+        let bytes = to_vec_aligned_typed_slice(&data);
         assert_eq!(bytes[0], 0x5C, "marker header");
         let back = read_aligned_typed_slice::<f64>(&bytes).unwrap();
         assert_eq!(back, data);
@@ -366,7 +373,7 @@ mod tests {
         // Array padded for offset 0, then placed at offset 1 in an aligned buffer:
         // the payload's runtime address is now odd, so the pointer check must refuse
         // rather than hand back an unaligned reference.
-        let framed = to_vec_aligned_slice(&data);
+        let framed = to_vec_aligned_typed_slice(&data);
         let ab = AlignedBytes::with(&framed, 1);
         let sub = &ab.bytes()[1..];
         // Owned decode still works.
@@ -382,7 +389,7 @@ mod tests {
         let regular = crate::to_vec_typed_slice(&data);
         assert!(read_aligned_typed_slice::<f64>(&regular).is_err());
         // Wrong element type.
-        let aligned = to_vec_aligned_slice(&data);
+        let aligned = to_vec_aligned_typed_slice(&data);
         assert!(read_aligned_typed_slice::<f32>(&aligned).is_err());
         assert!(read_aligned_typed_slice::<i64>(&aligned).is_err());
     }
@@ -390,7 +397,7 @@ mod tests {
     #[test]
     fn empty_slice_roundtrips() {
         let data: Vec<f64> = Vec::new();
-        let bytes = to_vec_aligned_slice(&data);
+        let bytes = to_vec_aligned_typed_slice(&data);
         assert!(read_aligned_typed_slice::<f64>(&bytes).unwrap().is_empty());
     }
 
@@ -415,5 +422,59 @@ mod tests {
             read_aligned_typed_slice::<f64>(&buf[PREFIX..]).unwrap(),
             data
         );
+    }
+
+    #[test]
+    fn rejects_truncated_payload() {
+        let data: Vec<f64> = (0..6).map(|i| i as f64).collect();
+        let full = to_vec_aligned_typed_slice(&data);
+        // Lop bytes off the end so the declared payload runs past the input.
+        for cut in 1..=8 {
+            let truncated = &full[..full.len() - cut];
+            assert!(
+                read_aligned_typed_slice::<f64>(truncated).is_err(),
+                "truncation by {cut} must be rejected, not read past the buffer"
+            );
+            assert!(read_aligned_typed_slice_ref::<f64>(truncated).is_err());
+        }
+        // A header-only prefix (cut before SIZE/PADDING_LENGTH) must also error,
+        // never index past the end.
+        for keep in 0..4 {
+            assert!(read_aligned_typed_slice::<f64>(&full[..keep]).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_padding_length_past_buffer() {
+        let data: Vec<f64> = (0..4).map(|i| i as f64).collect();
+        let mut buf = to_vec_aligned_typed_slice(&data);
+        // PADDING_LENGTH sits right after marker + numeric header + SIZE.
+        let size_w = size_encoded_len(data.len() as u64);
+        let pl_offset = 2 + size_w;
+        // Claim a wildly oversized padding run; the decoder must bounds-check it
+        // (checked_add + `pos > input.len()`) and reject rather than skip past the
+        // end into the payload or beyond.
+        buf[pl_offset] = 0xFF;
+        assert!(read_aligned_typed_slice::<f64>(&buf).is_err());
+        assert!(read_aligned_typed_slice_ref::<f64>(&buf).is_err());
+    }
+
+    #[test]
+    fn zero_copy_borrow_non_f64_alignments() {
+        // Exercise the borrow path for alignments other than 8: align-16 (i128)
+        // and align-1 (u8, where the pointer check is trivially satisfied).
+        let i: Vec<i128> = (0..20).map(|n| ((n as i128) << 80) | (n as i128)).collect();
+        let mut framed = vec![0u8; 16];
+        write_aligned_typed_slice(&mut framed, &i);
+        let ab = AlignedBytes::with(&framed, 0);
+        let view: &[i128] = read_aligned_typed_slice_ref::<i128>(&ab.bytes()[16..]).unwrap();
+        assert_eq!(view, i.as_slice());
+        assert!((view.as_ptr() as usize).is_multiple_of(16));
+
+        let b: Vec<u8> = (0..37u8).collect();
+        let framed_b = to_vec_aligned_typed_slice(&b);
+        let ab_b = AlignedBytes::with(&framed_b, 0);
+        let view_b: &[u8] = read_aligned_typed_slice_ref::<u8>(ab_b.bytes()).unwrap();
+        assert_eq!(view_b, b.as_slice());
     }
 }

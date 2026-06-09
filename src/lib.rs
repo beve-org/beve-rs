@@ -57,7 +57,7 @@ mod value;
 
 pub use crate::aligned::{
     aligned_typed_slice_size, read_aligned_typed_slice, read_aligned_typed_slice_ref,
-    to_vec_aligned_slice, write_aligned_typed_slice,
+    to_vec_aligned_typed_slice, write_aligned_typed_slice,
 };
 pub use crate::de::{Deserializer, from_slice, validate_slice};
 pub use crate::error::{Error, Result};

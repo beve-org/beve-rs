@@ -105,9 +105,9 @@ pub fn write_aligned_typed_slice<T: BeveTypedSlice>(out: &mut Vec<u8>, slice: &[
 /// land in the final frame. The padding run is sized for that offset, so the
 /// emitted bytes are correct for the frame even though `out` itself may start at 0:
 /// only the byte sequence (specifically the `PADDING_LENGTH` count) matters, not
-/// `out`'s own address. Pair with [`aligned_typed_slice_size`] (same `start_offset`)
-/// to size the buffer, and decode with [`read_aligned_typed_slice`] /
-/// [`read_aligned_typed_slice_ref`].
+/// `out`'s own address. Pair with [`aligned_typed_slice_size`] (passing the same
+/// value as its `start_offset`) to size the buffer, and decode with
+/// [`read_aligned_typed_slice`] / [`read_aligned_typed_slice_ref`].
 ///
 /// ```
 /// # use beve::{write_aligned_typed_slice_at, aligned_typed_slice_size, read_aligned_typed_slice};
@@ -140,7 +140,10 @@ pub fn write_aligned_typed_slice_at<T: BeveTypedSlice>(
     // many bytes (marker + numeric header + SIZE) we have written into `out` since
     // `start` — not `out.len()`, which is the offset within `out`. When
     // `base_offset == start` the two coincide, recovering `write_aligned_typed_slice`.
-    let padding_length_offset = base_offset + (out.len() - start);
+    // Only this value's residue mod `align` reaches `padding_for`, so a pathological
+    // near-`usize::MAX` `base_offset` wraps harmlessly here rather than panicking;
+    // the emitted count stays correct for the offset the caller declared.
+    let padding_length_offset = base_offset.wrapping_add(out.len() - start);
     let padding = padding_for(padding_length_offset, align);
     out.push(padding as u8);
     out.resize(out.len() + padding, 0);
@@ -186,8 +189,10 @@ pub fn to_vec_aligned_typed_slice<T: BeveTypedSlice>(slice: &[T]) -> Vec<u8> {
 pub fn aligned_typed_slice_size<T: BeveTypedSlice>(slice: &[T], start_offset: usize) -> usize {
     let align = core::mem::align_of::<T>();
     let size_width = size_encoded_len(slice.len() as u64);
-    // Layout up to PADDING_LENGTH: marker + numeric header + SIZE.
-    let padding_length_offset = start_offset + 2 + size_width;
+    // Layout up to PADDING_LENGTH: marker + numeric header + SIZE. Only the residue
+    // mod `align` reaches `padding_for`, so this wraps harmlessly for a pathological
+    // near-`usize::MAX` `start_offset`, staying in lockstep with the writer.
+    let padding_length_offset = start_offset.wrapping_add(2 + size_width);
     let padding = padding_for(padding_length_offset, align);
     2 + size_width + 1 + padding + core::mem::size_of_val(slice)
 }
@@ -475,6 +480,64 @@ mod tests {
                 read_aligned_typed_slice_ref::<f64>(&frame[base_offset..]).expect("borrow");
             assert_eq!(borrowed, data.as_slice(), "base_offset {base_offset}");
         }
+    }
+
+    #[test]
+    fn write_at_empty_slice_matches_sizer_and_roundtrips() {
+        // An empty array still emits a well-formed (length-prefix-only) aligned
+        // body whose size the sizer predicts, for any declared offset.
+        let data: Vec<f64> = Vec::new();
+        for base in [0usize, 7, 48, 54] {
+            let mut body = Vec::new();
+            write_aligned_typed_slice_at(&mut body, &data, base);
+            assert_eq!(
+                body.len(),
+                aligned_typed_slice_size(&data, base),
+                "base {base}"
+            );
+            assert!(read_aligned_typed_slice::<f64>(&body).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn write_at_borrows_for_align_gt_8_element() {
+        // i128 has align 16, so the padding run is wider; confirm a standalone body
+        // padded for its frame offset is borrowable when placed there in a
+        // 16-aligned buffer, including non-16-multiple offsets.
+        let data: Vec<i128> = (0..12).map(|i| ((i as i128) << 64) | (i as i128)).collect();
+        for base_offset in [16usize, 32, 48, 50, 63, 100] {
+            let mut body = Vec::new();
+            write_aligned_typed_slice_at(&mut body, &data, base_offset);
+            assert_eq!(body.len(), aligned_typed_slice_size(&data, base_offset));
+
+            let ab = AlignedBytes::with(&body, base_offset);
+            let frame = ab.bytes();
+            let borrowed =
+                read_aligned_typed_slice_ref::<i128>(&frame[base_offset..]).expect("borrow");
+            assert_eq!(borrowed, data.as_slice(), "base_offset {base_offset}");
+        }
+    }
+
+    #[test]
+    fn write_at_with_prefilled_out_and_independent_base_offset() {
+        // `out` already holds unrelated bytes (start != 0) and `base_offset` is a
+        // *different* value (the body's eventual frame offset, unrelated to where it
+        // sits in this scratch buffer). The appended bytes must still be a
+        // self-consistent aligned body and be borrowable once placed at base_offset.
+        let data: Vec<f64> = (0..20).map(|i| i as f64 * 2.0).collect();
+        let base_offset = 54usize;
+        let mut out = vec![0xEEu8; 13]; // arbitrary prefill, start = 13 != base_offset
+        let start = out.len();
+        write_aligned_typed_slice_at(&mut out, &data, base_offset);
+        let body = &out[start..];
+
+        // Owned decode of the appended body always works.
+        assert_eq!(read_aligned_typed_slice::<f64>(body).unwrap(), data);
+        // And it borrows when placed at its declared frame offset in an aligned buffer.
+        let ab = AlignedBytes::with(body, base_offset);
+        let frame = ab.bytes();
+        let borrowed = read_aligned_typed_slice_ref::<f64>(&frame[base_offset..]).expect("borrow");
+        assert_eq!(borrowed, data.as_slice());
     }
 
     #[test]

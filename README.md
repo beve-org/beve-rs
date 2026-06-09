@@ -229,6 +229,14 @@ fn encode_science() -> beve::Result<()> {
     let roundtrip = beve::read_complex_slice::<f64>(&dense)?;
     assert_eq!(roundtrip, complex);
 
+    // To frame a complex array straight into a writer without a body buffer, use
+    // the streaming counterpart `to_writer_complex_slice` (mirroring
+    // `to_writer_typed_slice`), with `complex_slice_size` for the O(1) length.
+    let mut framed = Vec::new();
+    beve::to_writer_complex_slice(&mut framed, &complex)?;
+    assert_eq!(framed.len() as u64, beve::complex_slice_size(&complex));
+    assert_eq!(framed, dense);
+
     // Integer complex
     let iq = [Complex { re: 1i16, im: -2 }, Complex { re: 3, im: 4 }];
     let bytes = beve::to_vec_complex_slice(&iq);

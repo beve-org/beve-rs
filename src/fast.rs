@@ -410,6 +410,94 @@ pub fn to_vec_complex_slice<T: BeveTypedSlice>(slice: &[Complex<T>]) -> Vec<u8> 
     out
 }
 
+/// Write a BEVE complex array straight to a writer in a single bulk write — the
+/// streaming counterpart of [`write_complex_slice`] / [`to_vec_complex_slice`],
+/// mirroring [`to_writer_typed_slice`] for the complex extension.
+///
+/// Emits the two-byte complex extension header, the SIZE prefix, then the
+/// interleaved `(re, im)` payload. On little-endian targets the payload is
+/// written with one `write_all` of the slice reinterpreted as bytes (no
+/// allocation, no per-element conversion); on big-endian targets it falls back to
+/// per-scalar little-endian conversion.
+///
+/// The bytes produced are identical to [`write_complex_slice`] (the `Vec<u8>`
+/// primitive). See [`complex_slice_size`] for the matching analytic length, and
+/// [`read_complex_slice`] for the bulk read counterpart.
+///
+/// # Example
+///
+/// ```rust
+/// use beve::Complex;
+/// let data = [Complex { re: 1.0f64, im: -2.0 }, Complex { re: 3.5, im: 4.25 }];
+/// let mut buf = Vec::new();
+/// beve::to_writer_complex_slice(&mut buf, &data).unwrap();
+/// assert_eq!(buf.len() as u64, beve::complex_slice_size(&data));
+/// let back = beve::read_complex_slice::<f64>(&buf).unwrap();
+/// assert_eq!(back, data);
+/// ```
+pub fn to_writer_complex_slice<W: Write, T: BeveTypedSlice>(
+    mut w: W,
+    slice: &[Complex<T>],
+) -> Result<()> {
+    // Two-byte complex extension header (extension header + complex header),
+    // identical to `write_complex_header(.., is_array = true, ..)`.
+    w.write_all(&[
+        ((EXT_COMPLEX & 0x1f) << 3) | (TYPE_EXTENSION & 0b111),
+        ((T::BYTE_CODE & 0b111) << 5) | ((T::CLASS & 0b11) << 3) | 1,
+    ])?;
+    write_size_to_writer(&mut w, slice.len() as u64)?;
+    if slice.is_empty() {
+        return Ok(());
+    }
+    #[cfg(target_endian = "little")]
+    {
+        // Sound for the same reasons as `to_writer_typed_slice`: `Complex<T>` for a
+        // `BeveTypedSlice` `T` is two fixed-width scalars with no padding and every
+        // bit pattern valid, so reinterpreting the slice as bytes mirrors
+        // `write_complex_slice`'s `copy_nonoverlapping`. `size_of_val` gives the
+        // exact interleaved `(re, im)` payload length.
+        let bytes = unsafe {
+            core::slice::from_raw_parts(slice.as_ptr() as *const u8, core::mem::size_of_val(slice))
+        };
+        w.write_all(bytes)?;
+    }
+    #[cfg(not(target_endian = "little"))]
+    {
+        // Rare big-endian path: convert each scalar to little-endian, re then im.
+        // One small reused scratch buffer, no per-element allocation.
+        let mut scratch = Vec::with_capacity(T::ELEM_SIZE);
+        for c in slice {
+            scratch.clear();
+            T::write_one_le(&c.re, &mut scratch);
+            T::write_one_le(&c.im, &mut scratch);
+            w.write_all(&scratch)?;
+        }
+    }
+    Ok(())
+}
+
+/// Exact streaming-encoded byte length of [`to_writer_complex_slice`] for `slice`.
+///
+/// Closed-form and O(1) in the element count: `2-byte complex header + SIZE prefix
+/// width + payload`, where the payload is the interleaved `(re, im)` block. The
+/// SIZE width reuses the same codec thresholds as the bytes the primitive actually
+/// writes, so the two cannot drift.
+///
+/// # Example
+///
+/// ```rust
+/// use beve::Complex;
+/// let data = [Complex { re: 1.0f32, im: 2.0 }, Complex { re: 3.0, im: 4.0 }];
+/// let mut buf = Vec::new();
+/// beve::to_writer_complex_slice(&mut buf, &data).unwrap();
+/// assert_eq!(beve::complex_slice_size(&data), buf.len() as u64);
+/// ```
+pub fn complex_slice_size<T: BeveTypedSlice>(slice: &[Complex<T>]) -> u64 {
+    2 // two-byte complex extension header
+        + size_encoded_len(slice.len() as u64) as u64 // SIZE prefix width
+        + core::mem::size_of_val(slice) as u64 // interleaved (re, im) payload
+}
+
 /// Decode a BEVE complex array (the bytes produced by [`write_complex_slice`] /
 /// [`to_vec_complex_slice`]) into a `Vec<Complex<T>>` in a single bounds-checked
 /// bulk read — the read counterpart of the bulk writer.

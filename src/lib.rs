@@ -37,6 +37,7 @@
 //! beve::validate_reader(Cursor::new(bytes)).unwrap();
 //! ```
 
+pub mod aligned;
 mod de;
 mod error;
 mod ext;
@@ -54,6 +55,10 @@ mod streaming_de;
 mod streaming_ser;
 mod value;
 
+pub use crate::aligned::{
+    aligned_typed_slice_size, read_aligned_typed_slice, read_aligned_typed_slice_ref,
+    to_vec_aligned_typed_slice, write_aligned_typed_slice,
+};
 pub use crate::de::{Deserializer, from_slice, validate_slice};
 pub use crate::error::{Error, Result};
 pub use crate::ext::{

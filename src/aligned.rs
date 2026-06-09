@@ -235,7 +235,7 @@ pub fn read_aligned_typed_slice_ref<T: BeveTypedSlice>(input: &[u8]) -> Result<&
     }
     #[cfg(target_endian = "little")]
     {
-        if (data.as_ptr() as usize) % core::mem::align_of::<T>() != 0 {
+        if !(data.as_ptr() as usize).is_multiple_of(core::mem::align_of::<T>()) {
             return Err(Error::Unsupported(
                 "aligned typed array payload is not aligned in this buffer; the buffer base must be aligned to align_of::<T>() for a zero-copy borrow",
             ));
@@ -326,7 +326,10 @@ mod tests {
             // Re-derive where DATA starts and assert its offset is 8-aligned.
             let (data_slice, _) = parse_aligned_header::<f64>(&buf[prefix..]).unwrap();
             let data_off = data_slice.as_ptr() as usize - buf.as_ptr() as usize;
-            assert_eq!(data_off % 8, 0, "DATA not 8-aligned at prefix {prefix}");
+            assert!(
+                data_off.is_multiple_of(8),
+                "DATA not 8-aligned at prefix {prefix}"
+            );
         }
     }
 
@@ -341,7 +344,10 @@ mod tests {
         write_aligned_typed_slice(&mut framed, &data);
         let ab = AlignedBytes::with(&framed, 0);
         let buf = ab.bytes();
-        assert_eq!(buf.as_ptr() as usize % 16, 0, "aligned backing");
+        assert!(
+            (buf.as_ptr() as usize).is_multiple_of(16),
+            "aligned backing"
+        );
 
         let view: &[f64] = read_aligned_typed_slice_ref::<f64>(&buf[16..]).unwrap();
         assert_eq!(view, data.as_slice());

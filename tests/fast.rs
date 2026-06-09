@@ -245,6 +245,69 @@ fn read_complex_slice_roundtrips_writer() {
 }
 
 #[test]
+fn to_writer_complex_slice_matches_vec_and_size() {
+    macro_rules! check {
+        ($t:ty, $val:expr) => {
+            let v: Vec<Complex<$t>> = $val;
+
+            // Streaming writer emits byte-identical output to the `Vec<u8>` primitive.
+            let via_vec = beve::to_vec_complex_slice(&v);
+            let mut via_writer = Vec::new();
+            beve::to_writer_complex_slice(&mut via_writer, &v).unwrap();
+            assert_eq!(
+                via_writer,
+                via_vec,
+                "writer vs vec mismatch for {}",
+                std::any::type_name::<$t>()
+            );
+
+            // `complex_slice_size` is the exact length the writer produces.
+            assert_eq!(
+                beve::complex_slice_size(&v),
+                via_writer.len() as u64,
+                "size mismatch for {}",
+                std::any::type_name::<$t>()
+            );
+
+            // ...and the streamed bytes still round-trip through the bulk reader.
+            let back = beve::read_complex_slice::<$t>(&via_writer).unwrap();
+            assert_eq!(
+                back,
+                v,
+                "read-back mismatch for {}",
+                std::any::type_name::<$t>()
+            );
+        };
+    }
+
+    check!(
+        f64,
+        vec![Complex { re: 1.0, im: -2.0 }, Complex { re: 3.5, im: 4.25 }]
+    );
+    check!(f32, vec![Complex { re: -0.0, im: 1e9 }]);
+    check!(
+        i32,
+        vec![
+            Complex { re: -1, im: 0 },
+            Complex {
+                re: 1,
+                im: 1_000_000
+            }
+        ]
+    );
+    // Widest width, where a `2 * ELEM_SIZE` stride miscalculation would surface.
+    check!(
+        u128,
+        vec![Complex {
+            re: 0u128,
+            im: u128::MAX
+        }]
+    );
+    // Empty array: two-byte header + SIZE prefix, no payload.
+    check!(f64, vec![]);
+}
+
+#[test]
 fn read_complex_slice_rejects_mismatched_and_truncated() {
     let v = vec![
         Complex {

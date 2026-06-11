@@ -26,6 +26,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 criterion = "0.5"
 proptest = "1.4"
+# Already a normal dependency; named in dev too so tests can construct f16/bf16
+# values to exercise the half-float typed-array paths.
+half = { version = "2.4", features = ["serde"] }
 # `hdf5-pure` is not a dev-dependency: the only test that uses it directly
 # (`tests/mat_v73.rs`) is gated behind `#[cfg(feature = "mat")]`, and enabling
 # `mat` turns on the optional `hdf5-pure` dependency, which is then nameable from
@@ -40,4 +43,8 @@ harness = false
 
 [[bench]]
 name = "serialized_size"
+harness = false
+
+[[bench]]
+name = "streaming_bulk_decode"
 harness = false

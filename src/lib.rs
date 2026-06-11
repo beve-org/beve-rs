@@ -66,10 +66,11 @@ pub use crate::ext::{
     RawMatrix, TypedSlice, complex, decode_matrix_slice,
 };
 pub use crate::fast::{
-    BeveTypedSlice, complex_slice_size, read_complex_slice, read_typed_slice, to_vec_bool_slice,
-    to_vec_complex_slice, to_vec_str_slice, to_vec_string_slice, to_vec_typed_slice,
-    to_writer_complex_slice, to_writer_typed_slice, typed_slice_size, write_bool_slice,
-    write_complex_slice, write_str_slice, write_string_slice, write_typed_slice,
+    BeveTypedSlice, complex_slice_size, read_complex_slice, read_complex_slice_from_reader,
+    read_typed_slice, read_typed_slice_from_reader, to_vec_bool_slice, to_vec_complex_slice,
+    to_vec_str_slice, to_vec_string_slice, to_vec_typed_slice, to_writer_complex_slice,
+    to_writer_typed_slice, typed_slice_size, write_bool_slice, write_complex_slice,
+    write_str_slice, write_string_slice, write_typed_slice,
 };
 pub use crate::field::{from_field, from_field_slice, skip_value};
 pub use crate::json::{

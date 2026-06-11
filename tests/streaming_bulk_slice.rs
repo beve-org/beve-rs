@@ -44,24 +44,54 @@ impl Read for OddChunkReader<'_> {
     }
 }
 
-/// Lengths chosen around the 8 MiB allocation step: small, plus sizes that cross
-/// one and several steps for an 8-byte element (1 Mi elems per step).
-const LENS: &[usize] = &[0, 1, 2, 1000, 1_048_577, 3_000_000];
+/// All lengths, including ones that cross the decoder's 8 MiB allocation step
+/// (1 Mi elems per step for an 8-byte element). Exercised by the *cheap* readers
+/// (in-memory bulk + `Cursor`), which read in bulk.
+const LENS: &[usize] = &[0, 1, 2, 1000, 65537, 1_048_577, 3_000_000];
+
+/// Lengths for the *fragmenting* readers (one byte at a time, tiny odd chunks).
+/// Kept small on purpose: they exist to stress the block-refill boundaries, which
+/// a few-KiB array covers fully. Running a one-byte reader over millions of
+/// elements adds no coverage and is pointlessly slow (especially under the
+/// big-endian CI's emulation).
+const FRAG_LENS: &[usize] = &[0, 1, 2, 7, 255, 4099];
+
+/// Lengths at or above this cross the 8 MiB allocation step; for those we also
+/// run one *block-sized* fragmenting reader, which crosses the step boundary with
+/// multiple reads without the per-byte cost.
+const STEP_THRESHOLD: usize = 1_000_000;
 
 fn check_typed<T>(make: impl Fn(usize) -> T)
 where
     T: beve::BeveTypedSlice + Copy + PartialEq + std::fmt::Debug,
 {
+    // Correctness at every size via the cheap readers.
     for &n in LENS {
         let v: Vec<T> = (0..n).map(&make).collect();
         let bytes = beve::to_vec_typed_slice(&v);
 
-        // Byte-identity with the in-memory bulk reader.
         let in_mem = beve::read_typed_slice::<T>(&bytes).expect("read_typed_slice");
         assert_eq!(in_mem, v, "in-memory bulk mismatch (n={n})");
 
         let cur: Vec<T> = beve::read_typed_slice_from_reader(Cursor::new(&bytes)).expect("cursor");
         assert_eq!(cur, v, "streaming cursor mismatch (n={n})");
+
+        // Cross the allocation step under a block-sized (not per-byte) reader.
+        if n >= STEP_THRESHOLD {
+            let odd: Vec<T> = beve::read_typed_slice_from_reader(OddChunkReader {
+                data: &bytes,
+                pos: 0,
+                chunk: 65537,
+            })
+            .unwrap_or_else(|e| panic!("step odd-chunk n={n}: {e:?}"));
+            assert_eq!(odd, v, "streaming step odd-chunk mismatch (n={n})");
+        }
+    }
+
+    // Extreme fragmentation on bounded sizes.
+    for &n in FRAG_LENS {
+        let v: Vec<T> = (0..n).map(&make).collect();
+        let bytes = beve::to_vec_typed_slice(&v);
 
         let ob: Vec<T> = beve::read_typed_slice_from_reader(OneByteReader {
             data: &bytes,
@@ -70,7 +100,7 @@ where
         .expect("one-byte");
         assert_eq!(ob, v, "streaming one-byte mismatch (n={n})");
 
-        for chunk in [1usize, 7, 4096, 1_000_003] {
+        for chunk in [1usize, 7, 4096] {
             let odd: Vec<T> = beve::read_typed_slice_from_reader(OddChunkReader {
                 data: &bytes,
                 pos: 0,
@@ -97,6 +127,21 @@ where
             beve::read_complex_slice_from_reader(Cursor::new(&bytes)).expect("cursor");
         assert_eq!(cur, v, "streaming complex cursor mismatch (n={n})");
 
+        if n >= STEP_THRESHOLD {
+            let odd: Vec<Complex<T>> = beve::read_complex_slice_from_reader(OddChunkReader {
+                data: &bytes,
+                pos: 0,
+                chunk: 65537,
+            })
+            .unwrap_or_else(|e| panic!("complex step odd-chunk n={n}: {e:?}"));
+            assert_eq!(odd, v, "streaming complex step odd-chunk mismatch (n={n})");
+        }
+    }
+
+    for &n in FRAG_LENS {
+        let v: Vec<Complex<T>> = (0..n).map(&make).collect();
+        let bytes = beve::to_vec_complex_slice(&v);
+
         let ob: Vec<Complex<T>> = beve::read_complex_slice_from_reader(OneByteReader {
             data: &bytes,
             pos: 0,
@@ -104,7 +149,7 @@ where
         .expect("one-byte");
         assert_eq!(ob, v, "streaming complex one-byte mismatch (n={n})");
 
-        for chunk in [3usize, 13, 65537] {
+        for chunk in [3usize, 13, 4096] {
             let odd: Vec<Complex<T>> = beve::read_complex_slice_from_reader(OddChunkReader {
                 data: &bytes,
                 pos: 0,

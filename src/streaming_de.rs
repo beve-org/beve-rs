@@ -126,6 +126,55 @@ impl<R: Read> StreamingDeserializer<R> {
         }
     }
 
+    /// Streaming twin of `Deserializer::typed_array_payload`: if the value here is
+    /// a typed numeric array matching `(class, byte_code)`, bulk-read its payload
+    /// into a `Vec<u8>`; otherwise return `None` (the caller falls back to the
+    /// element-wise path). Used by the bulk `#[serde(with = ...)]` decode markers.
+    fn typed_array_payload(
+        &mut self,
+        class: u8,
+        byte_code: u8,
+        elem_size: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        let header = self.peek_byte()?;
+        if parse_type(header) == TYPE_TYPED_ARRAY
+            && parse_subtype(header) == class
+            && parse_byte_count_code(header) == byte_code
+        {
+            self.read_byte()?;
+            let len = self.read_size()? as usize;
+            let payload = len.checked_mul(elem_size).ok_or(Error::InvalidSize)?;
+            Ok(Some(self.read_exact_vec(payload)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Complex-array twin of [`typed_array_payload`](Self::typed_array_payload).
+    fn complex_array_payload(
+        &mut self,
+        class: u8,
+        byte_code: u8,
+        scalar_size: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        let header = self.peek_byte()?;
+        if parse_type(header) != TYPE_EXTENSION || parse_extension_id(header) != EXT_COMPLEX {
+            return Ok(None);
+        }
+        self.read_byte()?; // extension header
+        let ch = self.read_byte()?; // complex header byte
+        let is_array = (ch & 0x01) != 0;
+        if !is_array || ((ch >> 3) & 0x03) != class || ((ch >> 5) & 0x07) != byte_code {
+            return Err(Error::Mismatch("complex array element type does not match"));
+        }
+        let len = self.read_size()? as usize;
+        let payload = len
+            .checked_mul(2)
+            .and_then(|n| n.checked_mul(scalar_size))
+            .ok_or(Error::InvalidSize)?;
+        Ok(Some(self.read_exact_vec(payload)?))
+    }
+
     // -- parse helpers --
 
     fn parse_signed(&mut self, code: u8) -> Result<i128> {
@@ -482,7 +531,26 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
         match name {
             "bf16" => self.deserialize_half_newtype(visitor, HalfKind::Bf16),
             "f16" => self.deserialize_half_newtype(visitor, HalfKind::F16),
-            _ => self.deserialize_any(visitor),
+            _ => {
+                // Bulk-array `#[serde(with = ...)]` markers (see the in-memory
+                // `Deserializer::deserialize_newtype_struct`); hand the bulk-read
+                // payload to the visitor, else fall back to element-wise.
+                if let Some((class, byte_code, elem_size)) = crate::ext::typed_array_tag(name) {
+                    return match self.typed_array_payload(class, byte_code, elem_size)? {
+                        Some(v) => visitor.visit_byte_buf(v),
+                        None => self.deserialize_any(visitor),
+                    };
+                }
+                if let Some((class, byte_code, scalar_size)) =
+                    crate::serde_arrays::complex_array_tag(name)
+                {
+                    return match self.complex_array_payload(class, byte_code, scalar_size)? {
+                        Some(v) => visitor.visit_byte_buf(v),
+                        None => self.deserialize_any(visitor),
+                    };
+                }
+                self.deserialize_any(visitor)
+            }
         }
     }
 

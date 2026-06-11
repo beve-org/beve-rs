@@ -82,3 +82,27 @@ jobs:
 
       - name: cargo check (default features)
         run: cargo check --locked --all-targets
+
+  # Runs the test suite on a big-endian target (s390x) under emulation, so the
+  # little-endian/big-endian `#[cfg(target_endian)]` branches in the bulk
+  # typed/complex codecs are actually exercised, not just compiled on LE. Uses
+  # the default feature set (the `mat`/HDF5 stack is irrelevant to endianness and
+  # not cross-built here).
+  big-endian:
+    name: Big-endian (s390x)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cross
+        run: cargo install cross --locked --version 0.2.5
+
+      - name: cargo test on s390x (big-endian)
+        run: cross test --locked --target s390x-unknown-linux-gnu

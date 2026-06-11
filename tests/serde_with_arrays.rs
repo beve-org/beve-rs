@@ -214,16 +214,32 @@ fn truncated_stream_errors_without_panicking() {
 }
 
 #[test]
-fn non_beve_format_is_not_supported_but_does_not_panic() {
-    // These helpers are beve-only (raw LE bytes behind a beve newtype marker).
-    // Document that JSON does not round-trip — it must error/diverge, not panic
-    // or silently corrupt into the same value.
-    let v = OneComplex {
-        iq: vec![Complex { re: 1.5, im: -2.5 }; 4],
+fn json_round_trips_via_portable_element_form() {
+    // Human-readable formats use the portable element-wise path, so a field with
+    // a portable element type (here the foreign `Iq`) round-trips through JSON and
+    // is readable as a normal nested array.
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Capture {
+        id: u32,
+        #[serde(with = "beve::complex_array::f32")]
+        iq: Vec<Iq>,
+        #[serde(with = "beve::typed::f64")]
+        gains: Vec<f64>,
+    }
+    let v = Capture {
+        id: 7,
+        iq: vec![Iq { re: 1.5, im: -2.5 }, Iq { re: 0.0, im: 1.0 }],
+        gains: vec![1.0, 2.5, -3.0],
     };
+
     let json = serde_json::to_string(&v).unwrap();
-    let back: Result<OneComplex, _> = serde_json::from_str(&json);
-    // It may error or decode to something else, but must not equal the source
-    // (the encoding is not the portable element-wise form).
-    assert!(!back.map(|b| b == v).unwrap_or(false));
+    // Portable shapes: an array of {re,im} objects, and a plain number array.
+    assert!(json.contains("\"re\":1.5"));
+    assert!(json.contains("[1.0,2.5,-3.0]"));
+    let back: Capture = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, v);
+
+    // ...and the same value still bulk-round-trips through beve.
+    let beve_bytes = beve::to_vec(&v).unwrap();
+    assert_eq!(beve::from_slice::<Capture>(&beve_bytes).unwrap(), v);
 }

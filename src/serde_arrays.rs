@@ -26,15 +26,20 @@
 //! *un-annotated* `Vec<T>` field — the same reason `serde_bytes` exists for
 //! `&[u8]`.
 //!
-//! **These helpers are beve-specific.** The encoded form is a beve typed/complex
-//! array (raw little-endian bytes behind a beve newtype marker), so a field using
-//! them does **not** round-trip through other serde data formats such as JSON. Use
-//! plain `Vec<T>` if a field must also serialize to JSON.
+//! **Format-agnostic.** The bulk byte path is used only for non-human-readable
+//! serde formats (beve). Human-readable formats (e.g. JSON) get the portable
+//! element-wise form — each element via its own `Serialize`/`Deserialize` — so a
+//! field using these helpers still round-trips through JSON, as long as the
+//! element type itself has a portable serde representation (every scalar does, as
+//! does `num_complex::Complex`; note `beve::Complex`'s own representation is
+//! beve-specific). Non-beve *binary* formats are not special-cased and will
+//! mis-read the bulk form.
 //!
-//! `complex_array::*` decodes by reinterpreting the wire bytes as the element
-//! type, so the element `T` must be [`bytemuck::AnyBitPattern`] (every bit pattern
-//! is a valid value) and layout-compatible with `Complex<scalar>`. `beve::Complex`
-//! qualifies, as does `num_complex::Complex` with its `bytemuck` feature enabled.
+//! `complex_array::*` decodes the bulk (beve) form by reinterpreting wire bytes as
+//! the element type, so the element `T` must be [`bytemuck::AnyBitPattern`] (every
+//! bit pattern is a valid value) and layout-compatible with `Complex<scalar>`.
+//! `beve::Complex` qualifies, as does `num_complex::Complex` with its `bytemuck`
+//! feature enabled.
 
 use bytemuck::AnyBitPattern;
 use serde::de::{self, Visitor};
@@ -270,7 +275,19 @@ pub mod complex_array {
                 pub fn serialize<S, T>(value: &[T], serializer: S) -> Result<S::Ok, S::Error>
                 where
                     S: Serializer,
+                    T: Serialize,
                 {
+                    // Human-readable formats get the portable element-wise form
+                    // (each `T` via its own `Serialize`), so the field round-trips
+                    // through e.g. JSON for a portable element type.
+                    if serializer.is_human_readable() {
+                        use serde::ser::SerializeSeq;
+                        let mut seq = serializer.serialize_seq(Some(value.len()))?;
+                        for v in value {
+                            seq.serialize_element(v)?;
+                        }
+                        return seq.end();
+                    }
                     assert_complex_layout::<$scalar, T>();
                     // SAFETY: `T` is layout-compatible with `Complex<$scalar>`
                     // (asserted above), so a `&[T]` is a valid `&[Complex<$scalar>]`.

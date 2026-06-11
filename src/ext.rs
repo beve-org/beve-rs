@@ -201,6 +201,18 @@ where
     S: serde::Serializer,
     T: Serialize,
 {
+    // Human-readable formats (JSON, ...) get the portable element-wise sequence,
+    // so a field using these helpers still round-trips through them. The bulk
+    // newtype/raw-bytes form is meaningful only to beve (and other binary
+    // formats that don't special-case the marker would mis-read it).
+    if s.is_human_readable() {
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(Some(slice.len()))?;
+        for v in slice {
+            seq.serialize_element(v)?;
+        }
+        return seq.end();
+    }
     #[cfg(target_endian = "little")]
     {
         // Sound: `BeveTypedSlice` types are fixed-width no-padding scalars with

@@ -40,9 +40,11 @@ fn bench(c: &mut Criterion) {
     case!("vec_u8", u8, |i| (i % 251) as u8);
     case!("vec_u16", u16, |i| (i as u32 % 65521) as u16);
     case!("vec_u32", u32, |i| (i as u32).wrapping_mul(2654435761));
-    case!("vec_u64", u64, |i| (i as u64).wrapping_mul(0x9E3779B97F4A7C15));
+    case!("vec_u64", u64, |i| (i as u64)
+        .wrapping_mul(0x9E3779B97F4A7C15));
     case!("vec_i32", i32, |i| (i as i32).wrapping_mul(-1640531527));
-    case!("vec_i64", i64, |i| (i as i64).wrapping_mul(-0x61C8864680B583EB));
+    case!("vec_i64", i64, |i| (i as i64)
+        .wrapping_mul(-0x61C8864680B583EB));
     // Control: float path, should be unchanged by integer-path edits.
     case!("vec_f64", f64, |i| i as f64 * 0.5);
 }

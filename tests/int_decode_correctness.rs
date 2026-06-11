@@ -10,7 +10,12 @@ use std::io::Cursor;
 
 fn roundtrip<T>(values: &[T])
 where
-    T: beve::BeveTypedSlice + serde::Serialize + serde::de::DeserializeOwned + Copy + PartialEq + std::fmt::Debug,
+    T: beve::BeveTypedSlice
+        + serde::Serialize
+        + serde::de::DeserializeOwned
+        + Copy
+        + PartialEq
+        + std::fmt::Debug,
 {
     let v: Vec<T> = values.to_vec();
     let bytes = beve::to_vec(&v).expect("encode");

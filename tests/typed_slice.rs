@@ -232,6 +232,12 @@ impl std::io::Write for CountingWriter {
 /// constant number of writer calls regardless of element count (one `write_all`
 /// for the body), whereas a bare `Vec<T>` field issues O(N). This pins the
 /// "N writer calls → 1" win and, with a counting sink, the O(1) measure.
+///
+/// Little-endian only: the single bulk `write_all` is the LE reinterpret-as-bytes
+/// path. On big-endian `TypedSlice` correctly falls back to per-element writes
+/// (the wire is LE; native bytes must be converted), so the write count is O(N)
+/// there by design.
+#[cfg(target_endian = "little")]
 #[test]
 fn layer3_bulk_path_collapses_to_constant_write_count() {
     fn count_typed(n: usize) -> CountingWriter {

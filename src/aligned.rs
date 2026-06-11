@@ -397,6 +397,10 @@ mod tests {
         }
     }
 
+    // Zero-copy aligned borrow is little-endian only — on big-endian the reader
+    // correctly returns `Unsupported` (the wire is LE; a borrowed `&[T]` would be
+    // byte-swapped wrong), so these success-path tests are LE-gated.
+    #[cfg(target_endian = "little")]
     #[test]
     fn zero_copy_borrow_in_aligned_buffer() {
         let data: Vec<f64> = (0..50).map(|i| (i as f64).sqrt()).collect();
@@ -462,6 +466,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_endian = "little")] // zero-copy aligned borrow is LE-only
     #[test]
     fn write_at_standalone_body_borrows_at_frame_offset() {
         // The motivating case: build the body in its own buffer (offset 0), padded
@@ -499,6 +504,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_endian = "little")] // zero-copy aligned borrow is LE-only
     #[test]
     fn write_at_borrows_for_align_gt_8_element() {
         // i128 has align 16, so the padding run is wider; confirm a standalone body
@@ -518,6 +524,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_endian = "little")] // zero-copy aligned borrow is LE-only
     #[test]
     fn write_at_with_prefilled_out_and_independent_base_offset() {
         // `out` already holds unrelated bytes (start != 0) and `base_offset` is a
@@ -632,6 +639,7 @@ mod tests {
         assert!(read_aligned_typed_slice_ref::<f64>(&buf).is_err());
     }
 
+    #[cfg(target_endian = "little")] // zero-copy aligned borrow is LE-only
     #[test]
     fn zero_copy_borrow_non_f64_alignments() {
         // Exercise the borrow path for alignments other than 8: align-16 (i128)

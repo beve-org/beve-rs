@@ -21,12 +21,22 @@
 //! }
 //! ```
 //!
-//! Both `from_slice` and `from_reader_streaming` hit the bulk path; other serde
-//! formats (e.g. JSON) fall back to the portable element-wise path, so an
-//! annotated field stays format-agnostic. The bulk path needs the annotation
-//! because serde exposes no way to bulk-fill an *un-annotated* `Vec<T>` field —
-//! the same reason `serde_bytes` exists for `&[u8]`.
+//! Both `from_slice` and `from_reader_streaming` hit the bulk path. The bulk path
+//! needs the annotation because serde exposes no way to bulk-fill an
+//! *un-annotated* `Vec<T>` field — the same reason `serde_bytes` exists for
+//! `&[u8]`.
+//!
+//! **These helpers are beve-specific.** The encoded form is a beve typed/complex
+//! array (raw little-endian bytes behind a beve newtype marker), so a field using
+//! them does **not** round-trip through other serde data formats such as JSON. Use
+//! plain `Vec<T>` if a field must also serialize to JSON.
+//!
+//! `complex_array::*` decodes by reinterpreting the wire bytes as the element
+//! type, so the element `T` must be [`bytemuck::AnyBitPattern`] (every bit pattern
+//! is a valid value) and layout-compatible with `Complex<scalar>`. `beve::Complex`
+//! qualifies, as does `num_complex::Complex` with its `bytemuck` feature enabled.
 
+use bytemuck::AnyBitPattern;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -58,8 +68,6 @@ pub(crate) fn complex_array_tag(name: &str) -> Option<(u8, u8, usize)> {
     arm! {
         f32 => "__beve_complex_array_f32",
         f64 => "__beve_complex_array_f64",
-        half::f16 => "__beve_complex_array_f16",
-        half::bf16 => "__beve_complex_array_bf16",
         i8 => "__beve_complex_array_i8",
         i16 => "__beve_complex_array_i16",
         i32 => "__beve_complex_array_i32",
@@ -77,12 +85,12 @@ pub(crate) fn complex_array_tag(name: &str) -> Option<(u8, u8, usize)> {
 // Shared bulk-copy core
 // ---------------------------------------------------------------------------
 
-/// Copy a little-endian payload straight into a `Vec<E>`. `E` must be a
-/// fixed-width no-padding POD whose every bit pattern is valid (a numeric scalar
-/// or a `#[repr(C)]` pair of them); `payload.len()` must be a whole multiple of
-/// `size_of::<E>()` (the decoders guarantee this). `scalar_size` is the byte-swap
-/// granularity on big-endian targets (the element's *scalar* width).
-fn bytes_to_vec<E>(payload: &[u8], scalar_size: usize) -> Vec<E> {
+/// Copy a little-endian payload straight into a `Vec<E>`. The `E: AnyBitPattern`
+/// bound guarantees any byte sequence is a valid `E`, which is what makes the
+/// memcpy sound; `payload.len()` must be a whole multiple of `size_of::<E>()`
+/// (the decoders guarantee this). `scalar_size` is the byte-swap granularity on
+/// big-endian targets (the element's *scalar* width).
+fn bytes_to_vec<E: AnyBitPattern>(payload: &[u8], scalar_size: usize) -> Vec<E> {
     let elem = core::mem::size_of::<E>();
     debug_assert!(elem != 0 && payload.len().is_multiple_of(elem));
     let n = payload.len() / elem.max(1);
@@ -90,7 +98,7 @@ fn bytes_to_vec<E>(payload: &[u8], scalar_size: usize) -> Vec<E> {
     if n != 0 {
         let nbytes = n * elem;
         // SAFETY: `out` has capacity for `n` `E`s = `nbytes` bytes; `payload` is
-        // exactly that long; `E` accepts any bit pattern (caller's contract).
+        // exactly that long; `E: AnyBitPattern` accepts any bit pattern.
         unsafe {
             core::ptr::copy_nonoverlapping(payload.as_ptr(), out.as_mut_ptr() as *mut u8, nbytes);
             out.set_len(n);
@@ -119,7 +127,7 @@ struct TypedArrayVisitor<S>(core::marker::PhantomData<S>);
 
 impl<'de, S> Visitor<'de> for TypedArrayVisitor<S>
 where
-    S: BeveTypedSlice + Deserialize<'de>,
+    S: BeveTypedSlice + AnyBitPattern + Deserialize<'de>,
 {
     type Value = Vec<S>;
 
@@ -155,7 +163,7 @@ struct ComplexArrayVisitor<S, T>(core::marker::PhantomData<(S, T)>);
 impl<'de, S, T> Visitor<'de> for ComplexArrayVisitor<S, T>
 where
     S: BeveTypedSlice,
-    T: Deserialize<'de>,
+    T: AnyBitPattern + Deserialize<'de>,
 {
     type Value = Vec<T>;
 
@@ -278,7 +286,7 @@ pub mod complex_array {
                 pub fn deserialize<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
                 where
                     D: Deserializer<'de>,
-                    T: Deserialize<'de>,
+                    T: AnyBitPattern + Deserialize<'de>,
                 {
                     assert_complex_layout::<$scalar, T>();
                     deserializer.deserialize_newtype_struct(

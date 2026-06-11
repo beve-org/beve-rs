@@ -94,12 +94,17 @@ fn with_encoding_is_wire_compatible_with_plain_vec() {
 
 // A foreign complex element type, layout-compatible with `Complex<f32>`
 // (`#[repr(C)]`, two `f32` fields re/im) — the `num_complex::Complex<f32>` case.
+// The bulk decode requires `AnyBitPattern`; `num_complex` provides this via its
+// `bytemuck` feature, here we assert it directly.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
 struct Iq {
     re: f32,
     im: f32,
 }
+// SAFETY: `#[repr(C)]` over two `f32` (all bits valid, no padding).
+unsafe impl bytemuck::Zeroable for Iq {}
+unsafe impl bytemuck::Pod for Iq {}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct ForeignFrame {
@@ -165,4 +170,60 @@ fn complex_f64_and_more_widths() {
         beve::from_reader_streaming::<_, Wide>(Cursor::new(&bytes)).unwrap(),
         w
     );
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct OneComplex {
+    #[serde(with = "beve::complex_array::f32")]
+    iq: Vec<Complex<f32>>,
+}
+
+#[test]
+fn mismatched_element_type_errors() {
+    // Encode a Complex<f32> array, then try to decode it as a Complex<f64> array:
+    // the decoder validates the wire element class/width and must reject it, not
+    // silently misread.
+    #[derive(Deserialize)]
+    struct WrongWidth {
+        #[serde(with = "beve::complex_array::f64")]
+        #[allow(dead_code)]
+        iq: Vec<Complex<f64>>,
+    }
+    let bytes = beve::to_vec(&OneComplex {
+        iq: vec![Complex { re: 1.0, im: 2.0 }; 16],
+    })
+    .unwrap();
+    assert!(beve::from_slice::<WrongWidth>(&bytes).is_err());
+    assert!(beve::from_reader_streaming::<_, WrongWidth>(Cursor::new(&bytes)).is_err());
+}
+
+#[test]
+fn truncated_stream_errors_without_panicking() {
+    let full = beve::to_vec(&OneComplex {
+        iq: (0..10_000)
+            .map(|i| Complex {
+                re: i as f32,
+                im: -(i as f32),
+            })
+            .collect(),
+    })
+    .unwrap();
+    let truncated = &full[..full.len() - 1000];
+    assert!(beve::from_slice::<OneComplex>(truncated).is_err());
+    assert!(beve::from_reader_streaming::<_, OneComplex>(Cursor::new(truncated)).is_err());
+}
+
+#[test]
+fn non_beve_format_is_not_supported_but_does_not_panic() {
+    // These helpers are beve-only (raw LE bytes behind a beve newtype marker).
+    // Document that JSON does not round-trip — it must error/diverge, not panic
+    // or silently corrupt into the same value.
+    let v = OneComplex {
+        iq: vec![Complex { re: 1.5, im: -2.5 }; 4],
+    };
+    let json = serde_json::to_string(&v).unwrap();
+    let back: Result<OneComplex, _> = serde_json::from_str(&json);
+    // It may error or decode to something else, but must not equal the source
+    // (the encoding is not the portable element-wise form).
+    assert!(!back.map(|b| b == v).unwrap_or(false));
 }

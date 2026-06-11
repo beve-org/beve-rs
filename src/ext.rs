@@ -44,6 +44,13 @@ pub struct Complex<T> {
     pub im: T,
 }
 
+// SAFETY: `Complex<T>` is `#[repr(C)]` over two `T` fields with no padding, so it
+// is zeroable / all-bits-valid exactly when `T` is. These let `Complex<scalar>`
+// be decoded through the bulk `complex_array::*` path (which requires
+// `AnyBitPattern`); `bytemuck` provides the blanket `Pod: AnyBitPattern`.
+unsafe impl<T: bytemuck::Zeroable> bytemuck::Zeroable for Complex<T> {}
+unsafe impl<T: bytemuck::Pod> bytemuck::Pod for Complex<T> {}
+
 /// Generates `Serialize` for `Complex<$scalar>` using a single `NT_COMPLEX` newtype.
 /// Payload layout: `[class: u8, byte_code: u8, re_le_bytes..., im_le_bytes...]`
 macro_rules! impl_complex_serialize {

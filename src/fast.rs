@@ -1,13 +1,15 @@
 use crate::error::{Error, Result};
 use crate::ext::Complex;
 use crate::header::*;
-use crate::size::{read_size, size_encoded_len, write_size, write_size_to_writer};
+use crate::size::{
+    read_size, read_size_from_reader, size_encoded_len, write_size, write_size_to_writer,
+};
 // Only the little-endian bulk-copy paths use raw `ptr`; on big-endian they fall
 // back to per-element conversion, so the import would otherwise be unused there.
 #[cfg(target_endian = "little")]
 use core::ptr;
 use half::{bf16, f16};
-use std::io::Write;
+use std::io::{Read, Write};
 
 /// Write a typed array header and length for numeric arrays.
 #[inline]
@@ -597,6 +599,131 @@ pub fn read_complex_slice<T: BeveTypedSlice>(input: &[u8]) -> Result<Vec<Complex
             }
         }
     }
+    Ok(out)
+}
+
+/// Streaming counterpart of [`read_typed_slice`]: read a BEVE typed numeric array
+/// straight from a reader into a `Vec<T>` at bulk speed, without first holding the
+/// encoded payload in memory.
+///
+/// This is the bulk alternative to deserializing a `Vec<T>` through serde
+/// (`from_reader_streaming`), which visits every element through the serde
+/// machinery. It reads the array header, validates the element type names `T`,
+/// then drains exactly `len * size_of::<T>()` little-endian payload bytes directly
+/// into the result buffer. Memory is bounded to the result `Vec<T>`, and the
+/// reader is left positioned immediately after the array, so it composes with
+/// further reads from the same stream.
+///
+/// The payload is read in capped steps, so a corrupt or hostile length field can
+/// fail the allocation gracefully (`Error`) rather than forcing one huge up-front
+/// allocation; bytes are only committed to the `Vec` once they have actually
+/// arrived.
+pub fn read_typed_slice_from_reader<T: BeveTypedSlice, R: Read>(mut reader: R) -> Result<Vec<T>> {
+    let mut hdr = [0u8; 1];
+    reader.read_exact(&mut hdr).map_err(|_| Error::Eof)?;
+    let header = hdr[0];
+    if parse_type(header) != TYPE_TYPED_ARRAY {
+        return Err(Error::InvalidType("not a typed array"));
+    }
+    if parse_subtype(header) != T::CLASS || parse_byte_count_code(header) != T::BYTE_CODE {
+        return Err(Error::Mismatch("typed array element type does not match T"));
+    }
+    let len = read_size_from_reader(&mut reader)? as usize;
+    read_le_payload::<T, R>(&mut reader, len, T::ELEM_SIZE)
+}
+
+/// Streaming counterpart of [`read_complex_slice`]: read a BEVE complex array
+/// straight from a reader into a `Vec<Complex<T>>` at bulk speed.
+///
+/// The complex counterpart of [`read_typed_slice_from_reader`]; see it for the
+/// memory and allocation behavior. Each value is two `T` scalars `[re, im]`, so a
+/// `Vec<Complex<T>>` of `len` values occupies `len * 2 * size_of::<T>()` contiguous
+/// little-endian payload bytes, the same layout [`write_complex_slice`] writes.
+pub fn read_complex_slice_from_reader<T: BeveTypedSlice, R: Read>(
+    mut reader: R,
+) -> Result<Vec<Complex<T>>> {
+    // The complex extension header byte and the complex header byte are adjacent.
+    let mut hdr = [0u8; 2];
+    reader.read_exact(&mut hdr).map_err(|_| Error::Eof)?;
+    if parse_type(hdr[0]) != TYPE_EXTENSION || parse_extension_id(hdr[0]) != EXT_COMPLEX {
+        return Err(Error::InvalidType("not a complex extension"));
+    }
+    let ch = hdr[1];
+    let is_array = (ch & 0x01) != 0;
+    let class = (ch >> 3) & 0x03;
+    let byte_code = (ch >> 5) & 0x07;
+    if !is_array {
+        return Err(Error::InvalidType(
+            "expected a complex array, found a scalar complex",
+        ));
+    }
+    if class != T::CLASS || byte_code != T::BYTE_CODE {
+        return Err(Error::Mismatch("complex element type does not match T"));
+    }
+    let len = read_size_from_reader(&mut reader)? as usize;
+    // Byte-swap unit (big-endian) is the scalar width `T::ELEM_SIZE`; the element
+    // stride `size_of::<Complex<T>>()` covers the two scalars.
+    read_le_payload::<Complex<T>, R>(&mut reader, len, T::ELEM_SIZE)
+}
+
+/// Read `len` fixed-layout little-endian values of `E` from `reader` into a
+/// `Vec<E>`, the streaming bulk core shared by the typed and complex readers.
+///
+/// `E` is `T` (typed) or `Complex<T>` (complex); both are `#[repr(C)]`-compatible
+/// over fixed-width scalars with no padding and every bit pattern valid, so the
+/// little-endian payload is already the in-memory representation on a
+/// little-endian target. `scalar_size` is the width of a single scalar
+/// (`T::ELEM_SIZE`), used only for the big-endian byte-swap.
+fn read_le_payload<E, R: Read>(reader: &mut R, len: usize, scalar_size: usize) -> Result<Vec<E>> {
+    let mut out: Vec<E> = Vec::new();
+    if len == 0 {
+        return Ok(out);
+    }
+    let elem = core::mem::size_of::<E>();
+    // Validate the total fits in memory arithmetic before touching the reader.
+    len.checked_mul(elem).ok_or(Error::InvalidSize)?;
+
+    // Grow in capped steps so a bogus `len` can't force a huge up-front allocation;
+    // each step's elements are committed (`set_len`) only after their bytes arrive.
+    const STEP_BYTES: usize = 8 * 1024 * 1024;
+    let step_elems = (STEP_BYTES / elem.max(1)).max(1);
+    let mut filled = 0usize;
+    while filled < len {
+        let take = step_elems.min(len - filled);
+        out.try_reserve(take)
+            .map_err(|_| Error::Message("allocation failed for slice"))?;
+        // SAFETY: `take` elements were just reserved past `filled`; zero-initialize
+        // their bytes (a valid bit pattern for every supported scalar, so a valid
+        // `E`), read exactly those bytes from the reader, then commit them. On a
+        // read error `set_len` is not reached, so the reserved-but-unwritten tail
+        // is never observed as initialized.
+        unsafe {
+            let start = out.as_mut_ptr().add(filled) as *mut u8;
+            let nbytes = take * elem;
+            core::ptr::write_bytes(start, 0, nbytes);
+            let dst = core::slice::from_raw_parts_mut(start, nbytes);
+            // Preserve the real reader error (a genuine IO failure is not an EOF);
+            // the header/size reads above use `Eof` since a failure there is a
+            // truncated array header.
+            reader.read_exact(dst).map_err(Error::from)?;
+            out.set_len(filled + take);
+        }
+        filled += take;
+    }
+
+    #[cfg(not(target_endian = "little"))]
+    {
+        // Big-endian: the wire is little-endian, so reverse each scalar in place.
+        let payload = len * elem;
+        let bytes =
+            unsafe { core::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, payload) };
+        for s in bytes.chunks_exact_mut(scalar_size) {
+            s.reverse();
+        }
+    }
+    #[cfg(target_endian = "little")]
+    let _ = scalar_size;
+
     Ok(out)
 }
 

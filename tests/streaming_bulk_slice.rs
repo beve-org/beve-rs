@@ -60,12 +60,14 @@ where
         let in_mem = beve::read_typed_slice::<T>(&bytes).expect("read_typed_slice");
         assert_eq!(in_mem, v, "in-memory bulk mismatch (n={n})");
 
-        let cur: Vec<T> =
-            beve::read_typed_slice_from_reader(Cursor::new(&bytes)).expect("cursor");
+        let cur: Vec<T> = beve::read_typed_slice_from_reader(Cursor::new(&bytes)).expect("cursor");
         assert_eq!(cur, v, "streaming cursor mismatch (n={n})");
 
-        let ob: Vec<T> = beve::read_typed_slice_from_reader(OneByteReader { data: &bytes, pos: 0 })
-            .expect("one-byte");
+        let ob: Vec<T> = beve::read_typed_slice_from_reader(OneByteReader {
+            data: &bytes,
+            pos: 0,
+        })
+        .expect("one-byte");
         assert_eq!(ob, v, "streaming one-byte mismatch (n={n})");
 
         for chunk in [1usize, 7, 4096, 1_000_003] {
@@ -95,9 +97,11 @@ where
             beve::read_complex_slice_from_reader(Cursor::new(&bytes)).expect("cursor");
         assert_eq!(cur, v, "streaming complex cursor mismatch (n={n})");
 
-        let ob: Vec<Complex<T>> =
-            beve::read_complex_slice_from_reader(OneByteReader { data: &bytes, pos: 0 })
-                .expect("one-byte");
+        let ob: Vec<Complex<T>> = beve::read_complex_slice_from_reader(OneByteReader {
+            data: &bytes,
+            pos: 0,
+        })
+        .expect("one-byte");
         assert_eq!(ob, v, "streaming complex one-byte mismatch (n={n})");
 
         for chunk in [3usize, 13, 65537] {
@@ -107,7 +111,10 @@ where
                 chunk,
             })
             .unwrap_or_else(|e| panic!("complex odd-chunk({chunk}) n={n}: {e:?}"));
-            assert_eq!(odd, v, "streaming complex odd-chunk={chunk} mismatch (n={n})");
+            assert_eq!(
+                odd, v,
+                "streaming complex odd-chunk={chunk} mismatch (n={n})"
+            );
         }
     }
 }
@@ -186,7 +193,11 @@ fn element_type_mismatch_errors() {
 
 #[test]
 fn truncated_payload_errors_without_committing() {
-    let v: Vec<f64> = (0..1000).collect::<Vec<u64>>().iter().map(|&x| x as f64).collect();
+    let v: Vec<f64> = (0..1000)
+        .collect::<Vec<u64>>()
+        .iter()
+        .map(|&x| x as f64)
+        .collect();
     let mut bytes = beve::to_vec_typed_slice(&v);
     bytes.truncate(bytes.len() - 100); // chop the tail
     let r = beve::read_typed_slice_from_reader::<f64, _>(Cursor::new(&bytes));

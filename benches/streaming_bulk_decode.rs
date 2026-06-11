@@ -32,8 +32,7 @@ fn bench_typed_f64(c: &mut Criterion) {
     });
     g.bench_function("from_reader_streaming (serde stream)", |b| {
         b.iter(|| {
-            let d: Vec<f64> =
-                beve::from_reader_streaming(Cursor::new(black_box(&bytes))).unwrap();
+            let d: Vec<f64> = beve::from_reader_streaming(Cursor::new(black_box(&bytes))).unwrap();
             black_box(d);
         })
     });

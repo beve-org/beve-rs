@@ -185,7 +185,7 @@ pub struct TypedSlice<'a, T>(pub &'a [T]);
 /// per-element sequence path (except an empty slice, which has no bytes to convert
 /// and so takes the little-endian typed-array path on every target).
 #[inline]
-fn serialize_typed_slice<S, T>(
+pub(crate) fn serialize_typed_slice<S, T>(
     slice: &[T],
     name: &'static str,
     s: S,

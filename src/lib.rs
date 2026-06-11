@@ -50,6 +50,7 @@ pub mod mat;
 #[cfg(feature = "mat")]
 mod raw;
 mod ser;
+mod serde_arrays;
 mod size;
 mod streaming_de;
 mod streaming_ser;
@@ -86,6 +87,9 @@ pub use crate::ser::{
     EnumEncoding, Serializer, SerializerOptions, to_vec, to_vec_into, to_vec_into_with_options,
     to_vec_with_options,
 };
+/// `#[serde(with = ...)]` helpers for bulk (memcpy) decode of numeric
+/// (`beve::typed::*`) and complex (`beve::complex_array::*`) array fields.
+pub use crate::serde_arrays::{complex_array, typed};
 pub use crate::streaming_de::{StreamingDeserializer, from_reader_streaming};
 pub use crate::streaming_ser::{
     StreamingSerializer, serialized_size, serialized_size_with_options, to_writer_streaming,

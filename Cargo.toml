@@ -52,3 +52,7 @@ harness = false
 [[bench]]
 name = "serde_int_decode"
 harness = false
+
+[[bench]]
+name = "serde_with_decode"
+harness = false

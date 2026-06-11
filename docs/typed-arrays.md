@@ -57,9 +57,37 @@ Like the writer, it is opt-in and requires naming the element type `T`:
 serde hands the deserializer one element at a time and never sees the
 contiguous block, so the generic `from_slice` path cannot take it
 automatically. Use it when the whole body is a numeric array and you want
-to skip per-element deserialization; `from_slice::<Vec<T>>` remains the
-right choice for an array nested inside a larger structure. The complex
-counterpart is `read_complex_slice`.
+to skip per-element deserialization. The complex counterpart is
+`read_complex_slice`.
+
+### Bulk decode of a struct field
+
+`read_typed_slice` decodes a whole-body array; it cannot reach an array
+nested as a **field inside a struct**. For that, annotate the field with the
+`#[serde(with = "beve::typed::<scalar>")]` helper, which routes the field
+through the same bulk (memcpy) decode via serde — so the struct decodes at
+full speed without leaving serde:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Frame {
+    #[serde(with = "beve::typed::f64")]
+    samples: Vec<f64>,
+}
+
+let frame = Frame { samples: vec![1.0, -2.5, 3.25] };
+let bytes = beve::to_vec(&frame).unwrap();
+assert_eq!(beve::from_slice::<Frame>(&bytes).unwrap(), frame);
+```
+
+Modules: `beve::typed::{i8, i16, i32, i64, i128, u8, u16, u32, u64, u128,
+f32, f64}`. The wire bytes are identical to an unannotated `Vec<T>` field
+(so the two interoperate), and human-readable formats (JSON) fall back to
+the portable element-wise form. The complex counterpart is
+`beve::complex_array::<scalar>` (see
+[complex-and-matrices.md](complex-and-matrices.md)).
 
 ## Slicing with `from_field_slice`
 

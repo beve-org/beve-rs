@@ -80,6 +80,12 @@ because serde's `Deserialize` for `Vec<Complex<T>>` never exposes the backing
 block to the deserializer. It errors if the bytes are not a complex array, if
 the on-wire element type does not match `T`, or if the payload is truncated.
 
+`read_complex_slice` decodes a stream whose *whole body* is a complex array.
+For a complex array that is a **field inside a struct**, use the
+`#[serde(with = "beve::complex_array::<scalar>")]` helpers (see
+[Foreign Complex Types](#foreign-complex-types)) — they apply the same bulk
+decode through serde, which the plain `Vec<Complex<T>>` field path cannot.
+
 `to_vec_complex_slice` / `read_complex_slice` work for any supported scalar type:
 
 ```rust
@@ -94,9 +100,12 @@ assert_eq!(back, arr);
 ### Foreign Complex Types
 
 If you use a third-party complex type like `num_complex::Complex<T>`,
-Rust's orphan rules prevent beve from providing a `Serialize` impl
-directly. Use the `beve::complex` serde helpers to serialize fields
-as proper BEVE complex arrays:
+Rust's orphan rules prevent beve from providing serde impls directly.
+The `beve::complex_array::<scalar>` modules are `#[serde(with = ...)]`
+helpers that give a struct field a compact BEVE complex array **both
+directions** — and, crucially, bulk (memcpy) **decode** straight into
+the field, which the per-element serde path cannot do for a nested
+`Vec<Complex<T>>`:
 
 ```rust
 use num_complex::Complex32;
@@ -104,18 +113,39 @@ use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize)]
 struct Signal {
-    #[serde(serialize_with = "beve::complex::f32_array")]
+    #[serde(with = "beve::complex_array::f32")]
     pub buffer: Vec<Complex32>,
 }
 ```
 
-Available helpers: `f32_array`, `f64_array`, `i8_array`, `i16_array`,
-`i32_array`, `i64_array`, `i128_array`, `u8_array`, `u16_array`,
-`u32_array`, `u64_array`, `u128_array`.
+Available modules: `complex_array::{f32, f64, i8, i16, i32, i64, i128,
+u8, u16, u32, u64, u128}`.
 
-The foreign type must be layout-compatible with `beve::Complex<T>`
-(two contiguous `T` fields: re then im). This is true for
-`num_complex::Complex<T>`.
+The element type must be layout-compatible with `beve::Complex<T>`
+(two contiguous `T` fields: re then im) **and** implement
+[`bytemuck::AnyBitPattern`] — the bound that makes the bulk byte
+reinterpret sound. `num_complex::Complex<T>` satisfies both once you
+enable its `bytemuck` feature:
+
+```toml
+num-complex = { version = "0.4", features = ["bytemuck"] }
+```
+
+These helpers are beve-specific on the binary wire, but
+**format-agnostic**: a human-readable serializer (JSON, ...) gets the
+portable element-wise form, so a field using them still round-trips
+through JSON as long as the element type itself has a portable serde
+representation (`num_complex::Complex` does).
+
+[`bytemuck::AnyBitPattern`]: https://docs.rs/bytemuck/latest/bytemuck/trait.AnyBitPattern.html
+
+#### Encode-only helpers (legacy)
+
+The original `#[serde(serialize_with = "beve::complex::f32_array")]`
+helpers (`f32_array`, `f64_array`, `i8_array`, …, `u128_array`) encode a
+field as a BEVE complex array but do **not** accelerate decode. Prefer
+the `complex_array::*` `with` modules above for new code; the
+`serialize_with` form remains for encode-only use.
 
 ### Wire Format
 

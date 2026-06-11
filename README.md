@@ -195,6 +195,23 @@ fn frame_roundtrip() -> beve::Result<()> {
 }
 ```
 
+The encoding is compact, but **decoding a struct field still goes element-by-element through serde** — the bulk readers (`read_typed_slice` / `read_complex_slice`) operate on a whole-body array and can't reach a field nested inside a struct. For a large numeric or complex field where decode speed matters, annotate it with the `#[serde(with = ...)]` bulk helpers. They decode the field straight into its `Vec` at memcpy speed (and still encode/decode through JSON via the portable element form):
+
+```rust
+use beve::Complex;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Capture {
+    #[serde(with = "beve::typed::f64")]
+    samples: Vec<f64>,
+    #[serde(with = "beve::complex_array::f32")]
+    iq: Vec<Complex<f32>>,
+}
+```
+
+`beve::typed::*` covers the numeric scalars (`i8`–`i128`, `u8`–`u128`, `f32`, `f64`); `beve::complex_array::*` covers complex arrays whose element is layout-compatible with `Complex<scalar>` (including `num_complex::Complex` with its `bytemuck` feature). The on-wire bytes are identical to the unannotated `Vec<T>`, so an annotated and a plain field interoperate. See [Complex Numbers and Matrices](#complex-numbers-and-matrices) for the foreign-type details.
+
 ### Integer Map Keys
 Maps with integer keys serialize deterministically and read back into ordered maps:
 ```rust
@@ -253,7 +270,7 @@ fn encode_science() -> beve::Result<()> {
     Ok(())
 }
 ```
-For foreign complex types (e.g. `num_complex::Complex`), use `#[serde(serialize_with = "beve::complex::f32_array")]` and similar helpers — see the [complex docs](docs/complex-and-matrices.md) for details.
+For foreign complex types (e.g. `num_complex::Complex`), annotate the field with `#[serde(with = "beve::complex_array::f32")]` (and the per-scalar siblings): this gives a compact BEVE complex array on the wire **and** bulk (memcpy) decode straight into the field. The element type must be `bytemuck::AnyBitPattern` and layout-compatible with `Complex<scalar>` — for `num_complex`, enable its `bytemuck` feature. (The older `#[serde(serialize_with = "beve::complex::f32_array")]` helpers encode only.) See the [complex docs](docs/complex-and-matrices.md) for details.
 
 `Matrix` and `MatrixOwned<T>` use the BEVE matrix extension for supported element types (`bool`, numeric scalars, and `Complex<T>`). For unsupported element types, serialization falls back to a `{ layout, extents, value }` map.
 

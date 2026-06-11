@@ -792,6 +792,54 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessGeneric<'a, 'de> {
     }
 }
 
+/// Widen `elem_size` little-endian bytes to `u128`. `chunk.len()` must equal
+/// `elem_size` (1/2/4/8/16, the only values `byte_count_to_bytes` yields).
+///
+/// Narrow widths (1/2/4) read at native width, where the old 16-byte buffer
+/// round-trip was pure overhead — this is where the big wins are. The 8/16-byte
+/// widths keep the buffer path: there it is already a single wide load, so a
+/// native read only adds a length-check branch with nothing to gain.
+#[inline(always)]
+pub(crate) fn le_unsigned(chunk: &[u8], elem_size: usize) -> u128 {
+    match elem_size {
+        1 => chunk[0] as u128,
+        2 => u16::from_le_bytes(chunk.try_into().unwrap()) as u128,
+        4 => u32::from_le_bytes(chunk.try_into().unwrap()) as u128,
+        _ => {
+            let mut buf = [0u8; 16];
+            buf[..elem_size].copy_from_slice(chunk);
+            u128::from_le_bytes(buf)
+        }
+    }
+}
+
+/// Signed twin of [`le_unsigned`]: widen `elem_size` little-endian bytes to
+/// `i128`. Native-width reads sign-extend with a single `as` cast, replacing the
+/// per-element conditional sign-fill the buffer path used — the dominant cost of
+/// the old signed path, so every width benefits (the 16-byte case needs no
+/// extension).
+#[inline(always)]
+pub(crate) fn le_signed(chunk: &[u8], elem_size: usize) -> i128 {
+    match elem_size {
+        1 => (chunk[0] as i8) as i128,
+        2 => i16::from_le_bytes(chunk.try_into().unwrap()) as i128,
+        4 => i32::from_le_bytes(chunk.try_into().unwrap()) as i128,
+        8 => i64::from_le_bytes(chunk.try_into().unwrap()) as i128,
+        16 => i128::from_le_bytes(chunk.try_into().unwrap()),
+        // Unreachable for BEVE widths; kept correct for robustness.
+        _ => {
+            let mut buf = [0u8; 16];
+            buf[..elem_size].copy_from_slice(chunk);
+            if elem_size < 16 && (chunk[elem_size - 1] & 0x80) != 0 {
+                for b in &mut buf[elem_size..] {
+                    *b = 0xFF;
+                }
+            }
+            i128::from_le_bytes(buf)
+        }
+    }
+}
+
 struct SeqAccessUnsigned<'de> {
     data: &'de [u8],
     remaining: usize,
@@ -811,11 +859,8 @@ impl<'de> de::SeqAccess<'de> for SeqAccessUnsigned<'de> {
         debug_assert!(self.offset + self.elem_size <= self.data.len());
         let chunk = &self.data[self.offset..self.offset + self.elem_size];
         self.offset += self.elem_size;
-        let mut buf = [0u8; 16];
-        buf[..self.elem_size].copy_from_slice(chunk);
-        let v = u128::from_le_bytes(buf);
-        let deser = NumDe::Unsigned(v);
-        seed.deserialize(deser).map(Some)
+        let v = le_unsigned(chunk, self.elem_size);
+        seed.deserialize(NumDe::Unsigned(v)).map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
         Some(self.remaining)
@@ -841,16 +886,8 @@ impl<'de> de::SeqAccess<'de> for SeqAccessSigned<'de> {
         debug_assert!(self.offset + self.elem_size <= self.data.len());
         let chunk = &self.data[self.offset..self.offset + self.elem_size];
         self.offset += self.elem_size;
-        let mut buf = [0u8; 16];
-        buf[..self.elem_size].copy_from_slice(chunk);
-        if self.elem_size < 16 && (chunk[self.elem_size - 1] & 0x80) != 0 {
-            for b in &mut buf[self.elem_size..] {
-                *b = 0xFF;
-            }
-        }
-        let v = i128::from_le_bytes(buf);
-        let deser = NumDe::Signed(v);
-        seed.deserialize(deser).map(Some)
+        let v = le_signed(chunk, self.elem_size);
+        seed.deserialize(NumDe::Signed(v)).map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
         Some(self.remaining)

@@ -48,3 +48,7 @@ harness = false
 [[bench]]
 name = "streaming_bulk_decode"
 harness = false
+
+[[bench]]
+name = "serde_int_decode"
+harness = false

@@ -9,7 +9,7 @@ use serde::forward_to_deserialize_any;
 
 use crate::de::{
     EnumIndexAccess, HalfBitsDeserializer, HalfKind, NumDe, VariantAccessNoValue,
-    byte_count_to_bytes,
+    byte_count_to_bytes, le_signed,
 };
 use crate::error::{Error, Result};
 use crate::header::*;
@@ -592,6 +592,9 @@ impl<'de, 'a, R: Read> de::SeqAccess<'de> for SeqAccessUnsignedStreaming<'a, R> 
         self.remaining -= 1;
         let mut buf = [0u8; 16];
         self.de.read_exact_into(&mut buf[..self.elem_size])?;
+        // Unsigned widening from a zero-padded 16-byte buffer is already a single
+        // wide load; no native-width specialization needed here (unlike the
+        // buffered slice path, the buffer must exist to receive the read).
         seed.deserialize(NumDe::Unsigned(u128::from_le_bytes(buf)))
             .map(Some)
     }
@@ -617,13 +620,8 @@ impl<'de, 'a, R: Read> de::SeqAccess<'de> for SeqAccessSignedStreaming<'a, R> {
         self.remaining -= 1;
         let mut buf = [0u8; 16];
         self.de.read_exact_into(&mut buf[..self.elem_size])?;
-        if self.elem_size < 16 && (buf[self.elem_size - 1] & 0x80) != 0 {
-            for b in &mut buf[self.elem_size..] {
-                *b = 0xFF;
-            }
-        }
-        seed.deserialize(NumDe::Signed(i128::from_le_bytes(buf)))
-            .map(Some)
+        let v = le_signed(&buf[..self.elem_size], self.elem_size);
+        seed.deserialize(NumDe::Signed(v)).map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
         Some(self.remaining)

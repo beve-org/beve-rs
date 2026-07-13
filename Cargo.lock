@@ -37,7 +37,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "beve"
-version = "2.5.0"
+version = "3.0.0"
 dependencies = [
  "bytemuck",
  "criterion",
@@ -291,9 +291,9 @@ dependencies = [
 
 [[package]]
 name = "hdf5-pure"
-version = "0.5.0"
+version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99e8b004600a8133374d7f1b9c3c33e4ad1cc050b5540761b43ea5fa199ceb1a"
+checksum = "4c36cb09ddc5a5a0d10680cf7fe4b82173b1d15c2b2277b868005add93186682"
 dependencies = [
  "byteorder",
  "flate2",

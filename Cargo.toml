@@ -1,6 +1,6 @@
 [package]
 name = "beve"
-version = "3.0.0"
+version = "4.0.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specification with serde support"
@@ -23,7 +23,7 @@ half = { version = "2.4", features = ["serde"] }
 # pattern is a valid value (`AnyBitPattern`) may be memcpy'd from wire bytes.
 bytemuck = "1"
 simdutf8 = "0.1"
-hdf5-pure = { version = "0.21", optional = true }
+hdf5-pure = { version = "0.28", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

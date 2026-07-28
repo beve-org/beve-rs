@@ -144,8 +144,8 @@ pub fn beve_file_to_mat_v73_file<I: AsRef<Path>, O: AsRef<Path>>(
 fn read_f32_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<f32>> {
     let bytes = reader.read_exact(len * 4)?;
     let mut out = Vec::with_capacity(len);
-    for chunk in bytes.chunks_exact(4) {
-        out.push(f32::from_le_bytes(chunk.try_into().unwrap()));
+    for chunk in bytes.as_chunks::<4>().0 {
+        out.push(f32::from_le_bytes(*chunk));
     }
     Ok(out)
 }
@@ -154,8 +154,8 @@ fn read_f32_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<f32>> {
 fn read_f64_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<f64>> {
     let bytes = reader.read_exact(len * 8)?;
     let mut out = Vec::with_capacity(len);
-    for chunk in bytes.chunks_exact(8) {
-        out.push(f64::from_le_bytes(chunk.try_into().unwrap()));
+    for chunk in bytes.as_chunks::<8>().0 {
+        out.push(f64::from_le_bytes(*chunk));
     }
     Ok(out)
 }
@@ -170,8 +170,8 @@ fn read_i8_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<i8>> {
 fn read_i16_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<i16>> {
     let bytes = reader.read_exact(len * 2)?;
     let mut out = Vec::with_capacity(len);
-    for chunk in bytes.chunks_exact(2) {
-        out.push(i16::from_le_bytes(chunk.try_into().unwrap()));
+    for chunk in bytes.as_chunks::<2>().0 {
+        out.push(i16::from_le_bytes(*chunk));
     }
     Ok(out)
 }
@@ -180,8 +180,8 @@ fn read_i16_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<i16>> {
 fn read_i32_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<i32>> {
     let bytes = reader.read_exact(len * 4)?;
     let mut out = Vec::with_capacity(len);
-    for chunk in bytes.chunks_exact(4) {
-        out.push(i32::from_le_bytes(chunk.try_into().unwrap()));
+    for chunk in bytes.as_chunks::<4>().0 {
+        out.push(i32::from_le_bytes(*chunk));
     }
     Ok(out)
 }
@@ -190,8 +190,8 @@ fn read_i32_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<i32>> {
 fn read_i64_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<i64>> {
     let bytes = reader.read_exact(len * 8)?;
     let mut out = Vec::with_capacity(len);
-    for chunk in bytes.chunks_exact(8) {
-        out.push(i64::from_le_bytes(chunk.try_into().unwrap()));
+    for chunk in bytes.as_chunks::<8>().0 {
+        out.push(i64::from_le_bytes(*chunk));
     }
     Ok(out)
 }
@@ -205,8 +205,8 @@ fn read_u8_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<u8>> {
 fn read_u16_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<u16>> {
     let bytes = reader.read_exact(len * 2)?;
     let mut out = Vec::with_capacity(len);
-    for chunk in bytes.chunks_exact(2) {
-        out.push(u16::from_le_bytes(chunk.try_into().unwrap()));
+    for chunk in bytes.as_chunks::<2>().0 {
+        out.push(u16::from_le_bytes(*chunk));
     }
     Ok(out)
 }
@@ -215,8 +215,8 @@ fn read_u16_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<u16>> {
 fn read_u32_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<u32>> {
     let bytes = reader.read_exact(len * 4)?;
     let mut out = Vec::with_capacity(len);
-    for chunk in bytes.chunks_exact(4) {
-        out.push(u32::from_le_bytes(chunk.try_into().unwrap()));
+    for chunk in bytes.as_chunks::<4>().0 {
+        out.push(u32::from_le_bytes(*chunk));
     }
     Ok(out)
 }
@@ -225,8 +225,8 @@ fn read_u32_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<u32>> {
 fn read_u64_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<u64>> {
     let bytes = reader.read_exact(len * 8)?;
     let mut out = Vec::with_capacity(len);
-    for chunk in bytes.chunks_exact(8) {
-        out.push(u64::from_le_bytes(chunk.try_into().unwrap()));
+    for chunk in bytes.as_chunks::<8>().0 {
+        out.push(u64::from_le_bytes(*chunk));
     }
     Ok(out)
 }
@@ -239,12 +239,14 @@ macro_rules! read_complex_array_fn {
         #[inline]
         fn $name(reader: &mut Reader<'_>, len: usize) -> Result<Vec<($ty, $ty)>> {
             const ELEM: usize = core::mem::size_of::<$ty>();
-            let byte_len = len.checked_mul(ELEM * 2).ok_or(Error::InvalidSize)?;
+            const PAIR: usize = ELEM * 2;
+            let byte_len = len.checked_mul(PAIR).ok_or(Error::InvalidSize)?;
             let bytes = reader.read_exact(byte_len)?;
             let mut out = Vec::with_capacity(len);
-            for chunk in bytes.chunks_exact(ELEM * 2) {
-                let re = <$ty>::from_le_bytes(chunk[..ELEM].try_into().unwrap());
-                let im = <$ty>::from_le_bytes(chunk[ELEM..].try_into().unwrap());
+            for chunk in bytes.as_chunks::<PAIR>().0 {
+                let (re_bytes, im_bytes) = chunk.split_at(ELEM);
+                let re = <$ty>::from_le_bytes(re_bytes.try_into().unwrap());
+                let im = <$ty>::from_le_bytes(im_bytes.try_into().unwrap());
                 out.push((re, im));
             }
             Ok(out)
@@ -286,9 +288,10 @@ fn read_complex_half_array(
         |bits| f16::from_bits(bits).to_f32()
     };
     let mut out = Vec::with_capacity(len);
-    for chunk in bytes.chunks_exact(4) {
-        let re = widen(u16::from_le_bytes(chunk[..2].try_into().unwrap()));
-        let im = widen(u16::from_le_bytes(chunk[2..].try_into().unwrap()));
+    for chunk in bytes.as_chunks::<4>().0 {
+        let (re_bytes, im_bytes) = chunk.split_at(2);
+        let re = widen(u16::from_le_bytes(re_bytes.try_into().unwrap()));
+        let im = widen(u16::from_le_bytes(im_bytes.try_into().unwrap()));
         out.push((re, im));
     }
     Ok(out)

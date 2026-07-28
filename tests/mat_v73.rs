@@ -94,8 +94,10 @@ fn decode_matlab_string_saveobj(raw: &[u64]) -> Vec<String> {
         .take(utf16_units * 2)
         .collect();
     let utf16: Vec<u16> = payload_bytes
-        .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| u16::from_le_bytes(*chunk))
         .collect();
 
     let mut offset = 0usize;
@@ -687,6 +689,21 @@ fn assert_complex_dataset(file: &File, name: &str, class: &str, field_dtype: DTy
     ds.read_raw().unwrap()
 }
 
+/// Decode a complex `int16` dataset payload into `(re, im)` pairs.
+fn decode_complex_i16(raw: &[u8]) -> Vec<(i16, i16)> {
+    raw.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| {
+            let (re, im) = c.split_at(2);
+            (
+                i16::from_le_bytes(re.try_into().unwrap()),
+                i16::from_le_bytes(im.try_into().unwrap()),
+            )
+        })
+        .collect()
+}
+
 fn convert_named(bytes: &[u8], path: &PathBuf, name: &str, options: &MatV73Options) -> File {
     beve::beve_slice_to_mat_v73_file(bytes, path, RootBinding::NamedVariable(name), options)
         .unwrap();
@@ -708,15 +725,7 @@ fn mat_v73_complex_i16_array_is_int16_not_widened() {
     // The whole point of the integer path: 4 bytes per complex element, half
     // what the same data costs once widened to `single`.
     assert_eq!(raw.len(), samples.len() * 4);
-    let decoded: Vec<(i16, i16)> = raw
-        .chunks_exact(4)
-        .map(|c| {
-            (
-                i16::from_le_bytes(c[..2].try_into().unwrap()),
-                i16::from_le_bytes(c[2..].try_into().unwrap()),
-            )
-        })
-        .collect();
+    let decoded = decode_complex_i16(&raw);
     assert_eq!(decoded, vec![(1, -2), (300, -400), (0, 7)]);
 
     let ds = file.dataset("iq").unwrap();
@@ -756,15 +765,7 @@ fn mat_v73_complex_i16_preserves_extreme_values() {
     let file = convert_named(&bytes, &path, "edges", &MatV73Options::default());
 
     let raw = assert_complex_dataset(&file, "edges", "int16", DType::I16);
-    let decoded: Vec<(i16, i16)> = raw
-        .chunks_exact(4)
-        .map(|c| {
-            (
-                i16::from_le_bytes(c[..2].try_into().unwrap()),
-                i16::from_le_bytes(c[2..].try_into().unwrap()),
-            )
-        })
-        .collect();
+    let decoded = decode_complex_i16(&raw);
     assert_eq!(
         decoded,
         vec![(i16::MIN, i16::MAX), (i16::MAX, i16::MIN), (0, 0),]
@@ -802,8 +803,10 @@ fn mat_v73_complex_integer_widths_map_to_matching_matlab_classes() {
             const ELEM: usize = core::mem::size_of::<$ty>();
             assert_eq!(raw.len(), samples.len() * ELEM * 2);
             let decoded: Vec<$ty> = raw
-                .chunks_exact(ELEM)
-                .map(|c| <$ty>::from_le_bytes(c.try_into().unwrap()))
+                .as_chunks::<ELEM>()
+                .0
+                .iter()
+                .map(|c| <$ty>::from_le_bytes(*c))
                 .collect();
             assert_eq!(
                 decoded,
@@ -888,8 +891,10 @@ fn mat_v73_row_major_complex_i16_matrix_reorders_to_column_major() {
 
     let raw = assert_complex_dataset(&file, "m", "int16", DType::I16);
     let decoded: Vec<i16> = raw
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| i16::from_le_bytes(*c))
         .collect();
     // Row-major [1..6] over a 2x3 becomes column-major [1, 4, 2, 5, 3, 6],
     // each element still carrying its own imaginary part.
@@ -947,8 +952,10 @@ fn mat_v73_half_precision_complex_needs_lossy_widening() {
     let file = convert_named(&bytes, &path, "h", &options);
     let raw = assert_complex_dataset(&file, "h", "single", DType::F32);
     let decoded: Vec<f32> = raw
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     assert_eq!(decoded, vec![1.5, -2.5]);
 
@@ -987,8 +994,10 @@ fn mat_v73_bf16_complex_widens_under_lossy_policy() {
     let file = convert_named(&bytes, &path, "h", &options);
     let raw = assert_complex_dataset(&file, "h", "single", DType::F32);
     let decoded: Vec<f32> = raw
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     assert_eq!(decoded, vec![1.5, -2.5]);
 
@@ -1038,8 +1047,10 @@ fn mat_v73_complex_i16_nested_in_struct_and_cell() {
     let decoded: Vec<i16> = ds
         .read_raw()
         .unwrap()
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| i16::from_le_bytes(*c))
         .collect();
     assert_eq!(decoded, vec![-7, 11, 12, -13]);
 
@@ -1066,15 +1077,7 @@ fn mat_v73_complex_i16_3d_matrix_uses_general_reorder_path() {
     let file = convert_named(&bytes, &path, "m", &MatV73Options::default());
 
     let raw = assert_complex_dataset(&file, "m", "int16", DType::I16);
-    let decoded: Vec<(i16, i16)> = raw
-        .chunks_exact(4)
-        .map(|c| {
-            (
-                i16::from_le_bytes(c[..2].try_into().unwrap()),
-                i16::from_le_bytes(c[2..].try_into().unwrap()),
-            )
-        })
-        .collect();
+    let decoded = decode_complex_i16(&raw);
 
     // Independently recompute the row-major -> column-major permutation for
     // extents [2, 3, 2] rather than trusting the converter's own ordering.

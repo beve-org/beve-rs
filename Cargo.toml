@@ -23,7 +23,7 @@ half = { version = "2.4", features = ["serde"] }
 # pattern is a valid value (`AnyBitPattern`) may be memcpy'd from wire bytes.
 bytemuck = "1"
 simdutf8 = "0.1"
-hdf5-pure = { version = "0.21", optional = true }
+hdf5-pure = { version = "0.28", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -316,9 +316,18 @@ Current mappings:
 - BEVE matrix extensions, including row-major to column-major reorder when needed
 - `null` as `struct([])` by default
 
+Complex values keep their element type. MATLAB has first-class complex integer
+arrays, so a complex `i16` payload becomes a complex `int16` MATLAB array rather
+than being widened to `single`; the same holds for the other integer widths
+(`i8`/`i16`/`i32`/`i64` and `u8`/`u16`/`u32`/`u64`). Nothing on this path
+silently promotes an integer to a float, so the file always reports the width
+the data was actually stored at.
+
 Important limits:
 - only MATLAB v7.3 is supported
 - `i128`, `u128`, `bf16`, and `f16` require explicit fallback policies when MATLAB has no direct native representation
+- `bf16` and `f16` complex arrays follow the same rule: they widen to `single` under `UnsupportedPolicy::LossyNumericWidening` and error otherwise
+- 128-bit complex (`i128`/`u128`) is always rejected. MATLAB has no 128-bit class, and unlike a real 128-bit *scalar* there is no `StringFallback` representation for a complex one
 - non-string object keys are converted to their string representation (e.g. integer key `48000` becomes field name `"x48000"` with `InvalidNamePolicy::Sanitize`)
 - the MATIO-based oracle used in tests does not decode MATLAB `string` objects semantically, so string coverage is validated structurally against MATLAB-generated fixtures
 

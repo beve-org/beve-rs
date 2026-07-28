@@ -10,6 +10,7 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use half::{bf16, f16};
 use hdf5_pure::mat::{self as mat_pure, CellWriter, MatBuilder};
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +18,11 @@ use crate::error::{Error, Result};
 use crate::ext::MatrixLayout;
 use crate::header::*;
 use crate::raw::{ComplexHeader, ObjectHeader, Reader, TypedArrayClass};
+
+/// Byte codes for the two 2-byte encodings in the BEVE float class. Named so
+/// the half-precision paths key on the encoding rather than on a bare literal.
+const ARRAY_FLOAT_BF16_CODE: u8 = 0;
+const ARRAY_FLOAT_F16_CODE: u8 = 1;
 
 // Re-export shared option enums from hdf5-pure so beve users keep using them
 // under the same names.
@@ -225,25 +231,64 @@ fn read_u64_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<u64>> {
     Ok(out)
 }
 
-#[inline]
-fn read_complex_f32_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<(f32, f32)>> {
-    let bytes = reader.read_exact(len * 8)?;
-    let mut out = Vec::with_capacity(len);
-    for chunk in bytes.chunks_exact(8) {
-        let re = f32::from_le_bytes(chunk[..4].try_into().unwrap());
-        let im = f32::from_le_bytes(chunk[4..].try_into().unwrap());
-        out.push((re, im));
-    }
-    Ok(out)
+/// A BEVE complex array is LE-packed interleaved re/im pairs of the element
+/// scalar, so one bulk read plus chunking covers every width. The element type
+/// is fixed by the complex header's (class, byte_code), not by the array.
+macro_rules! read_complex_array_fn {
+    ($name:ident, $ty:ty) => {
+        #[inline]
+        fn $name(reader: &mut Reader<'_>, len: usize) -> Result<Vec<($ty, $ty)>> {
+            const ELEM: usize = core::mem::size_of::<$ty>();
+            let byte_len = len.checked_mul(ELEM * 2).ok_or(Error::InvalidSize)?;
+            let bytes = reader.read_exact(byte_len)?;
+            let mut out = Vec::with_capacity(len);
+            for chunk in bytes.chunks_exact(ELEM * 2) {
+                let re = <$ty>::from_le_bytes(chunk[..ELEM].try_into().unwrap());
+                let im = <$ty>::from_le_bytes(chunk[ELEM..].try_into().unwrap());
+                out.push((re, im));
+            }
+            Ok(out)
+        }
+    };
 }
 
+read_complex_array_fn!(read_complex_f32_array, f32);
+read_complex_array_fn!(read_complex_f64_array, f64);
+read_complex_array_fn!(read_complex_i8_array, i8);
+read_complex_array_fn!(read_complex_i16_array, i16);
+read_complex_array_fn!(read_complex_i32_array, i32);
+read_complex_array_fn!(read_complex_i64_array, i64);
+read_complex_array_fn!(read_complex_u8_array, u8);
+read_complex_array_fn!(read_complex_u16_array, u16);
+read_complex_array_fn!(read_complex_u32_array, u32);
+read_complex_array_fn!(read_complex_u64_array, u64);
+
+/// Half-precision complex arrays widen to `f32` pairs, matching how the real
+/// f16/bf16 typed arrays are handled. Gated by the caller on
+/// [`UnsupportedPolicy::LossyNumericWidening`].
+///
+/// Reads the whole region up front like the fixed-width readers above, so a
+/// wire-supplied `len` is bounded by the remaining input before anything is
+/// allocated. Reserving first would let a hostile SIZE field request an
+/// arbitrary allocation from a payload only a few bytes long.
 #[inline]
-fn read_complex_f64_array(reader: &mut Reader<'_>, len: usize) -> Result<Vec<(f64, f64)>> {
-    let bytes = reader.read_exact(len * 16)?;
+fn read_complex_half_array(
+    reader: &mut Reader<'_>,
+    len: usize,
+    byte_code: u8,
+) -> Result<Vec<(f32, f32)>> {
+    // Both f16 and bf16 are 2 bytes per component, 4 per complex element.
+    let byte_len = len.checked_mul(4).ok_or(Error::InvalidSize)?;
+    let bytes = reader.read_exact(byte_len)?;
+    let widen: fn(u16) -> f32 = if byte_code == ARRAY_FLOAT_BF16_CODE {
+        |bits| bf16::from_bits(bits).to_f32()
+    } else {
+        |bits| f16::from_bits(bits).to_f32()
+    };
     let mut out = Vec::with_capacity(len);
-    for chunk in bytes.chunks_exact(16) {
-        let re = f64::from_le_bytes(chunk[..8].try_into().unwrap());
-        let im = f64::from_le_bytes(chunk[8..].try_into().unwrap());
+    for chunk in bytes.chunks_exact(4) {
+        let re = widen(u16::from_le_bytes(chunk[..2].try_into().unwrap()));
+        let im = widen(u16::from_le_bytes(chunk[2..].try_into().unwrap()));
         out.push((re, im));
     }
     Ok(out)
@@ -597,58 +642,102 @@ fn walk_extension(
 fn walk_complex(
     reader: &mut Reader<'_>,
     mb: &mut MatBuilder,
-    _options: &MatV73Options,
+    options: &MatV73Options,
     name: &str,
     path: &str,
 ) -> Result<()> {
-    let ComplexHeader {
-        class,
-        is_array,
-        byte_code,
-    } = reader.read_complex_header()?;
-    if class != 0 {
-        return Err(Error::msg(format!(
-            "only floating-point complex supported in MAT conversion at {path}"
-        )));
-    }
-    if is_array {
+    let header = reader.read_complex_header()?;
+    if header.is_array {
         let len = reader.read_size()?;
         let dims = mb.vector_dims(len);
-        match byte_code {
-            2 => {
-                let data = read_complex_f32_array(reader, len)?;
-                mb.write_complex_f32(name, &dims, &data)
-                    .map_err(map_mat_error)?;
-                Ok(())
-            }
-            3 => {
-                let data = read_complex_f64_array(reader, len)?;
-                mb.write_complex_f64(name, &dims, &data)
-                    .map_err(map_mat_error)?;
-                Ok(())
-            }
-            _ => Err(Error::msg(format!(
-                "unsupported complex element width at {path}"
-            ))),
-        }
+        write_complex_array(reader, mb, options, name, &dims, header, len, None, path)
     } else {
-        match byte_code {
-            2 => {
-                let v = (reader.read_f32()?, reader.read_f32()?);
-                mb.write_complex_f32(name, &[1, 1], &[v])
-                    .map_err(map_mat_error)?;
-                Ok(())
-            }
-            3 => {
-                let v = (reader.read_f64()?, reader.read_f64()?);
-                mb.write_complex_f64(name, &[1, 1], &[v])
-                    .map_err(map_mat_error)?;
-                Ok(())
-            }
-            _ => Err(Error::msg(format!(
-                "unsupported complex scalar width at {path}"
-            ))),
+        // A complex scalar's payload is the same LE-packed re/im pair a
+        // one-element array carries, so the array path covers it directly.
+        write_complex_array(reader, mb, options, name, &[1, 1], header, 1, None, path)
+    }
+}
+
+/// Read a BEVE complex payload of `len` elements and write it as a MATLAB
+/// complex array. The element class comes from the complex header rather than
+/// the surrounding context, so MATLAB receives an `int16` complex array for an
+/// `int16` complex payload and a `single` one for an `f32` payload. Nothing
+/// here widens an integer to a float: MATLAB has first-class complex integer
+/// arrays, and silently promoting would make the file misreport what was
+/// captured.
+///
+/// `reorder` is `Some((layout, extents))` for matrix payloads, which may need
+/// row-major to column-major reordering, and `None` for plain arrays and
+/// scalars, which are already in the order MATLAB expects.
+#[allow(clippy::too_many_arguments)]
+fn write_complex_array(
+    reader: &mut Reader<'_>,
+    mb: &mut MatBuilder,
+    options: &MatV73Options,
+    name: &str,
+    dims: &[usize],
+    header: ComplexHeader,
+    len: usize,
+    reorder: Option<(MatrixLayout, &[usize])>,
+    path: &str,
+) -> Result<()> {
+    macro_rules! emit {
+        ($read:ident, $write:ident) => {{
+            let data = $read(reader, len)?;
+            let data = maybe_reorder_complex(data, reorder, options, path)?;
+            mb.$write(name, dims, &data).map_err(map_mat_error)?;
+            Ok(())
+        }};
+    }
+
+    match (header.class, header.byte_code) {
+        (ARRAY_FLOAT, ARRAY_FLOAT_BF16_CODE | ARRAY_FLOAT_F16_CODE) => {
+            // Match the split labels the real f16/bf16 paths use, so the error
+            // names the encoding rather than just "half-precision".
+            let label = if header.byte_code == ARRAY_FLOAT_BF16_CODE {
+                "bf16 complex"
+            } else {
+                "f16 complex"
+            };
+            check_low_precision_float(options, label, path)?;
+            let data = read_complex_half_array(reader, len, header.byte_code)?;
+            let data = maybe_reorder_complex(data, reorder, options, path)?;
+            mb.write_complex_f32(name, dims, &data)
+                .map_err(map_mat_error)?;
+            Ok(())
         }
+        (ARRAY_FLOAT, 2) => emit!(read_complex_f32_array, write_complex_f32),
+        (ARRAY_FLOAT, 3) => emit!(read_complex_f64_array, write_complex_f64),
+        (ARRAY_SIGNED, 0) => emit!(read_complex_i8_array, write_complex_i8),
+        (ARRAY_SIGNED, 1) => emit!(read_complex_i16_array, write_complex_i16),
+        (ARRAY_SIGNED, 2) => emit!(read_complex_i32_array, write_complex_i32),
+        (ARRAY_SIGNED, 3) => emit!(read_complex_i64_array, write_complex_i64),
+        (ARRAY_UNSIGNED, 0) => emit!(read_complex_u8_array, write_complex_u8),
+        (ARRAY_UNSIGNED, 1) => emit!(read_complex_u16_array, write_complex_u16),
+        (ARRAY_UNSIGNED, 2) => emit!(read_complex_u32_array, write_complex_u32),
+        (ARRAY_UNSIGNED, 3) => emit!(read_complex_u64_array, write_complex_u64),
+        (ARRAY_FLOAT, 4) => Err(Error::msg(format!(
+            "unsupported 128-bit float complex at {path}"
+        ))),
+        (ARRAY_SIGNED | ARRAY_UNSIGNED, 4) => Err(Error::msg(format!(
+            "unsupported 128-bit integer complex at {path}; MATLAB has no 128-bit class"
+        ))),
+        _ => Err(Error::msg(format!(
+            "unsupported complex element type (class {}, width code {}) at {path}",
+            header.class, header.byte_code
+        ))),
+    }
+}
+
+fn maybe_reorder_complex<T: Clone>(
+    data: Vec<T>,
+    reorder: Option<(MatrixLayout, &[usize])>,
+    options: &MatV73Options,
+    path: &str,
+) -> Result<Vec<T>> {
+    match reorder {
+        Some((layout, extents)) => maybe_reorder(data, layout, extents, options, path),
+        None => Ok(data),
     }
 }
 
@@ -1041,11 +1130,6 @@ fn walk_matrix_complex(
     path: &str,
 ) -> Result<()> {
     let info = reader.read_complex_header()?;
-    if info.class != 0 {
-        return Err(Error::msg(format!(
-            "only floating-point complex supported in MAT matrix conversion at {path}"
-        )));
-    }
     if !info.is_array {
         return Err(Error::msg(format!(
             "matrix complex payload must be an array at {path}"
@@ -1059,25 +1143,17 @@ fn walk_matrix_complex(
             len, expected
         )));
     }
-    match info.byte_code {
-        2 => {
-            let data = read_complex_f32_array(reader, len)?;
-            let v = maybe_reorder(data, layout, extents, options, path)?;
-            mb.write_complex_f32(name, dims, &v)
-                .map_err(map_mat_error)?;
-            Ok(())
-        }
-        3 => {
-            let data = read_complex_f64_array(reader, len)?;
-            let v = maybe_reorder(data, layout, extents, options, path)?;
-            mb.write_complex_f64(name, dims, &v)
-                .map_err(map_mat_error)?;
-            Ok(())
-        }
-        _ => Err(Error::msg(format!(
-            "unsupported complex matrix element width at {path}"
-        ))),
-    }
+    write_complex_array(
+        reader,
+        mb,
+        options,
+        name,
+        dims,
+        info,
+        len,
+        Some((layout, extents)),
+        path,
+    )
 }
 
 // ---------------------------------------------------------------------------

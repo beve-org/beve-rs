@@ -398,6 +398,72 @@ fn mat_v73_null_under_omit_policy_drops_the_field() {
     std::fs::remove_file(path).unwrap();
 }
 
+/// A cell array's element count is fixed by its dims, so `Omit` has nothing to
+/// omit at an element: the slot is reserved whether or not anything is written
+/// into it. Writing nothing left the element pointing at an object that was
+/// never created, which MATLAB cannot dereference.
+#[test]
+fn mat_v73_null_under_omit_policy_still_fills_a_cell_element() {
+    let path = temp_path("null-omit-cell");
+    let value = Value::Array(vec![Value::from(1u32), Value::Null, Value::from(2u32)]);
+    let bytes = beve::to_vec(&value).unwrap();
+    let options = MatV73Options {
+        null_policy: NullPolicy::Omit,
+        ..Default::default()
+    };
+    beve::beve_slice_to_mat_v73_file(&bytes, &path, RootBinding::NamedVariable("items"), &options)
+        .unwrap();
+
+    let file = File::open(&path).unwrap();
+    let ds = file.dataset("items").unwrap();
+    assert_eq!(ds.shape().unwrap(), vec![1, 3]);
+    assert_eq!(
+        read_attr_string(&ds.attrs().unwrap(), "MATLAB_class"),
+        "cell"
+    );
+
+    let refs = file.group("#refs#").unwrap();
+    // Every element reference must resolve. The three elements take the first
+    // three slots, in order, and none of them may be absent.
+    for (i, name) in [
+        "ref_0000000000000000",
+        "ref_0000000000000001",
+        "ref_0000000000000002",
+    ]
+    .iter()
+    .enumerate()
+    {
+        refs.dataset(name).unwrap_or_else(|e| {
+            panic!("cell element {i} references a missing object at {name}: {e:?}")
+        });
+    }
+
+    // The null element carries the empty-struct-array marker, which is what an
+    // unrepresentable "absent" lowers to.
+    let middle = refs.dataset("ref_0000000000000001").unwrap();
+    let middle_attrs = middle.attrs().unwrap();
+    assert_eq!(read_attr_string(&middle_attrs, "MATLAB_class"), "struct");
+    assert_eq!(read_attr_u64(&middle_attrs, "MATLAB_empty"), 1);
+
+    // The neighbours are untouched.
+    assert_eq!(
+        refs.dataset("ref_0000000000000000")
+            .unwrap()
+            .read_u32()
+            .unwrap(),
+        vec![1]
+    );
+    assert_eq!(
+        refs.dataset("ref_0000000000000002")
+            .unwrap()
+            .read_u32()
+            .unwrap(),
+        vec![2]
+    );
+
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn mat_v73_row_major_matrix_reorders_to_column_major() {
     let path = temp_path("matrix");

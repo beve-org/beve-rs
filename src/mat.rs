@@ -842,12 +842,28 @@ fn walk_value_at_cell_element(
     options: &MatV73Options,
     path: &mut String,
 ) -> Result<()> {
+    let header = reader.read_header()?;
+
+    // `NullPolicy::Omit` cannot be honored here. A cell array's element count is
+    // fixed by its dims, so the slot exists whether or not anything is written
+    // into it: omitting a field is expressible, omitting an element is not.
+    // Writing nothing still consumes a `#refs#` slot and leaves the element
+    // pointing at an object that was never created, which MATLAB cannot
+    // dereference. So a null in this position takes the empty-struct-array
+    // marker regardless, matching what hdf5-pure's own serde emitter does for
+    // the same case. The other two policies need no special handling: one
+    // writes that marker anyway, and `Error` fails the whole conversion.
+    if header == 0 && matches!(options.null_policy, NullPolicy::Omit) {
+        cw.push_empty_struct_array().map_err(map_mat_error)?;
+        return Ok(());
+    }
+
     cw.push_with(|mb| {
         // The closure runs with a fresh `next_target` armed; the first
         // MatBuilder call routes to `#refs#/ref_NNNN`. After that first call
         // the arm is consumed and any deeper writes (e.g. inside a struct or
         // cell that was just opened) target the right scope automatically.
-        walk_value(reader, mb, options, "", path).map_err(map_beve_error)
+        walk_value_with_header(reader, mb, options, "", header, path).map_err(map_beve_error)
     })
     .map_err(map_mat_error)?;
     Ok(())

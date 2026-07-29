@@ -366,61 +366,51 @@ fn streaming_write_to_cursor() {
 }
 
 // ---------------------------------------------------------------------------
-// Custom options (enum encoding)
+// Variants
 // ---------------------------------------------------------------------------
 
 #[test]
-fn streaming_string_enum_encoding() {
+fn streaming_enum_matches_the_buffered_encoder() {
     let c = Color::Blue;
     let mut buf = Vec::new();
-    let opts = beve::SerializerOptions {
-        enum_encoding: beve::EnumEncoding::String,
-    };
-    beve::to_writer_streaming_with_options(&mut buf, &c, opts).unwrap();
-
-    // Should match to_vec_with_options
-    let expected = beve::to_vec_with_options(&c, opts).unwrap();
-    assert_eq!(buf, expected);
+    beve::to_writer_streaming(&mut buf, &c).unwrap();
+    assert_eq!(buf, beve::to_vec(&c).unwrap());
 }
 
 #[test]
-fn streaming_string_enum_round_trip() {
-    let opts = beve::SerializerOptions {
-        enum_encoding: beve::EnumEncoding::String,
-    };
-
+fn streaming_enum_round_trip() {
     // Unit variant
     let c = Color::Green;
     let mut buf = Vec::new();
-    beve::to_writer_streaming_with_options(&mut buf, &c, opts).unwrap();
+    beve::to_writer_streaming(&mut buf, &c).unwrap();
     let c2: Color = beve::from_reader_streaming(std::io::Cursor::new(&buf)).unwrap();
     assert_eq!(c, c2);
 
     // Tuple variant
     let s = Shape::Circle(2.5);
     buf.clear();
-    beve::to_writer_streaming_with_options(&mut buf, &s, opts).unwrap();
+    beve::to_writer_streaming(&mut buf, &s).unwrap();
     let s2: Shape = beve::from_reader_streaming(std::io::Cursor::new(&buf)).unwrap();
     assert_eq!(s, s2);
 
     // Struct variant
     let s = Shape::Rect { w: 3.0, h: 4.0 };
     buf.clear();
-    beve::to_writer_streaming_with_options(&mut buf, &s, opts).unwrap();
+    beve::to_writer_streaming(&mut buf, &s).unwrap();
     let s2: Shape = beve::from_reader_streaming(std::io::Cursor::new(&buf)).unwrap();
     assert_eq!(s, s2);
 
     // Newtype-like tuple variant
     let s = Shape::Triangle(3.0, 4.0, 5.0);
     buf.clear();
-    beve::to_writer_streaming_with_options(&mut buf, &s, opts).unwrap();
+    beve::to_writer_streaming(&mut buf, &s).unwrap();
     let s2: Shape = beve::from_reader_streaming(std::io::Cursor::new(&buf)).unwrap();
     assert_eq!(s, s2);
 
     // Unit variant on Shape
     let s = Shape::Point;
     buf.clear();
-    beve::to_writer_streaming_with_options(&mut buf, &s, opts).unwrap();
+    beve::to_writer_streaming(&mut buf, &s).unwrap();
     let s2: Shape = beve::from_reader_streaming(std::io::Cursor::new(&buf)).unwrap();
     assert_eq!(s, s2);
 }

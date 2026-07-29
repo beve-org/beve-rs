@@ -1,6 +1,6 @@
 [package]
 name = "beve"
-version = "4.0.0"
+version = "5.0.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specification with serde support"
@@ -23,7 +23,7 @@ half = { version = "2.4", features = ["serde"] }
 # pattern is a valid value (`AnyBitPattern`) may be memcpy'd from wire bytes.
 bytemuck = "1"
 simdutf8 = "0.1"
-hdf5-pure = { version = "0.28", optional = true }
+hdf5-pure = { version = "0.30", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -63,3 +63,9 @@ harness = false
 [[bench]]
 name = "serde_with_decode"
 harness = false
+
+# TEMPORARY: `NullPolicy::Omit`, which `mat::handle_null` matches on, is not in
+# a published hdf5-pure yet. Remove this section once it is released, and raise
+# the `hdf5-pure` requirement above to that version.
+[patch.crates-io]
+hdf5-pure = { path = "../hdf5-pure" }

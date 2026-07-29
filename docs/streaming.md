@@ -61,19 +61,6 @@ Supported typed array element types:
 Heterogeneous sequences (e.g. `Vec<Value>`, tuples) are encoded as generic
 arrays where each element carries its own type tag.
 
-### Custom Options
-
-```rust
-use beve::{SerializerOptions, EnumEncoding};
-
-let opts = SerializerOptions {
-    enum_encoding: EnumEncoding::String,
-};
-
-let mut buf = Vec::new();
-beve::to_writer_streaming_with_options(&mut buf, &frame, opts)?;
-```
-
 ### Serialization Constraints
 
 **Known-length containers only.** The streaming serializer requires all

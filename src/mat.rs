@@ -7,6 +7,7 @@
 use std::ffi::OsString;
 use std::fmt::Write as FmtWrite;
 use std::fs::OpenOptions;
+use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -72,6 +73,11 @@ impl Default for MatV73Options {
 impl MatV73Options {
     /// Convert to the underlying hdf5-pure options. Always pins
     /// `string_class = String` and `empty_marker_encoding = DataAsDims`.
+    ///
+    /// `unit_variant_encoding` and `empty_sequence_policy` are deliberately not
+    /// mirrored: hdf5-pure consults them only from its serde writer, to recover
+    /// type information that serde withholds. BEVE carries that information in
+    /// the document, so this walker reads the answer rather than choosing it.
     fn to_pure(&self) -> mat_pure::Options {
         let mut opts = mat_pure::Options::with_modern_strings();
         opts.compression = self.compression;
@@ -90,7 +96,11 @@ impl MatV73Options {
 
 /// Convert a BEVE payload into a MATLAB v7.3 MAT file. Stages output in a
 /// temp file next to the destination and only replaces the target after the
-/// MAT bytes (with userblock) are fully written.
+/// MAT file is fully written.
+///
+/// The MAT file is streamed into the temp file rather than assembled in
+/// memory first, so converting costs the payload plus one dataset rather than
+/// the payload plus the whole output.
 pub fn beve_slice_to_mat_v73_file<P: AsRef<Path>>(
     beve: &[u8],
     output_path: P,
@@ -99,25 +109,72 @@ pub fn beve_slice_to_mat_v73_file<P: AsRef<Path>>(
 ) -> Result<()> {
     let output_path = output_path.as_ref();
     let temp_output = TempOutputFile::new(output_path)?;
-    let bytes = beve_slice_to_mat_v73_bytes(beve, root, options)?;
-    std::fs::write(temp_output.path(), &bytes).map_err(|e| Error::msg(e.to_string()))?;
+    {
+        let file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(temp_output.path())
+            .map_err(|e| Error::msg(e.to_string()))?;
+        let mut sink = std::io::BufWriter::new(file);
+        beve_slice_to_mat_v73_writer(beve, &mut sink, root, options)?;
+        sink.flush().map_err(|e| Error::msg(e.to_string()))?;
+    }
     sync_regular_file(temp_output.path())?;
     temp_output.persist(output_path)
 }
 
 /// Convert a BEVE payload to MATLAB v7.3 MAT file bytes in memory.
+///
+/// Prefer [`beve_slice_to_mat_v73_writer`] when the output is headed for a
+/// file or a socket: it produces the same bytes without ever holding the
+/// assembled file.
 pub fn beve_slice_to_mat_v73_bytes(
     beve: &[u8],
     root: RootBinding<'_>,
     options: &MatV73Options,
 ) -> Result<Vec<u8>> {
+    build_mat_v73(beve, root, options)?
+        .finish()
+        .map_err(map_mat_error)
+}
+
+/// Convert a BEVE payload into a MATLAB v7.3 MAT file written front-to-back
+/// onto `w`.
+///
+/// Produces byte-for-byte what [`beve_slice_to_mat_v73_bytes`] returns, but
+/// never holds the assembled file, so the output size stops bounding what can
+/// be converted. The sink is never seeked and so may be a socket as readily as
+/// a file.
+///
+/// A failure partway leaves whatever was already written on `w`. A caller that
+/// needs all-or-nothing should write to a temporary path and rename on success,
+/// which is what [`beve_slice_to_mat_v73_file`] does.
+pub fn beve_slice_to_mat_v73_writer<W: std::io::Write>(
+    beve: &[u8],
+    w: W,
+    root: RootBinding<'_>,
+    options: &MatV73Options,
+) -> Result<()> {
+    build_mat_v73(beve, root, options)?
+        .finish_to(w)
+        .map_err(map_mat_error)
+}
+
+/// Walk `beve` into a builder, leaving the choice of exit to the caller. The
+/// two public conversions differ only in how they finish, so the walk lives
+/// here rather than being duplicated and left to drift.
+fn build_mat_v73(
+    beve: &[u8],
+    root: RootBinding<'_>,
+    options: &MatV73Options,
+) -> Result<MatBuilder> {
     let mut mb = MatBuilder::new(options.to_pure());
     let mut reader = Reader::new(beve);
     walk_root(&mut reader, &mut mb, options, root)?;
     if !reader.is_finished() {
         return Err(Error::InvalidType("unexpected trailing BEVE data"));
     }
-    mb.finish().map_err(map_mat_error)
+    Ok(mb)
 }
 
 /// Read a `.beve` file from disk and write a MATLAB v7.3 MAT file.
@@ -393,6 +450,10 @@ fn handle_null(mb: &mut MatBuilder, options: &MatV73Options, name: &str, path: &
             .write_empty_struct_array(name)
             .map(|_| ())
             .map_err(map_mat_error),
+        // Write nothing at all: `walk_object` builds the struct's field list
+        // from what the builder actually received, so skipping the write is
+        // what drops the field.
+        NullPolicy::Omit => Ok(()),
         NullPolicy::Error => Err(Error::msg(format!("unsupported null value at {path}"))),
         _ => Err(Error::Unsupported("unrecognized null policy")),
     }

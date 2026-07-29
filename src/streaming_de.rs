@@ -8,7 +8,7 @@ use serde::de::{self, DeserializeOwned, Visitor};
 use serde::forward_to_deserialize_any;
 
 use crate::de::{
-    EnumIndexAccess, HalfBitsDeserializer, HalfKind, NumDe, VariantAccessNoValue,
+    EnumIndexAccess, HalfBitsDeserializer, HalfKind, NumDe, Payload, VariantAccessNoValue,
     byte_count_to_bytes, le_signed,
 };
 use crate::error::{Error, Result};
@@ -436,7 +436,11 @@ impl<R: Read> StreamingDeserializer<R> {
                 match ext {
                     EXT_TYPE_TAG => {
                         let tag = self.read_enum_tag()?;
-                        visitor.visit_enum(EnumAccessStreaming { de: self, tag })
+                        visitor.visit_enum(EnumAccessStreaming {
+                            de: self,
+                            tag,
+                            payload: Payload::AbsentOrUnknown,
+                        })
                     }
                     EXT_COMPLEX => {
                         let ch = self.read_byte()?;
@@ -560,20 +564,46 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
+        // Only an *externally* tagged enum reaches this method; serde's derive
+        // lowers the other three representations to ordinary maps and bare
+        // values first. See the same method in `de.rs`.
         let header = self.peek_byte()?;
         let ty = parse_type(header);
         match ty {
+            // BEVE Version 2: `{ "VariantName": <payload> }`.
+            TYPE_OBJECT if parse_subtype(header) == KEY_STRING => {
+                self.read_byte()?; // consume object header
+                let count = self.read_size()? as usize;
+                if count != 1 {
+                    return Err(Error::InvalidType(
+                        "an externally tagged variant must be a single-key object",
+                    ));
+                }
+                let name = self.parse_string_owned()?;
+                visitor.visit_enum(EnumAccessStreaming {
+                    de: self,
+                    tag: EnumTagOwned::Name(name),
+                    payload: Payload::Present,
+                })
+            }
+            // BEVE Version 1 legacy: the deprecated type-tag extension. Kept on
+            // read so existing documents still load; never written.
             TYPE_EXTENSION => {
                 self.read_byte()?;
                 let ext = parse_extension_id(header);
                 match ext {
                     EXT_TYPE_TAG => {
                         let tag = self.read_enum_tag()?;
-                        visitor.visit_enum(EnumAccessStreaming { de: self, tag })
+                        visitor.visit_enum(EnumAccessStreaming {
+                            de: self,
+                            tag,
+                            payload: Payload::AbsentOrUnknown,
+                        })
                     }
                     _ => Err(Error::InvalidHeader(header)),
                 }
             }
+            // BEVE Version 1 legacy: a bare positional index.
             TYPE_NUMBER => {
                 let header = self.read_byte()?;
                 let subtype = parse_subtype(header);
@@ -917,6 +947,7 @@ enum EnumTagOwned {
 struct EnumAccessStreaming<'a, R: Read> {
     de: &'a mut StreamingDeserializer<R>,
     tag: EnumTagOwned,
+    payload: Payload,
 }
 impl<'de, 'a, R: Read> de::EnumAccess<'de> for EnumAccessStreaming<'a, R> {
     type Error = Error;
@@ -926,14 +957,27 @@ impl<'de, 'a, R: Read> de::EnumAccess<'de> for EnumAccessStreaming<'a, R> {
         self,
         seed: V,
     ) -> Result<(V::Value, Self::Variant)> {
+        let payload = self.payload;
         match self.tag {
             EnumTagOwned::Index(idx) => {
                 let v = seed.deserialize(NumDe::Unsigned(idx as u128))?;
-                Ok((v, VariantAccessStreaming { de: self.de }))
+                Ok((
+                    v,
+                    VariantAccessStreaming {
+                        de: self.de,
+                        payload,
+                    },
+                ))
             }
             EnumTagOwned::Name(name) => {
                 let v = seed.deserialize(de::value::StringDeserializer::<Error>::new(name))?;
-                Ok((v, VariantAccessStreaming { de: self.de }))
+                Ok((
+                    v,
+                    VariantAccessStreaming {
+                        de: self.de,
+                        payload,
+                    },
+                ))
             }
         }
     }
@@ -941,11 +985,22 @@ impl<'de, 'a, R: Read> de::EnumAccess<'de> for EnumAccessStreaming<'a, R> {
 
 struct VariantAccessStreaming<'a, R: Read> {
     de: &'a mut StreamingDeserializer<R>,
+    payload: Payload,
 }
 impl<'de, 'a, R: Read> de::VariantAccess<'de> for VariantAccessStreaming<'a, R> {
     type Error = Error;
     fn unit_variant(self) -> Result<()> {
-        Ok(())
+        match self.payload {
+            // Mirrors the buffered reader: the object header promised a value,
+            // so discard exactly one and let a bad payload surface. Skipping it
+            // here would read the payload as the next sibling, which is how the
+            // two readers used to disagree.
+            Payload::Present => {
+                serde::Deserializer::deserialize_ignored_any(self.de, de::IgnoredAny)?;
+                Ok(())
+            }
+            Payload::AbsentOrUnknown => Ok(()),
+        }
     }
     fn newtype_variant_seed<T: de::DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value> {
         seed.deserialize(self.de)

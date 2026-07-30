@@ -30,28 +30,40 @@ fn fixture_path(name: &str) -> PathBuf {
         .join(name)
 }
 
+// An attribute reads back as the variant it was written from, so one logical
+// value has several representations: a string is fixed-width or variable-length
+// in either charset, an integer spans four widths, and a one-element array stays
+// an array. These read through `AttrValue`'s variant-spanning accessors rather
+// than enumerating the variants a given writer happens to choose.
+
 fn read_attr_string(attrs: &HashMap<String, AttrValue>, name: &str) -> String {
-    match &attrs[name] {
-        AttrValue::String(s) => s.clone(),
-        AttrValue::AsciiString(s) => s.clone(),
-        other => panic!("expected String for {name}, got {other:?}"),
-    }
+    let value = &attrs[name];
+    value
+        .as_str()
+        .unwrap_or_else(|| panic!("expected one string for {name}, got {value:?}"))
+        .to_owned()
+}
+
+fn read_attr_strings(attrs: &HashMap<String, AttrValue>, name: &str) -> Vec<String> {
+    let value = &attrs[name];
+    value
+        .as_strings()
+        .unwrap_or_else(|| panic!("expected a string attribute for {name}, got {value:?}"))
+        .to_vec()
 }
 
 fn read_attr_i64(attrs: &HashMap<String, AttrValue>, name: &str) -> i64 {
-    match &attrs[name] {
-        AttrValue::I64(v) => *v,
-        AttrValue::I32(v) => *v as i64,
-        other => panic!("expected I64 for {name}, got {other:?}"),
-    }
+    let value = &attrs[name];
+    value
+        .as_i64()
+        .unwrap_or_else(|| panic!("expected one i64 for {name}, got {value:?}"))
 }
 
 fn read_attr_u64(attrs: &HashMap<String, AttrValue>, name: &str) -> u64 {
-    match &attrs[name] {
-        AttrValue::U64(v) => *v,
-        AttrValue::U32(v) => *v as u64,
-        other => panic!("expected U64 for {name}, got {other:?}"),
-    }
+    let value = &attrs[name];
+    value
+        .as_u64()
+        .unwrap_or_else(|| panic!("expected one u64 for {name}, got {value:?}"))
 }
 
 fn decode_matlab_string_saveobj(raw: &[u64]) -> Vec<String> {
@@ -148,10 +160,10 @@ fn read_string_saveobj_payload(file: &File, ds_path: &str) -> Vec<u64> {
         let Ok(ref_attrs) = ref_ds.attrs() else {
             continue;
         };
-        let class_str = match ref_attrs.get("MATLAB_class") {
-            Some(AttrValue::String(s) | AttrValue::AsciiString(s)) => s.as_str(),
-            _ => "",
-        };
+        let class_str = ref_attrs
+            .get("MATLAB_class")
+            .and_then(AttrValue::as_str)
+            .unwrap_or("");
         if class_str == "uint64" {
             uint64_refs.push(name);
         }
@@ -194,10 +206,10 @@ fn read_string_saveobj_payload_in_group(file: &File, group_path: &str, ds_name: 
         let Ok(ref_attrs) = ref_ds.attrs() else {
             continue;
         };
-        let class_str = match ref_attrs.get("MATLAB_class") {
-            Some(AttrValue::String(s) | AttrValue::AsciiString(s)) => s.as_str(),
-            _ => "",
-        };
+        let class_str = ref_attrs
+            .get("MATLAB_class")
+            .and_then(AttrValue::as_str)
+            .unwrap_or("");
         if class_str == "uint64" {
             uint64_refs.push(name);
         }
@@ -384,15 +396,7 @@ fn mat_v73_null_under_omit_policy_drops_the_field() {
     let group = file.group("payload").unwrap();
     // The struct's field list is taken from what the builder actually
     // received, so skipping the write is what drops the field.
-    let fields: Vec<String> = match &group.attrs().unwrap()["MATLAB_fields"] {
-        AttrValue::StringArray(arr) => arr.clone(),
-        AttrValue::AsciiStringArray(arr) => arr.clone(),
-        // A one-element `MATLAB_fields` reads back as a scalar, not a
-        // one-element array.
-        AttrValue::String(s) => vec![s.clone()],
-        AttrValue::AsciiString(s) => vec![s.clone()],
-        other => panic!("expected a string attribute for MATLAB_fields, got {other:?}"),
-    };
+    let fields = read_attr_strings(&group.attrs().unwrap(), "MATLAB_fields");
     assert_eq!(fields, vec!["answer"]);
 
     std::fs::remove_file(path).unwrap();
@@ -659,13 +663,7 @@ fn mat_v73_struct_groups_include_fields_metadata() {
     let group_attrs = group.attrs().unwrap();
     assert_eq!(read_attr_string(&group_attrs, "MATLAB_class"), "struct");
 
-    // Fields are written as fixed-width ASCII strings (AsciiStringArray).
-    // The reader returns them as StringArray.
-    let fields: Vec<String> = match &group_attrs["MATLAB_fields"] {
-        AttrValue::StringArray(arr) => arr.clone(),
-        AttrValue::AsciiStringArray(arr) => arr.clone(),
-        other => panic!("expected StringArray for MATLAB_fields, got {other:?}"),
-    };
+    let fields = read_attr_strings(&group_attrs, "MATLAB_fields");
     assert_eq!(fields, vec!["answer", "label"]);
 
     let payload = read_string_saveobj_payload_in_group(&file, "payload", "label");

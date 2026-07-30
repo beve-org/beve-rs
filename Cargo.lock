@@ -291,9 +291,9 @@ dependencies = [
 
 [[package]]
 name = "hdf5-pure"
-version = "0.30.0"
+version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "189383f2905b7df68018acb6fa7944f6a1651d6aa95bcc237681a56b22a969ae"
+checksum = "ee5999cfcd67b4dee2701abf9362bb85d664ff73e86db90316bebf45f272eae0"
 dependencies = [
  "byteorder",
  "flate2",

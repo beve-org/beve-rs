@@ -6,6 +6,10 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 ## Unreleased
 
+### Changed
+
+- **Breaking:** the `mat` feature moves to **hdf5-pure 0.31** (was 0.30). The conversion API is unchanged, and so are the option enums this crate re-exports (`Compression`, `NullPolicy`, ...), but beve's public API is typed by them, so a caller who enables `mat` and also depends on hdf5-pure directly must move to 0.31 for a single major version to resolve. 0.31 fixes attribute round-tripping: an attribute reads back as the variant it was written from, `repack` no longer re-encodes the attributes it copies, and an empty-string attribute is written with a datatype libhdf5 accepts (a single one previously made every attribute on that object unreadable to the C library). Files beve wrote with earlier versions still read.
+
 ## 5.0.2 - 2026-07-30
 
 ### Fixed

@@ -12,7 +12,7 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
   Struct *variants* were never affected, because neither variant serializer overrode `skip_field`. 5.0.0 accepted a skipped field inside `Enum::Variant { .. }` while rejecting the identical field on a plain struct.
 
-- A struct whose body does not match the `len` it declared is now caught at `end`, with a message naming both counts, instead of writing an object header that promises a field the reader never finds. This is the corruption 5.0.0 was reaching for; verifying the tally catches over- and under-declaring alike without breaking the derive, and only a hand-written `Serialize` can trip it. Maps are not covered by this guard: a hand-written `serialize_map(Some(n))` that writes a different number of entries still produces a document `validate_slice` rejects.
+- A struct whose body does not match the `len` it declared is now caught at `end`, with a message naming both counts, instead of writing an object header that promises a field the reader never finds. This is the corruption 5.0.0 was reaching for; verifying the tally catches over- and under-declaring alike without breaking the derive, and only a hand-written `Serialize` can trip it. Maps are not covered by this guard: a hand-written `serialize_map(Some(n))` that writes a different number of entries still produces a document `validate_slice` rejects (#35).
 
 ## 5.0.0 - 2026-07-30
 

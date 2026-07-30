@@ -4,7 +4,7 @@ This crate follows [Semantic Versioning](https://semver.org/). Dates are the cra
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
-## Unreleased
+## 5.0.1 - 2026-07-30
 
 ### Fixed
 

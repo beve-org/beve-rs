@@ -4,6 +4,16 @@ This crate follows [Semantic Versioning](https://semver.org/). Dates are the cra
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Fixed
+
+- A map whose body does not match the header written ahead of it is now caught at `end`, closing the gap 5.0.1 left open when it added the same guard for structs. A known-length map writes its entry count into the header on the first key and can never revise it, so a `len` that disagrees with the body leaves a header promising entries the reader never finds. Serde's own container impls always declare an honest `len`; a hand-written `Serialize` typically gets here by declaring `Some(collection.len())` and then filtering entries out of the loop.
+
+  Note one case that changes from valid output to an error: declaring entries and then writing none previously emitted a well-formed empty object, because the no-keys-written fallback writes its own zero-count header and never consulted the declared length. That was the same mistake getting a pass on an accident of the empty-map path, and it corrupts as soon as one entry survives the filter.
+
+- A key with no value following it is also reported. `serialize_key` has already written key bytes, so a missing `serialize_value` leaves half an entry on the wire. This one corrupts unknown-length maps (`serialize_map(None)`) too, where the count is patched afterwards from the number of *values* and so cannot account for the orphan.
+
 ## 5.0.1 - 2026-07-30
 
 ### Fixed

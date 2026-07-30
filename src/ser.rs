@@ -1994,6 +1994,9 @@ pub struct MapSerializer<'a> {
     len: Option<usize>,
     mode: KeyMode,
     count: usize,
+    /// Keys accepted so far. Compared against `count` in `end`, so a key whose
+    /// value never arrives is reported rather than left on the wire.
+    keys: usize,
     patch: Option<SizePatch>,
 }
 
@@ -2004,6 +2007,7 @@ impl<'a> MapSerializer<'a> {
             len,
             mode: KeyMode::Unknown,
             count: 0,
+            keys: 0,
             patch: None,
         }
     }
@@ -2438,7 +2442,9 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
         }
 
         let mut ks = KeySer { map: self };
-        key.serialize(&mut ks)
+        key.serialize(&mut ks)?;
+        self.keys += 1;
+        Ok(())
     }
 
     fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> {
@@ -2448,6 +2454,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
     }
 
     fn end(mut self) -> Result<()> {
+        check_map_entry_count(self.len, self.keys, self.count)?;
         if let Some(p) = self.patch.take() {
             // Unknown-length map that had at least one key: finalize the size patch.
             self.ser.finalize_size_patch(p, self.count);
@@ -2461,6 +2468,43 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
         }
         Ok(())
     }
+}
+
+/// The map counterpart of [`check_struct_field_count`], guarding the two ways a
+/// map body can desync from the header written ahead of it.
+///
+/// A known-length map writes its entry count into the header on the first key
+/// and, like a struct, can never revise it. Serde's contract is that the `len`
+/// given to `serialize_map` is the number of entries that will be serialized, so
+/// a `len` that disagrees with the body leaves a header promising entries the
+/// reader never finds. Serde's own container impls pass an honest `len`; only a
+/// hand-written `Serialize` can get here, typically by declaring
+/// `Some(collection.len())` and then filtering entries out of the loop.
+///
+/// A dangling key is the second failure: `serialize_key` has already written key
+/// bytes, so a missing `serialize_value` leaves a half-entry on the wire. That
+/// one corrupts unknown-length maps too, where the count is patched afterwards
+/// from the number of *values* and so cannot account for it.
+pub(crate) fn check_map_entry_count(
+    declared: Option<usize>,
+    keys: usize,
+    values: usize,
+) -> Result<()> {
+    if keys != values {
+        return Err(Error::MessageOwned(format!(
+            "map serialized {keys} key(s) but {values} value(s); \
+             every key must be followed by its value"
+        )));
+    }
+    if let Some(len) = declared
+        && len != values
+    {
+        return Err(Error::MessageOwned(format!(
+            "map declared {len} entries to `serialize_map` but serialized {values}; \
+             `len` must be the number of entries actually written"
+        )));
+    }
+    Ok(())
 }
 
 pub struct StructSerializer<'a> {

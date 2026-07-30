@@ -560,9 +560,29 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
+        // Only an *externally* tagged enum reaches this method; serde's derive
+        // lowers the other three representations to ordinary maps and bare
+        // values first. See the same method in `de.rs`.
         let header = self.peek_byte()?;
         let ty = parse_type(header);
         match ty {
+            // BEVE Version 2: `{ "VariantName": <payload> }`.
+            TYPE_OBJECT if parse_subtype(header) == KEY_STRING => {
+                self.read_byte()?; // consume object header
+                let count = self.read_size()? as usize;
+                if count != 1 {
+                    return Err(Error::InvalidType(
+                        "an externally tagged variant must be a single-key object",
+                    ));
+                }
+                let name = self.parse_string_owned()?;
+                visitor.visit_enum(EnumAccessStreaming {
+                    de: self,
+                    tag: EnumTagOwned::Name(name),
+                })
+            }
+            // BEVE Version 1 legacy: the deprecated type-tag extension. Kept on
+            // read so existing documents still load; never written.
             TYPE_EXTENSION => {
                 self.read_byte()?;
                 let ext = parse_extension_id(header);
@@ -574,6 +594,7 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
                     _ => Err(Error::InvalidHeader(header)),
                 }
             }
+            // BEVE Version 1 legacy: a bare positional index.
             TYPE_NUMBER => {
                 let header = self.read_byte()?;
                 let subtype = parse_subtype(header);
@@ -945,6 +966,11 @@ struct VariantAccessStreaming<'a, R: Read> {
 impl<'de, 'a, R: Read> de::VariantAccess<'de> for VariantAccessStreaming<'a, R> {
     type Error = Error;
     fn unit_variant(self) -> Result<()> {
+        // Mirrors the buffered reader: a value always follows, so discard
+        // exactly one and let a bad payload surface. Skipping it would read the
+        // payload as the next sibling, which is how the two readers used to
+        // disagree.
+        serde::Deserializer::deserialize_ignored_any(self.de, de::IgnoredAny)?;
         Ok(())
     }
     fn newtype_variant_seed<T: de::DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value> {

@@ -7,7 +7,7 @@
 //! - Direct struct serialization via `serde::{Serialize, Deserialize}`
 //! - Typed arrays for numeric, boolean, and string sequences when possible
 //! - Object keys as strings or integer types
-//! - Enum support via BEVE type-tag extension
+//! - Enum variants as ordinary values, per BEVE Version 2 (what `serde_json` writes)
 //! - Zero-copy deserialization for `&str` fields (borrow directly from the input buffer)
 //! - Validation helpers for checking BEVE payload integrity without deserialization
 //! - Selective field loading via [JSON Pointer (RFC 6901)](https://datatracker.ietf.org/doc/html/rfc6901)
@@ -81,20 +81,14 @@ pub use crate::json::{
 pub use crate::mat::{
     Compression, InvalidNamePolicy, MatV73Options, NullPolicy, OneDimensionalMode, RootBinding,
     RowMajorPolicy, UnsupportedPolicy, beve_file_to_mat_v73_file, beve_slice_to_mat_v73_bytes,
-    beve_slice_to_mat_v73_file,
+    beve_slice_to_mat_v73_file, beve_slice_to_mat_v73_writer,
 };
-pub use crate::ser::{
-    EnumEncoding, Serializer, SerializerOptions, to_vec, to_vec_into, to_vec_into_with_options,
-    to_vec_with_options,
-};
+pub use crate::ser::{Serializer, to_vec, to_vec_into};
 /// `#[serde(with = ...)]` helpers for bulk (memcpy) decode of numeric
 /// (`beve::typed::*`) and complex (`beve::complex_array::*`) array fields.
 pub use crate::serde_arrays::{complex_array, typed};
 pub use crate::streaming_de::{StreamingDeserializer, from_reader_streaming};
-pub use crate::streaming_ser::{
-    StreamingSerializer, serialized_size, serialized_size_with_options, to_writer_streaming,
-    to_writer_streaming_with_options,
-};
+pub use crate::streaming_ser::{StreamingSerializer, serialized_size, to_writer_streaming};
 pub use crate::value::{
     BigInt, BigIntKey, Key, Number, Object, Value, ValueError, from_value, from_value_ref,
 };
@@ -168,22 +162,6 @@ use std::io::{Read, Write};
 /// buffer.
 pub fn to_writer<W: Write, T: serde::Serialize>(mut writer: W, value: &T) -> Result<()> {
     let bytes = to_vec(value)?;
-    writer
-        .write_all(&bytes)
-        .map_err(|e| Error::MessageOwned(e.to_string()))
-}
-
-/// Serialize a value into any writer with custom options.
-///
-/// Like [`to_writer`], this serializes into an intermediate [`Vec<u8>`] before
-/// writing into `writer` rather than encoding directly. For direct, single-pass
-/// streaming with no intermediate buffer, see [`to_writer_streaming_with_options`].
-pub fn to_writer_with_options<W: Write, T: serde::Serialize>(
-    mut writer: W,
-    value: &T,
-    opts: SerializerOptions,
-) -> Result<()> {
-    let bytes = to_vec_with_options(value, opts)?;
     writer
         .write_all(&bytes)
         .map_err(|e| Error::MessageOwned(e.to_string()))

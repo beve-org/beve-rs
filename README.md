@@ -308,6 +308,17 @@ let mat_bytes = beve::beve_slice_to_mat_v73_bytes(
 )?;
 ```
 
+To send the result somewhere without holding it, use `beve_slice_to_mat_v73_writer`. It produces byte-for-byte what `beve_slice_to_mat_v73_bytes` returns, but writes the file front-to-back and never seeks, so the sink can be a socket as readily as a file and the output size no longer bounds what can be converted:
+```rust
+beve::beve_slice_to_mat_v73_writer(
+    &bytes,
+    &mut sink,
+    RootBinding::NamedVariable("values"),
+    &MatV73Options::default(),
+)?;
+```
+`beve_slice_to_mat_v73_file` streams this way too, into a temp file it renames over the target on success.
+
 Current mappings:
 - numeric, logical, and complex scalars/arrays
 - UTF-8 strings and typed string arrays as MATLAB `string` objects
@@ -362,18 +373,39 @@ The `to-mat` command supports `--name <var>` to set the MATLAB variable name (de
 - `cargo run --example emit_bool` writes a short boolean stream to stdout so you can inspect the raw bytes.
 - `cargo run --example emit_color` demonstrates encoding a struct with enums and typed arrays.
 
-## Enum Configuration
-By default enums emit numeric discriminants for compatibility with the reference C++ encoder. Switch to string variants when coordinating with serde-first consumers:
+## Enums and variants
+
+This crate targets **BEVE Version 2**, which has no variant encoding of its own: a variant is an ordinary value, chosen exactly as it would be for JSON. There is nothing to configure, and the crate writes what `serde_json` writes.
+
+That means serde's own attributes select the shape, per type, and all four representations work without any variant-specific support:
+
 ```rust
 use serde::Serialize;
-use beve::{SerializerOptions, EnumEncoding};
 
 #[derive(Serialize)]
-enum MyEnum { Struct { a: i32, b: u32 } }
+enum Shape {                       // externally tagged (serde's default)
+    Empty,                         //   "Empty"
+    Circle { radius: f64 },        //   { "Circle": { "radius": 5.25 } }
+}
 
-let opts = SerializerOptions { enum_encoding: EnumEncoding::String };
-let bytes = beve::to_vec_with_options(&MyEnum::Struct { a: 1, b: 2 }, opts)?;
+#[derive(Serialize)]
+#[serde(tag = "kind")]             // internally tagged
+enum Tagged {                      //   { "kind": "Circle", "radius": 5.25 }
+    Circle { radius: f64 },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]                 // no discriminator; the bare value
+enum Either { Num(u32), Text(String) }
 ```
+
+The internally tagged form is the shape a Glaze `std::variant` declaring `tag`/`ids` produces, so cross-language interop is a plain `#[serde(tag = "...")]` rather than a crate option.
+
+### Reading Version 1 documents
+
+Version 1 encoded a variant as the **type tag extension** (id `1`, header byte `0x0E`) followed by a positional index, and this crate additionally offered a numeric encoding that wrote a bare index for a unit variant. Extension 1 is deprecated and reserved in Version 2; **this crate never emits it**, but it still reads both legacy forms, so existing documents load unchanged.
+
+The reverse does not hold: a peer pinned to a pre-Version-2 decoder cannot read variants written here. Upgrade the peer, or pin this side, until both ends move.
 
 ## Streaming
 For large payloads where you don't want to buffer the entire input or output in memory, use the streaming APIs. They read and write directly from `std::io::Read` / `std::io::Write` with zero internal buffering:
@@ -400,9 +432,12 @@ fn read_large_recording() -> beve::Result<Recording> {
 }
 ```
 
-Both directions process data incrementally with no intermediate allocations beyond the output values themselves. Homogeneous sequences (`Vec<f64>`, `Vec<u32>`, `Vec<bool>`, `Vec<String>`, etc.) are automatically encoded as compact typed arrays, producing byte-for-byte identical output to `to_vec`. The streaming serializer requires all containers to have known lengths (structs, `Vec`, `HashMap`, etc.) — this covers virtually all standard Rust types.
+Both directions process data incrementally with no intermediate allocations beyond the output values themselves. Homogeneous *sequences* (`Vec<f64>`, `Vec<u32>`, `Vec<bool>`, `Vec<String>`, etc.) are automatically encoded as compact typed arrays, producing byte-for-byte identical output to `to_vec`.
 
-Custom serializer options (e.g. string enum encoding) are supported via `to_writer_streaming_with_options`.
+Two constraints follow from writing front-to-back, with no ability to revise a header already emitted:
+
+- **Containers must have known lengths** (structs, `Vec`, `HashMap`, etc.), which covers virtually all standard Rust types. A custom `Serialize` that passes `None` for a length is an error here, and `#[serde(flatten)]` is rejected for the same reason.
+- **Tuples and fixed-size arrays encode as generic arrays**, where `to_vec` coalesces a homogeneous one into a typed array. Serde routes Rust arrays through the same hook as tuples, so `[u8; 4]` cannot be told apart from `(u8, bool)`; detecting from the first element would commit this writer to a header it cannot revise, and every mixed tuple would then fail. Both encodings are valid and read back identically through either reader, so this affects bytes and size, not meaning. Use `to_vec`, or a `Vec<T>`, when the compact form matters.
 
 ### Data Delimiters
 When writing multiple values to the same stream, use `beve::write_delimiter` to insert the BEVE data delimiter byte (`0x06`) between entries — analogous to `\n` in NDJSON. `from_slice` and `from_reader_streaming` skip delimiters transparently during deserialization (note: `validate_slice` expects a single value and will reject delimiter-separated streams):
@@ -434,7 +469,7 @@ assert_eq!(back2, r2);
 - Complex numbers: `Complex<T>` for all numeric scalar types, with typed complex arrays
 - Collections: typed arrays (numeric, bool, string), generic sequences, maps with string or integer keys, and nested structs/enums
 - Streaming: `to_writer_streaming` / `from_reader_streaming` for zero-buffered I/O; `to_writer` and `from_reader` for buffered workflows
-- Interop: payloads align with `reference/glaze` and `reference/BEVE.jl`; spec resides in `reference/beve/README.md` and the upstream [BEVE specification](https://github.com/beve-org/beve)
+- Interop: payloads align with `reference/glaze` and `reference/BEVE.jl`; targets **Version 2** of the upstream [BEVE specification](https://github.com/beve-org/beve)
 
 ### Half & BFloat16 Scalars
 Half-precision (`f16`) and bfloat16 (`bf16`) values round-trip like any other scalar:

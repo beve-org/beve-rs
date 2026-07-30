@@ -4,8 +4,7 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use beve::{
-    Complex, DecodedMatrix, EnumEncoding, MatrixDecodeMode, MatrixLayout, MatrixOwned,
-    SerializerOptions, Value, from_reader,
+    Complex, DecodedMatrix, MatrixDecodeMode, MatrixLayout, MatrixOwned, Value, from_reader,
 };
 use half::{bf16, f16};
 use serde::ser::{SerializeMap, SerializeSeq};
@@ -276,44 +275,82 @@ fn heterogeneous_numeric_sequences_fall_back_to_generic_arrays() {
 }
 
 #[test]
-fn enum_encoding_matches_number_and_string_spec_modes() {
-    let number_unit = beve::to_vec(&UnitEnum::Beta).unwrap();
-    assert_eq!(number_unit, vec![0x51, 0x01, 0x00, 0x00, 0x00]);
+fn variants_are_ordinary_values_per_spec_v2() {
+    // A unit variant is its name as a plain string: `"Beta"`.
+    let unit = beve::to_vec(&UnitEnum::Beta).unwrap();
+    assert_eq!(unit, vec![0x02, 0x10, b'B', b'e', b't', b'a']);
+    let back: UnitEnum = beve::from_slice(&unit).unwrap();
+    assert_eq!(back, UnitEnum::Beta);
 
-    let string_opts = SerializerOptions {
-        enum_encoding: EnumEncoding::String,
-    };
-    let string_unit = beve::to_vec_with_options(&UnitEnum::Beta, string_opts).unwrap();
-    assert_eq!(string_unit, vec![0x02, 0x10, b'B', b'e', b't', b'a']);
-
-    let number_newtype = beve::to_vec(&TaggedEnum::Scalar(7)).unwrap();
+    // A newtype variant is a single-key object: `{ "Scalar": 7 }`. Object
+    // header, count 1, key length 6, the key, then the value.
+    let newtype = beve::to_vec(&TaggedEnum::Scalar(7)).unwrap();
     assert_eq!(
-        number_newtype,
-        vec![0x0e, 0x51, 0x00, 0x00, 0x00, 0x00, 0x11, 0x07]
-    );
-    let back: TaggedEnum = beve::from_slice(&number_newtype).unwrap();
-    assert_eq!(back, TaggedEnum::Scalar(7));
-
-    let string_newtype = beve::to_vec_with_options(&TaggedEnum::Scalar(7), string_opts).unwrap();
-    assert_eq!(
-        string_newtype,
+        newtype,
         vec![
-            0x0e, 0x02, 0x18, b'S', b'c', b'a', b'l', b'a', b'r', 0x11, 0x07
+            0x03, 0x04, 0x18, b'S', b'c', b'a', b'l', b'a', b'r', 0x11, 0x07
         ]
     );
-    let back: TaggedEnum = beve::from_slice(&string_newtype).unwrap();
+    let back: TaggedEnum = beve::from_slice(&newtype).unwrap();
     assert_eq!(back, TaggedEnum::Scalar(7));
 
-    let tuple_bytes = beve::to_vec(&TaggedEnum::Pair(3, true)).unwrap();
-    assert_eq!(tuple_bytes[0], 0x0e);
-    let tuple_back: TaggedEnum = beve::from_slice(&tuple_bytes).unwrap();
+    // A tuple variant is the same object with an array payload, and a struct
+    // variant the same with an object payload. Neither carries an extension.
+    let tuple = beve::to_vec(&TaggedEnum::Pair(3, true)).unwrap();
+    assert_eq!(tuple[0], 0x03);
+    let tuple_back: TaggedEnum = beve::from_slice(&tuple).unwrap();
     assert_eq!(tuple_back, TaggedEnum::Pair(3, true));
 
-    let struct_bytes =
-        beve::to_vec_with_options(&TaggedEnum::Named { count: 9 }, string_opts).unwrap();
-    assert_eq!(struct_bytes[0], 0x0e);
-    let struct_back: TaggedEnum = beve::from_slice(&struct_bytes).unwrap();
-    assert_eq!(struct_back, TaggedEnum::Named { count: 9 });
+    let named = beve::to_vec(&TaggedEnum::Named { count: 9 }).unwrap();
+    assert_eq!(named[0], 0x03);
+    let named_back: TaggedEnum = beve::from_slice(&named).unwrap();
+    assert_eq!(named_back, TaggedEnum::Named { count: 9 });
+}
+
+/// The type tag extension (id 1) is reserved and deprecated in Version 2. No
+/// encoder path may emit its header byte, `0x0E`.
+#[test]
+fn no_encoder_path_emits_the_deprecated_type_tag() {
+    let mut streamed = Vec::new();
+    beve::to_writer_streaming(&mut streamed, &TaggedEnum::Named { count: 9 }).unwrap();
+
+    for bytes in [
+        beve::to_vec(&UnitEnum::Beta).unwrap(),
+        beve::to_vec(&TaggedEnum::Scalar(7)).unwrap(),
+        beve::to_vec(&TaggedEnum::Pair(3, true)).unwrap(),
+        beve::to_vec(&TaggedEnum::Named { count: 9 }).unwrap(),
+        // Also as an element inside a generic array, which has its own paths.
+        beve::to_vec(&vec![TaggedEnum::Scalar(1), TaggedEnum::Pair(2, false)]).unwrap(),
+        streamed,
+    ] {
+        assert!(
+            !bytes.contains(&0x0E),
+            "type tag extension byte found in {bytes:02x?}"
+        );
+    }
+}
+
+/// Version 1 documents still decode: both the type tag extension and the bare
+/// positional index the old numeric enum encoding wrote.
+#[test]
+fn version_1_variants_still_decode() {
+    // `0x0e` type tag, index 0 as u32, then the value.
+    let v1_newtype = vec![0x0e, 0x51, 0x00, 0x00, 0x00, 0x00, 0x11, 0x07];
+    let back: TaggedEnum = beve::from_slice(&v1_newtype).unwrap();
+    assert_eq!(back, TaggedEnum::Scalar(7));
+
+    // `0x0e` type tag with a string tag rather than an index.
+    let v1_named_tag = vec![
+        0x0e, 0x02, 0x18, b'S', b'c', b'a', b'l', b'a', b'r', 0x11, 0x07,
+    ];
+    let back: TaggedEnum = beve::from_slice(&v1_named_tag).unwrap();
+    assert_eq!(back, TaggedEnum::Scalar(7));
+
+    // A bare positional index, which is what the removed numeric encoding
+    // wrote for a unit variant.
+    let v1_unit = vec![0x51, 0x01, 0x00, 0x00, 0x00];
+    let back: UnitEnum = beve::from_slice(&v1_unit).unwrap();
+    assert_eq!(back, UnitEnum::Beta);
 }
 
 #[test]
@@ -454,17 +491,7 @@ fn reader_and_writer_apis_preserve_wire_format() {
     beve::to_writer(&mut out, &value).unwrap();
     assert_eq!(out, beve::to_vec(&value).unwrap());
 
-    let opts = SerializerOptions {
-        enum_encoding: EnumEncoding::String,
-    };
-    let mut out_with_opts = Vec::new();
-    beve::to_writer_with_options(&mut out_with_opts, &value, opts).unwrap();
-    assert_eq!(
-        out_with_opts,
-        beve::to_vec_with_options(&value, opts).unwrap()
-    );
-
-    let decoded: TaggedEnum = from_reader(Cursor::new(out_with_opts)).unwrap();
+    let decoded: TaggedEnum = from_reader(Cursor::new(out)).unwrap();
     assert_eq!(decoded, value);
 }
 
@@ -494,4 +521,435 @@ fn malformed_inputs_are_rejected() {
         beve::fast::to_vec_matrix_f64(beve::fast::MatrixLayoutFast::Left, &[2], &[1.0, 2.0]);
     bad_matrix[2] = 0x1c;
     assert!(beve::validate_slice(&bad_matrix).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// BEVE Version 2: variants are ordinary values, so BEVE equals JSON
+// ---------------------------------------------------------------------------
+
+/// The property that makes the Version 2 variant encoding correct: converting a
+/// BEVE document to JSON yields exactly what `serde_json` produces for the same
+/// value. Version 1's type tag extension could not satisfy this, because a
+/// positional index has no JSON equivalent beyond an opaque
+/// `{"index":_,"value":_}`.
+///
+/// This holds across all four of serde's enum representations, and it holds
+/// without any variant-specific support: serde's derive lowers the internally
+/// tagged, adjacently tagged and untagged forms to ordinary maps and bare
+/// values before the serializer ever sees them, and the externally tagged
+/// default is written as the single-key object `serde_json` also writes.
+mod json_equivalence {
+    use serde::{Deserialize, Serialize};
+
+    /// Note the fixtures below avoid whole-number floats: the JSON converter
+    /// renders `5.0` as `5`, a number-formatting difference of its own that
+    /// would otherwise mask the structural property under test.
+    fn assert_matches_serde_json<T: Serialize>(value: &T) {
+        let beve_bytes = beve::to_vec(value).unwrap();
+        let via_beve: serde_json::Value =
+            serde_json::from_str(&beve::beve_slice_to_json_string(&beve_bytes).unwrap()).unwrap();
+        let direct = serde_json::to_value(value).unwrap();
+        assert_eq!(via_beve, direct);
+    }
+
+    /// Serde's default. `{"Circle":{"radius":5.0}}`.
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    enum External {
+        Empty,
+        Circle { radius: f64 },
+        Pair(u8, bool),
+        Wrapped(String),
+    }
+
+    /// `#[serde(tag)]`. `{"kind":"circle","radius":5.0}`.
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    #[serde(tag = "kind")]
+    enum Internal {
+        Circle { radius: f64 },
+        Square { side: f64 },
+    }
+
+    /// `#[serde(tag, content)]`. `{"t":"Circle","c":5.0}`.
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    #[serde(tag = "t", content = "c")]
+    enum Adjacent {
+        Circle(f64),
+        Pair(u8, bool),
+    }
+
+    /// `#[serde(untagged)]`. The bare value, with no discriminator at all.
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    #[serde(untagged)]
+    enum Untagged {
+        Num(u32),
+        Text(String),
+    }
+
+    #[test]
+    fn externally_tagged_matches_serde_json() {
+        for v in [
+            External::Empty,
+            External::Circle { radius: 5.25 },
+            External::Pair(3, true),
+            External::Wrapped("hi".into()),
+        ] {
+            assert_matches_serde_json(&v);
+            let back: External = beve::from_slice(&beve::to_vec(&v).unwrap()).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn internally_tagged_matches_serde_json() {
+        for v in [
+            Internal::Circle { radius: 5.25 },
+            Internal::Square { side: 2.75 },
+        ] {
+            assert_matches_serde_json(&v);
+            let back: Internal = beve::from_slice(&beve::to_vec(&v).unwrap()).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn adjacently_tagged_matches_serde_json() {
+        for v in [Adjacent::Circle(5.25), Adjacent::Pair(3, true)] {
+            assert_matches_serde_json(&v);
+            let back: Adjacent = beve::from_slice(&beve::to_vec(&v).unwrap()).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn untagged_matches_serde_json() {
+        for v in [Untagged::Num(7), Untagged::Text("hi".into())] {
+            assert_matches_serde_json(&v);
+            let back: Untagged = beve::from_slice(&beve::to_vec(&v).unwrap()).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    /// Glaze's Version 2 shape for a `std::variant` declaring `tag`/`ids` is a
+    /// tagged object with the discriminator merged in as a member. That is
+    /// serde's internally tagged representation, so it is expressible with a
+    /// plain attribute and needs no support from this crate.
+    #[test]
+    fn the_glaze_v2_tagged_shape_is_reachable_with_a_serde_attribute() {
+        let json = beve::beve_slice_to_json_string(
+            &beve::to_vec(&Internal::Circle { radius: 5.25 }).unwrap(),
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["kind"], "Circle");
+        assert_eq!(v["radius"], 5.25);
+    }
+}
+
+/// The buffered and streaming readers must agree on every document, and the
+/// buffered and streaming writers on every value. Both halves of the crate
+/// grew a variant path in Version 2, and a divergence between them is invisible
+/// to any test that exercises only one side.
+mod reader_writer_parity {
+    use super::*;
+
+    /// `Scalar` is a UNIT variant here, so a `{"Scalar": <payload>}` document
+    /// carries a value this schema does not want. That is ordinary schema drift:
+    /// it is what a peer writes after a variant's payload is dropped locally.
+    #[derive(Debug, PartialEq, Deserialize)]
+    enum DriftedEnum {
+        Scalar,
+        #[allow(dead_code)]
+        Other(u32),
+    }
+
+    #[derive(Debug, PartialEq, Deserialize)]
+    struct DriftedOuter {
+        a: DriftedEnum,
+        b: u8,
+    }
+
+    /// Assert both readers reach the same `Ok` value for the same bytes.
+    fn assert_readers_agree<T>(bytes: &[u8], expected: T)
+    where
+        T: serde::de::DeserializeOwned + PartialEq + core::fmt::Debug,
+    {
+        let buffered: T = beve::from_slice(bytes).expect("buffered reader rejected the document");
+        let streamed: T =
+            beve::from_reader_streaming(bytes).expect("streaming reader rejected the document");
+        assert_eq!(buffered, expected, "buffered reader");
+        assert_eq!(streamed, expected, "streaming reader");
+    }
+
+    /// Assert both readers reject the same bytes. Which error is not pinned;
+    /// that both refuse is the property.
+    fn assert_readers_both_reject<T>(bytes: &[u8])
+    where
+        T: serde::de::DeserializeOwned + core::fmt::Debug,
+    {
+        let buffered = beve::from_slice::<T>(bytes);
+        let streamed = beve::from_reader_streaming::<_, T>(bytes);
+        assert!(
+            buffered.is_err(),
+            "buffered reader accepted malformed input: {buffered:?}"
+        );
+        assert!(
+            streamed.is_err(),
+            "streaming reader accepted malformed input: {streamed:?}"
+        );
+    }
+
+    /// A unit-variant target must skip a payload the wire declares, not read it
+    /// as the next sibling. The streaming reader used to return `(Scalar, 7)`
+    /// here, silently substituting the discarded payload for the real element.
+    #[test]
+    fn a_dropped_payload_is_discarded_not_read_as_the_next_element() {
+        // `[{"Scalar": 7u32}, 9u8]`
+        let mut bytes = vec![0x05, 0x08, 0x03, 0x04, 0x18];
+        bytes.extend_from_slice(b"Scalar");
+        bytes.extend_from_slice(&[0x51, 0x07, 0x00, 0x00, 0x00, 0x11, 0x09]);
+
+        assert_readers_agree(&bytes, (DriftedEnum::Scalar, 9u8));
+    }
+
+    /// The same drift as a struct field. The streaming reader used to fail
+    /// outright while the buffered reader succeeded.
+    #[test]
+    fn a_dropped_payload_is_discarded_inside_a_struct() {
+        // `{"a": {"Scalar": 7u32}, "b": 5u8}`
+        let mut bytes = vec![0x03, 0x08, 0x04, b'a', 0x03, 0x04, 0x18];
+        bytes.extend_from_slice(b"Scalar");
+        bytes.extend_from_slice(&[0x51, 0x07, 0x00, 0x00, 0x00, 0x04, b'b', 0x11, 0x05]);
+
+        assert_readers_agree(
+            &bytes,
+            DriftedOuter {
+                a: DriftedEnum::Scalar,
+                b: 5,
+            },
+        );
+    }
+
+    /// The object header promises one value. If it is missing, that is a
+    /// truncated document and both readers must say so rather than returning a
+    /// variant built from bytes that were never there.
+    #[test]
+    fn a_truncated_variant_object_is_rejected() {
+        let mut bytes = vec![0x03, 0x04, 0x18];
+        bytes.extend_from_slice(b"Scalar");
+        assert_readers_both_reject::<DriftedEnum>(&bytes);
+    }
+
+    /// A variant object must have exactly one key, in both readers.
+    #[test]
+    fn a_multi_key_variant_object_is_rejected() {
+        let mut bytes = vec![0x03, 0x08, 0x18];
+        bytes.extend_from_slice(b"Scalar");
+        bytes.extend_from_slice(&[0x11, 0x07, 0x04, b'x', 0x11, 0x01]);
+        assert_readers_both_reject::<TaggedEnum>(&bytes);
+    }
+
+    /// Every variant kind, through both readers and both writers. This is the
+    /// matrix that the single-sided tests leave uncovered.
+    #[test]
+    fn every_variant_kind_round_trips_through_both_readers_and_writers() {
+        macro_rules! check {
+            ($value:expr, $ty:ty) => {{
+                let value: $ty = $value;
+                let buffered = beve::to_vec(&value).unwrap();
+
+                let mut streamed = Vec::new();
+                beve::to_writer_streaming(&mut streamed, &value).unwrap();
+                assert_eq!(
+                    buffered, streamed,
+                    "writers disagree for {:?}: {buffered:02x?} vs {streamed:02x?}",
+                    value
+                );
+
+                assert_readers_agree::<$ty>(&buffered, $value);
+            }};
+        }
+
+        check!(UnitEnum::Alpha, UnitEnum);
+        check!(UnitEnum::Beta, UnitEnum);
+        check!(TaggedEnum::Scalar(7), TaggedEnum);
+        check!(TaggedEnum::Pair(3, true), TaggedEnum);
+        check!(TaggedEnum::Named { count: 9 }, TaggedEnum);
+    }
+
+    /// Each variant kind as the FIRST element of an unknown-length sequence.
+    /// That is the one position routed through the element serializer, which
+    /// owns the array's element count; a path that forgot to count itself wrote
+    /// a header claiming fewer elements than it had emitted, and the tail
+    /// decoded as trailing garbage.
+    #[test]
+    fn variants_leading_an_unknown_length_sequence_keep_their_element_count() {
+        for values in [
+            vec![TaggedEnum::Scalar(1), TaggedEnum::Scalar(2)],
+            vec![TaggedEnum::Pair(1, true), TaggedEnum::Scalar(2)],
+            vec![TaggedEnum::Named { count: 1 }, TaggedEnum::Scalar(2)],
+            // A single element makes an off-by-one produce a count of zero.
+            vec![TaggedEnum::Scalar(1)],
+        ] {
+            let bytes = beve::to_vec(&UnknownLenSeq(&values)).unwrap();
+            beve::validate_slice(&bytes).unwrap_or_else(|e| {
+                panic!("not a well-formed document for {values:?}: {e:?} in {bytes:02x?}")
+            });
+            let back: Vec<TaggedEnum> = beve::from_slice(&bytes).unwrap();
+            assert_eq!(back, values, "element lost in {bytes:02x?}");
+        }
+
+        // The unit-variant path for the same position.
+        let units = vec![UnitEnum::Beta, UnitEnum::Alpha];
+        let bytes = beve::to_vec(&UnknownLenSeq(&units)).unwrap();
+        beve::validate_slice(&bytes).unwrap();
+        let back: Vec<UnitEnum> = beve::from_slice(&bytes).unwrap();
+        assert_eq!(back, units);
+    }
+
+    /// Where the two writers agree, and the one documented place they do not.
+    ///
+    /// Sequences agree, because both coalesce a homogeneous one into a typed
+    /// array. Tuples do not, and cannot: serde routes Rust arrays through
+    /// `serialize_tuple`, so a homogeneous `[u8; 4]` is indistinguishable from a
+    /// mixed `(u8, bool)`, and the two want opposite encodings. The buffered
+    /// writer detects and can rewrite its own header when a later element
+    /// disagrees; the streaming writer would be committed the moment it wrote
+    /// one, so it emits generic unconditionally rather than failing on every
+    /// mixed tuple.
+    ///
+    /// Both encodings are valid and decode to the same value through either
+    /// reader, which is what this pins. Anyone tempted to "fix" the divergence
+    /// should read the streaming `serialize_tuple` comment first.
+    #[test]
+    fn the_two_writers_agree_except_on_tuples_where_they_provably_cannot() {
+        macro_rules! bytes_both_ways {
+            ($value:expr) => {{
+                let buffered = beve::to_vec(&$value).unwrap();
+                let mut streamed = Vec::new();
+                beve::to_writer_streaming(&mut streamed, &$value).unwrap();
+                // Whichever they produce must be a well-formed document.
+                for (which, b) in [("buffered", &buffered), ("streaming", &streamed)] {
+                    beve::validate_slice(b).unwrap_or_else(|e| {
+                        panic!(
+                            "{which} produced a malformed document for {}: {e:?}",
+                            stringify!($value)
+                        )
+                    });
+                }
+                (buffered, streamed)
+            }};
+        }
+        macro_rules! agree {
+            ($value:expr) => {{
+                let (buffered, streamed) = bytes_both_ways!($value);
+                assert_eq!(
+                    buffered,
+                    streamed,
+                    "writers must agree for {}: {buffered:02x?} vs {streamed:02x?}",
+                    stringify!($value)
+                );
+            }};
+        }
+        /// Asserts the divergence exists AND that both forms decode to the same
+        /// value through both readers, which is the property that makes it benign.
+        macro_rules! differ_but_round_trip {
+            ($value:expr, $ty:ty) => {{
+                let (buffered, streamed) = bytes_both_ways!($value);
+                assert_ne!(
+                    buffered,
+                    streamed,
+                    "expected the documented tuple divergence for {}",
+                    stringify!($value)
+                );
+                for (which, b) in [("buffered", &buffered), ("streaming", &streamed)] {
+                    let via_slice: $ty = beve::from_slice(b)
+                        .unwrap_or_else(|e| panic!("{which} bytes failed from_slice: {e:?}"));
+                    let via_reader: $ty = beve::from_reader_streaming(&b[..])
+                        .unwrap_or_else(|e| panic!("{which} bytes failed streaming read: {e:?}"));
+                    assert_eq!(via_slice, $value, "{which} bytes, buffered reader");
+                    assert_eq!(via_reader, $value, "{which} bytes, streaming reader");
+                }
+            }};
+        }
+
+        // Sequences agree, homogeneous or not.
+        agree!(vec![1u8, 2, 3]);
+        agree!(vec![1.5f64, 2.5]);
+        agree!(vec!["a".to_string(), "b".to_string()]);
+        agree!(Vec::<u8>::new());
+        // A mixed tuple agrees too: the buffered writer also lands on generic.
+        agree!((1u8, true));
+        agree!((1u8, "two".to_string(), 3.5f64));
+        // Nested sequences agree.
+        agree!(vec![vec![1u8, 2], vec![3, 4]]);
+
+        // Homogeneous arrays and tuples are the documented exception: buffered
+        // coalesces to a typed array, streaming stays generic.
+        differ_but_round_trip!([1u8, 2, 3, 4], [u8; 4]);
+        differ_but_round_trip!([1.5f64, 2.5], [f64; 2]);
+        differ_but_round_trip!((1u8, 2u8), (u8, u8));
+
+        // A mixed-width tuple is not homogeneous, so both stay generic.
+        agree!((1u8, 2u16));
+    }
+
+    /// Version 1 fixtures must decode identically in both readers too.
+    #[test]
+    fn version_1_variants_decode_the_same_in_both_readers() {
+        assert_readers_agree(
+            &[0x0e, 0x51, 0x00, 0x00, 0x00, 0x00, 0x11, 0x07],
+            TaggedEnum::Scalar(7),
+        );
+        assert_readers_agree(
+            &[
+                0x0e, 0x02, 0x18, b'S', b'c', b'a', b'l', b'a', b'r', 0x11, 0x07,
+            ],
+            TaggedEnum::Scalar(7),
+        );
+        assert_readers_agree(&[0x51, 0x01, 0x00, 0x00, 0x00], UnitEnum::Beta);
+    }
+
+    /// Byte-for-byte output captured from beve 4.0.0, covering the three places
+    /// it put a unit variant. Each is a distinct wire form, and the middle one
+    /// regressed once already:
+    ///
+    /// - top level and struct field: a bare positional index, no extension
+    /// - leading a sequence: the type-tag extension, the index, and an explicit
+    ///   `null` payload (`write_null` after `write_enum_tag`)
+    ///
+    /// That third form is why a unit-variant target must consume a value after
+    /// the extension. Reading the tag and stopping leaves the `null` to be taken
+    /// as the next element, which made a 4.x-written `Vec<SomeUnitEnum>`
+    /// undecodable.
+    #[test]
+    fn unit_variants_written_by_version_4_still_decode() {
+        // `UnitEnum::Beta` at the root.
+        assert_readers_agree(&[0x51, 0x01, 0x00, 0x00, 0x00], UnitEnum::Beta);
+
+        // `vec![UnitEnum::Beta, UnitEnum::Alpha]`: the first element carries the
+        // extension plus a null, the second is a bare index.
+        assert_readers_agree(
+            &[
+                0x05, 0x08, 0x0e, 0x51, 0x01, 0x00, 0x00, 0x00, 0x00, 0x51, 0x00, 0x00, 0x00, 0x00,
+            ],
+            vec![UnitEnum::Beta, UnitEnum::Alpha],
+        );
+
+        // A unit variant as a struct field, with a sibling field after it. The
+        // bare index must not swallow the next key.
+        #[derive(Debug, PartialEq, Deserialize)]
+        struct V4Outer {
+            a: UnitEnum,
+            b: u8,
+        }
+        assert_readers_agree(
+            &[
+                0x03, 0x08, 0x04, b'a', 0x51, 0x01, 0x00, 0x00, 0x00, 0x04, b'b', 0x11, 0x05,
+            ],
+            V4Outer {
+                a: UnitEnum::Beta,
+                b: 5,
+            },
+        );
+    }
 }

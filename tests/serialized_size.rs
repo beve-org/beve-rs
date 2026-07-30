@@ -1,5 +1,4 @@
-//! Exactness tests for [`beve::serialized_size`] and
-//! [`beve::serialized_size_with_options`].
+//! Exactness tests for [`beve::serialized_size`].
 //!
 //! The central invariant is that the measured length always equals the number of
 //! bytes [`beve::to_writer_streaming`] actually writes for the same value and
@@ -9,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use beve::{Complex, EnumEncoding, Error, SerializerOptions, TypedSlice};
+use beve::{Complex, Error, TypedSlice};
 use half::{bf16, f16};
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Deserialize, Serialize, Serializer};
@@ -25,16 +24,6 @@ fn assert_size_eq<T: Serialize>(value: &T) {
         "serialized_size ({measured}) disagreed with streamed length ({})",
         buf.len()
     );
-}
-
-/// Assert the measured size equals the streamed length under the given options.
-fn assert_size_eq_opts<T: Serialize>(value: &T, opts: SerializerOptions) {
-    let mut buf = Vec::new();
-    beve::to_writer_streaming_with_options(&mut buf, value, opts)
-        .expect("streaming serialize should succeed");
-    let measured =
-        beve::serialized_size_with_options(value, opts).expect("serialized_size should succeed");
-    assert_eq!(measured, buf.len() as u64);
 }
 
 // ---------------------------------------------------------------------------
@@ -238,27 +227,6 @@ fn enum_variants_default() {
     ];
     for v in &variants {
         assert_size_eq(v);
-    }
-}
-
-#[test]
-fn enum_variants_options_parity() {
-    let number = SerializerOptions {
-        enum_encoding: EnumEncoding::Number,
-    };
-    let string = SerializerOptions {
-        enum_encoding: EnumEncoding::String,
-    };
-    let variants = [
-        E::Unit,
-        E::Newtype(7),
-        E::Tuple(1, "a".into()),
-        E::Struct { x: 1.0, y: 2.0 },
-    ];
-    for v in &variants {
-        // Enum tag width differs between encodings, so the size must track each.
-        assert_size_eq_opts(v, number);
-        assert_size_eq_opts(v, string);
     }
 }
 

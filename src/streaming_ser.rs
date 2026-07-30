@@ -11,9 +11,7 @@ use serde::ser::{self, Serialize};
 use crate::error::{Error, Result};
 use crate::ext::{NT_COMPLEX, NT_RAW_VALUE, typed_array_tag};
 use crate::header::*;
-use crate::ser::{
-    BytesExtractor, EnumEncoding, SerializerOptions, TypedArrayWriteSink, U16Extractor,
-};
+use crate::ser::{BytesExtractor, TypedArrayWriteSink, U16Extractor};
 use crate::size::encode_size_to_array;
 
 // ---------------------------------------------------------------------------
@@ -48,21 +46,12 @@ fn complex_header(class: u8, byte_code: u8, is_array: bool) -> u8 {
 /// use generic arrays.
 pub struct StreamingSerializer<W: Write> {
     writer: W,
-    opts: SerializerOptions,
 }
 
 impl<W: Write> StreamingSerializer<W> {
-    /// Create a new streaming serializer with default options.
+    /// Create a new streaming serializer.
     pub fn new(writer: W) -> Self {
-        Self {
-            writer,
-            opts: SerializerOptions::default(),
-        }
-    }
-
-    /// Create a new streaming serializer with custom options.
-    pub fn with_options(writer: W, opts: SerializerOptions) -> Self {
-        Self { writer, opts }
+        Self { writer }
     }
 
     /// Consume the serializer and return the underlying writer.
@@ -143,11 +132,14 @@ impl<W: Write> StreamingSerializer<W> {
         self.write_all(s.as_bytes())
     }
 
-    fn write_enum_tag(&mut self, variant_index: u32, variant_name: &'static str) -> Result<()> {
-        match self.opts.enum_encoding {
-            EnumEncoding::Number => self.write_unsigned_value::<4, _>(variant_index),
-            EnumEncoding::String => self.write_str_value(variant_name),
-        }
+    /// Open the single-key object that carries an externally tagged variant:
+    /// `{ "VariantName": <payload> }`. The caller writes the payload next.
+    /// See `Serializer::write_variant_object_prefix` for why this shape.
+    fn write_variant_object_prefix(&mut self, variant: &'static str) -> Result<()> {
+        self.write_byte(TYPE_OBJECT | (KEY_STRING << 3))?;
+        self.write_size(1)?;
+        self.write_size(variant.len() as u64)?;
+        self.write_all(variant.as_bytes())
     }
 
     fn write_generic_array_header(&mut self, len: usize) -> Result<()> {
@@ -296,10 +288,10 @@ impl<'a, W: Write> ser::Serializer for &'a mut StreamingSerializer<W> {
     fn serialize_unit_variant(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
     ) -> Result<()> {
-        self.write_enum_tag(variant_index, variant)
+        self.write_str_value(variant)
     }
 
     fn serialize_newtype_struct<T: ?Sized + Serialize>(
@@ -344,12 +336,11 @@ impl<'a, W: Write> ser::Serializer for &'a mut StreamingSerializer<W> {
     fn serialize_newtype_variant<T: ?Sized + Serialize>(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
         value: &T,
     ) -> Result<()> {
-        self.write_byte(make_extension_header(EXT_TYPE_TAG))?;
-        self.write_enum_tag(variant_index, variant)?;
+        self.write_variant_object_prefix(variant)?;
         value.serialize(self)
     }
 
@@ -367,7 +358,16 @@ impl<'a, W: Write> ser::Serializer for &'a mut StreamingSerializer<W> {
     }
 
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple> {
-        // Tuples are heterogeneous — always generic
+        // Generic, unconditionally, and deliberately not the typed detection
+        // `serialize_seq` uses. Serde routes Rust arrays through here too, so a
+        // homogeneous `[u8; 4]` is indistinguishable from a mixed `(u8, bool)`,
+        // and the two want opposite encodings. Detecting from the first element
+        // would commit this writer to a typed header it cannot take back, turning
+        // any mixed tuple into an error, whereas the buffered writer can rewrite
+        // its own header and so coalesces. That asymmetry is the streaming
+        // constraint, not an oversight: it is why `to_vec` and
+        // `to_writer_streaming` differ on this one shape. See the note on
+        // `serialized_size`.
         self.write_generic_array_header(len)?;
         Ok(StreamingSeqSerializer {
             ser: self,
@@ -382,6 +382,7 @@ impl<'a, W: Write> ser::Serializer for &'a mut StreamingSerializer<W> {
         _name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleStruct> {
+        // Same reasoning as `serialize_tuple`: a tuple struct is a tuple here.
         self.write_generic_array_header(len)?;
         Ok(StreamingSeqSerializer {
             ser: self,
@@ -394,12 +395,11 @@ impl<'a, W: Write> ser::Serializer for &'a mut StreamingSerializer<W> {
     fn serialize_tuple_variant(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
-        self.write_byte(make_extension_header(EXT_TYPE_TAG))?;
-        self.write_enum_tag(variant_index, variant)?;
+        self.write_variant_object_prefix(variant)?;
         self.write_generic_array_header(len)?;
         Ok(StreamingVariantSeqSerializer {
             inner: StreamingSeqSerializer {
@@ -432,12 +432,11 @@ impl<'a, W: Write> ser::Serializer for &'a mut StreamingSerializer<W> {
     fn serialize_struct_variant(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStructVariant> {
-        self.write_byte(make_extension_header(EXT_TYPE_TAG))?;
-        self.write_enum_tag(variant_index, variant)?;
+        self.write_variant_object_prefix(variant)?;
         self.write_byte(TYPE_OBJECT | (KEY_STRING << 3))?;
         self.write_size(len as u64)?;
         Ok(StreamingVariantStructSerializer {
@@ -806,11 +805,11 @@ impl<'a, 'b, W: Write> ser::Serializer for &'b mut StreamingElemSer<'a, 'b, W> {
     fn serialize_unit_variant(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
     ) -> Result<()> {
         self.seq.ensure_generic()?;
-        self.seq.ser.write_enum_tag(variant_index, variant)
+        self.seq.ser.write_str_value(variant)
     }
 
     fn serialize_newtype_struct<T: ?Sized + Serialize>(
@@ -858,15 +857,12 @@ impl<'a, 'b, W: Write> ser::Serializer for &'b mut StreamingElemSer<'a, 'b, W> {
     fn serialize_newtype_variant<T: ?Sized + Serialize>(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
         value: &T,
     ) -> Result<()> {
         self.seq.ensure_generic()?;
-        self.seq
-            .ser
-            .write_byte(make_extension_header(EXT_TYPE_TAG))?;
-        self.seq.ser.write_enum_tag(variant_index, variant)?;
+        self.seq.ser.write_variant_object_prefix(variant)?;
         value.serialize(&mut *self.seq.ser)
     }
 
@@ -912,15 +908,12 @@ impl<'a, 'b, W: Write> ser::Serializer for &'b mut StreamingElemSer<'a, 'b, W> {
     fn serialize_tuple_variant(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
         self.seq.ensure_generic()?;
-        self.seq
-            .ser
-            .write_byte(make_extension_header(EXT_TYPE_TAG))?;
-        self.seq.ser.write_enum_tag(variant_index, variant)?;
+        self.seq.ser.write_variant_object_prefix(variant)?;
         self.seq.ser.write_generic_array_header(len)?;
         Ok(StreamingVariantSeqSerializer {
             inner: StreamingSeqSerializer {
@@ -955,15 +948,12 @@ impl<'a, 'b, W: Write> ser::Serializer for &'b mut StreamingElemSer<'a, 'b, W> {
     fn serialize_struct_variant(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStructVariant> {
         self.seq.ensure_generic()?;
-        self.seq
-            .ser
-            .write_byte(make_extension_header(EXT_TYPE_TAG))?;
-        self.seq.ser.write_enum_tag(variant_index, variant)?;
+        self.seq.ser.write_variant_object_prefix(variant)?;
         self.seq.ser.write_byte(TYPE_OBJECT | (KEY_STRING << 3))?;
         self.seq.ser.write_size(len as u64)?;
         Ok(StreamingVariantStructSerializer {
@@ -1324,6 +1314,17 @@ impl<'a, W: Write> ser::SerializeStruct for StreamingStructSerializer<'a, W> {
         value.serialize(&mut *self.ser)
     }
 
+    /// The object header was written up front from `len`, and there is no size
+    /// patch to revise, so a skipped field would leave the count one higher than
+    /// the fields on the wire and the document would fail to parse. Refuse
+    /// instead of emitting something a reader cannot decode. Serde's derive never
+    /// calls this; a hand-written `Serialize` can.
+    fn skip_field(&mut self, _key: &'static str) -> Result<()> {
+        Err(Error::Unsupported(
+            "skip_field: a BEVE object header commits to its field count, so a field cannot be skipped after it is written",
+        ))
+    }
+
     fn end(self) -> Result<()> {
         Ok(())
     }
@@ -1384,19 +1385,6 @@ pub fn to_writer_streaming<W: Write, T: Serialize>(writer: W, value: &T) -> Resu
     Ok(ser.into_inner().flush()?)
 }
 
-/// Serialize directly to a writer with zero internal buffering and custom options.
-///
-/// See [`to_writer_streaming`] for details.
-pub fn to_writer_streaming_with_options<W: Write, T: Serialize>(
-    writer: W,
-    value: &T,
-    opts: SerializerOptions,
-) -> Result<()> {
-    let mut ser = StreamingSerializer::with_options(writer, opts);
-    value.serialize(&mut ser)?;
-    Ok(ser.into_inner().flush()?)
-}
-
 // ---------------------------------------------------------------------------
 // Measuring serializer (serialized_size)
 // ---------------------------------------------------------------------------
@@ -1439,9 +1427,14 @@ impl Write for CountingWriter {
 /// This is the dual of [`to_writer_streaming`]: the length is generated by the
 /// *same* encoder, with a counting sink in place of a real writer, so it is
 /// correct by construction and cannot drift from what the streaming serializer
-/// actually emits. It is **not** the dual of [`to_vec`](crate::to_vec): values
-/// containing unknown-length containers may encode differently under `to_vec`,
-/// and like [`to_writer_streaming`] this function rejects them (see below).
+/// actually emits. It is **not** the dual of [`to_vec`](crate::to_vec), for two
+/// reasons: a value containing an unknown-length container encodes differently
+/// under `to_vec`, and like [`to_writer_streaming`] this function rejects it (see
+/// below); and a tuple or fixed-size array of homogeneous scalars is a generic
+/// array here where `to_vec` coalesces it into a typed array, so the two sizes
+/// differ even though both encodings read back the same. Measure with this
+/// function when the bytes will come from [`to_writer_streaming`], which is the
+/// only pairing it guarantees.
 ///
 /// The primary use is length-prefixed framing over a non-seekable transport
 /// (e.g. a socket): measure the body, write the frame's length field, then stream
@@ -1451,7 +1444,7 @@ impl Write for CountingWriter {
 /// any pure `Serialize` impl; a value backed by external or interior-mutable state,
 /// or mutated between the measure and the write, can change length between the two
 /// passes and so corrupt the frame. The measure and the write must see the same
-/// value and the same [`SerializerOptions`].
+/// value.
 ///
 /// Returns `u64` (not `usize`) to match the on-wire SIZE domain and stay
 /// meaningful on 32-bit targets.
@@ -1512,21 +1505,7 @@ impl Write for CountingWriter {
 /// # }
 /// ```
 pub fn serialized_size<T: Serialize>(value: &T) -> Result<u64> {
-    serialized_size_with_options(value, SerializerOptions::default())
-}
-
-/// Compute the exact streaming-encoded byte length of `value` under custom
-/// [`SerializerOptions`], without producing the bytes.
-///
-/// Identical to [`serialized_size`] but lets the caller choose options such as
-/// [`EnumEncoding`](crate::EnumEncoding), which affects the size of enum tags.
-/// The same options must be used for the subsequent [`to_writer_streaming_with_options`]
-/// for the measured length to match what is written.
-pub fn serialized_size_with_options<T: Serialize>(
-    value: &T,
-    opts: SerializerOptions,
-) -> Result<u64> {
-    let mut counter = StreamingSerializer::with_options(CountingWriter::default(), opts);
+    let mut counter = StreamingSerializer::new(CountingWriter::default());
     value.serialize(&mut counter)?;
     Ok(counter.into_inner().len)
 }

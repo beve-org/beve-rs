@@ -497,29 +497,8 @@ where
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EnumEncoding {
-    Number,
-    String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SerializerOptions {
-    pub enum_encoding: EnumEncoding,
-}
-
-impl Default for SerializerOptions {
-    fn default() -> Self {
-        // Default to numbers for interop with Glaze
-        Self {
-            enum_encoding: EnumEncoding::Number,
-        }
-    }
-}
-
 pub struct Serializer {
     pub(crate) buf: Vec<u8>,
-    pub(crate) opts: SerializerOptions,
 }
 
 impl Default for Serializer {
@@ -530,27 +509,11 @@ impl Default for Serializer {
 
 impl Serializer {
     pub fn new() -> Self {
-        Self {
-            buf: Vec::new(),
-            opts: SerializerOptions::default(),
-        }
+        Self { buf: Vec::new() }
     }
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             buf: Vec::with_capacity(cap),
-            opts: SerializerOptions::default(),
-        }
-    }
-    pub fn with_options(opts: SerializerOptions) -> Self {
-        Self {
-            buf: Vec::new(),
-            opts,
-        }
-    }
-    pub fn with_capacity_and_options(cap: usize, opts: SerializerOptions) -> Self {
-        Self {
-            buf: Vec::with_capacity(cap),
-            opts,
         }
     }
     pub fn into_vec(self) -> Vec<u8> {
@@ -676,16 +639,22 @@ impl Serializer {
         self.extend_from_slice(s.as_bytes());
     }
 
-    fn write_enum_tag(&mut self, variant_index: u32, variant_name: &'static str) {
-        match self.opts.enum_encoding {
-            EnumEncoding::Number => {
-                // Match Glaze behavior: emit 32-bit unsigned discriminant.
-                self.write_unsigned_value::<4, _>(variant_index);
-            }
-            EnumEncoding::String => {
-                self.write_str_value(variant_name);
-            }
-        }
+    /// Open the single-key object that carries an externally tagged variant:
+    /// `{ "VariantName": <payload> }`. The caller writes the payload next.
+    ///
+    /// BEVE Version 2 has no variant encoding of its own, so a variant is
+    /// whatever the equivalent JSON would be. Serde's default enum
+    /// representation is externally tagged, so this is what `serde_json`
+    /// writes, which is what makes `beve -> json` of a variant equal
+    /// `serde_json` of the same value. The other three serde representations
+    /// (`tag`, `tag` + `content`, `untagged`) never reach this method at all:
+    /// the derive lowers them to ordinary maps and bare values before the
+    /// serializer sees them, and those already encode correctly.
+    fn write_variant_object_prefix(&mut self, variant: &'static str) {
+        self.push(TYPE_OBJECT | (KEY_STRING << 3));
+        write_size(1, &mut self.buf);
+        write_size(variant.len() as u64, &mut self.buf);
+        self.extend_from_slice(variant.as_bytes());
     }
 
     fn write_bytes_typed_array(&mut self, bytes: &[u8]) {
@@ -803,24 +772,9 @@ pub fn to_vec<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     Ok(ser.into_vec())
 }
 
-pub fn to_vec_with_options<T: Serialize>(value: &T, opts: SerializerOptions) -> Result<Vec<u8>> {
-    let mut ser = Serializer::with_options(opts);
-    value.serialize(&mut ser)?;
-    Ok(ser.into_vec())
-}
-
 pub fn to_vec_into<T: ?Sized + Serialize>(out: &mut Vec<u8>, value: &T) -> Result<()> {
-    to_vec_into_with_options(out, value, SerializerOptions::default())
-}
-
-pub fn to_vec_into_with_options<T: ?Sized + Serialize>(
-    out: &mut Vec<u8>,
-    value: &T,
-    opts: SerializerOptions,
-) -> Result<()> {
     let mut ser = Serializer {
         buf: core::mem::take(out),
-        opts,
     };
     ser.clear();
     let result = value.serialize(&mut ser);
@@ -933,23 +887,25 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     fn serialize_unit_variant(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
     ) -> Result<()> {
-        self.write_enum_tag(variant_index, variant);
+        // The variant's name, as a plain string, which is what `serde_json`
+        // writes. The positional index is deliberately not used: it means
+        // nothing without the schema that fixes the ordering, and reordering
+        // the enum would silently change what old data decodes to.
+        self.write_str_value(variant);
         Ok(())
     }
 
     fn serialize_newtype_variant<T: ?Sized + Serialize>(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
         value: &T,
     ) -> Result<()> {
-        // Variants with values require the type-tag extension for round-trip
-        self.push(make_extension_header(EXT_TYPE_TAG));
-        self.write_enum_tag(variant_index, variant);
+        self.write_variant_object_prefix(variant);
         value.serialize(self)
     }
 
@@ -972,13 +928,12 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     fn serialize_tuple_variant(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
-        // Emit type-tag header+index, then the value as a generic array (tuple)
-        self.push(make_extension_header(EXT_TYPE_TAG));
-        self.write_enum_tag(variant_index, variant);
+        // `{ "Variant": [ .. ] }`: the payload is an ordinary array.
+        self.write_variant_object_prefix(variant);
         Ok(VariantSeqSerializer::new(self, len))
     }
 
@@ -993,13 +948,12 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     fn serialize_struct_variant(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStructVariant> {
-        // Emit type tag first
-        self.push(make_extension_header(EXT_TYPE_TAG));
-        self.write_enum_tag(variant_index, variant);
+        // `{ "Variant": { .. } }`: the payload is an ordinary object.
+        self.write_variant_object_prefix(variant);
         Ok(VariantStructSerializer::new(self, len))
     }
 
@@ -1557,15 +1511,12 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
     fn serialize_unit_variant(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
     ) -> Result<()> {
-        // As a generic element: extension type-tag with null value
+        // As a generic element: the variant's name, same as at the top level.
         self.seq.ensure_generic_mode()?;
-        let h = make_extension_header(EXT_TYPE_TAG);
-        self.seq.ser.push(h);
-        self.seq.ser.write_enum_tag(variant_index, variant);
-        self.seq.ser.write_null();
+        self.seq.ser.write_str_value(variant);
         self.seq.count += 1;
         Ok(())
     }
@@ -1622,14 +1573,17 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
     fn serialize_newtype_variant<T: ?Sized + Serialize>(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
         value: &T,
     ) -> Result<()> {
         self.seq.ensure_generic_mode()?;
-        let h = make_extension_header(EXT_TYPE_TAG);
-        self.seq.ser.push(h);
-        self.seq.ser.write_enum_tag(variant_index, variant);
+        // Every element path in this impl must count itself: `SeqSerializer::end`
+        // patches the reserved size of an unknown-length array from `count`, so a
+        // miss here writes a header claiming fewer elements than are on the wire
+        // and the tail decodes as trailing garbage.
+        self.seq.count += 1;
+        self.seq.ser.write_variant_object_prefix(variant);
         // Reborrow underlying serializer as &mut Serializer to satisfy trait
         let ser = &mut *self.seq.ser;
         value.serialize(ser)
@@ -1657,15 +1611,13 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
     fn serialize_tuple_variant(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
         self.seq.ensure_generic_mode()?;
         self.seq.count += 1;
-        let h = make_extension_header(EXT_TYPE_TAG);
-        self.seq.ser.push(h);
-        self.seq.ser.write_enum_tag(variant_index, variant);
+        self.seq.ser.write_variant_object_prefix(variant);
         Ok(VariantSeqSerializer::new(self.seq.ser, len))
     }
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap> {
@@ -1681,16 +1633,22 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
     fn serialize_struct_variant(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStructVariant> {
         self.seq.ensure_generic_mode()?;
         self.seq.count += 1;
-        let h = make_extension_header(EXT_TYPE_TAG);
-        self.seq.ser.push(h);
-        self.seq.ser.write_enum_tag(variant_index, variant);
+        self.seq.ser.write_variant_object_prefix(variant);
         Ok(VariantStructSerializer::new(self.seq.ser, len))
+    }
+
+    /// Must match the top-level serializer (`false`). Serde's default is `true`,
+    /// so leaving it out made a sequence element encode differently from the same
+    /// value at the top level: a `Vec<Ipv4Addr>` wrote the string `"127.0.0.1"`
+    /// where the streaming writer wrote the four octets.
+    fn is_human_readable(&self) -> bool {
+        false
     }
 
     // helper impls
@@ -2531,6 +2489,17 @@ impl<'a> ser::SerializeStruct for StructSerializer<'a> {
         write_size(key.len() as u64, &mut self.map.ser.buf);
         self.map.ser.extend_from_slice(key.as_bytes());
         value.serialize(&mut *self.map.ser)
+    }
+
+    /// The object header was written up front from `len`, and there is no size
+    /// patch to revise, so a skipped field would leave the count one higher than
+    /// the fields on the wire and the document would fail to parse. Refuse
+    /// instead of emitting something a reader cannot decode. Serde's derive never
+    /// calls this; a hand-written `Serialize` can.
+    fn skip_field(&mut self, _key: &'static str) -> Result<()> {
+        Err(Error::Unsupported(
+            "skip_field: a BEVE object header commits to its field count, so a field cannot be skipped after it is written",
+        ))
     }
     fn end(self) -> Result<()> {
         Ok(())

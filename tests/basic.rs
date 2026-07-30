@@ -670,24 +670,21 @@ fn serializer_buffer_can_be_reused() {
 }
 
 #[test]
-fn to_vec_into_with_options_respects_enum_encoding() {
+fn to_vec_into_reuses_the_callers_allocation() {
     #[derive(Serialize)]
     enum E {
         Unit,
     }
-
-    let opts = beve::SerializerOptions {
-        enum_encoding: beve::EnumEncoding::String,
-    };
 
     let mut out = Vec::with_capacity(64);
     out.extend_from_slice(&[0xaa; 12]);
     let ptr_before = out.as_ptr();
     let cap_before = out.capacity();
 
-    beve::to_vec_into_with_options(&mut out, &E::Unit, opts).unwrap();
-    assert_eq!(out, beve::to_vec_with_options(&E::Unit, opts).unwrap());
-    assert_ne!(out, beve::to_vec(&E::Unit).unwrap());
+    // The prior contents are discarded and the result matches `to_vec`, while
+    // the buffer itself is neither reallocated nor moved.
+    beve::to_vec_into(&mut out, &E::Unit).unwrap();
+    assert_eq!(out, beve::to_vec(&E::Unit).unwrap());
     assert_eq!(out.as_ptr(), ptr_before);
     assert_eq!(out.capacity(), cap_before);
 }
@@ -975,17 +972,13 @@ fn zero_copy_enum_string_encoding() {
         Error(&'a str),
     }
 
-    let opts = beve::SerializerOptions {
-        enum_encoding: beve::EnumEncoding::String,
-    };
-
     // Unit variant
-    let bytes = beve::to_vec_with_options(&Status::Active, opts).unwrap();
+    let bytes = beve::to_vec(&Status::Active).unwrap();
     let back: Status = beve::from_slice(&bytes).unwrap();
     assert_eq!(back, Status::Active);
 
     // Newtype variant with borrowed str
-    let bytes = beve::to_vec_with_options(&Status::Error("something broke"), opts).unwrap();
+    let bytes = beve::to_vec(&Status::Error("something broke")).unwrap();
     let back: Status = beve::from_slice(&bytes).unwrap();
     assert_eq!(back, Status::Error("something broke"));
 }

@@ -171,9 +171,24 @@ fn rust_to_glaze_roundtrip_cases() {
     rust_to_glaze_ok!("vec_u32", sample_vec_u32());
     rust_to_glaze_ok!("vec_bool", sample_vec_bool());
     rust_to_glaze_ok!("vec_string", sample_vec_string());
+    rust_to_glaze_ok!("nested", sample_nested());
+}
+
+/// The cases carrying a variant, which need a Glaze built with BEVE Version 2
+/// support (`stephenberry/glaze#2707`).
+///
+/// This crate writes Version 2, where a variant is an ordinary value rather
+/// than the deprecated type tag extension, and a pre-v2 Glaze rejects that on
+/// read. The reverse direction is unaffected and stays in
+/// `glaze_to_rust_roundtrip_cases`: this crate still decodes what a Version 1
+/// Glaze writes. Set `GLAZE_INTEROP_V2=1` once the peer binary is a v2 Glaze.
+#[test]
+fn rust_to_glaze_variant_cases_need_a_v2_glaze() {
+    if std::env::var("GLAZE_INTEROP_V2").is_err() {
+        return;
+    }
     rust_to_glaze_ok!("color", sample_color());
     rust_to_glaze_ok!("basic", sample_basic());
-    rust_to_glaze_ok!("nested", sample_nested());
 }
 
 #[test]

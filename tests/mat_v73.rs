@@ -361,6 +361,138 @@ fn mat_v73_null_defaults_to_empty_struct_array() {
 }
 
 #[test]
+fn mat_v73_null_under_omit_policy_drops_the_field() {
+    let path = temp_path("null-omit");
+    let value = Object::from_iter([
+        (Key::from("answer"), Value::from(7u32)),
+        (Key::from("missing"), Value::Null),
+    ]);
+    let bytes = beve::to_vec(&Value::Object(value)).unwrap();
+    let options = MatV73Options {
+        null_policy: NullPolicy::Omit,
+        ..Default::default()
+    };
+    beve::beve_slice_to_mat_v73_file(
+        &bytes,
+        &path,
+        RootBinding::NamedVariable("payload"),
+        &options,
+    )
+    .unwrap();
+
+    let file = File::open(&path).unwrap();
+    let group = file.group("payload").unwrap();
+    // The struct's field list is taken from what the builder actually
+    // received, so skipping the write is what drops the field.
+    let fields: Vec<String> = match &group.attrs().unwrap()["MATLAB_fields"] {
+        AttrValue::StringArray(arr) => arr.clone(),
+        AttrValue::AsciiStringArray(arr) => arr.clone(),
+        // A one-element `MATLAB_fields` reads back as a scalar, not a
+        // one-element array.
+        AttrValue::String(s) => vec![s.clone()],
+        AttrValue::AsciiString(s) => vec![s.clone()],
+        other => panic!("expected a string attribute for MATLAB_fields, got {other:?}"),
+    };
+    assert_eq!(fields, vec!["answer"]);
+
+    std::fs::remove_file(path).unwrap();
+}
+
+/// A cell array's element count is fixed by its dims, so `Omit` has nothing to
+/// omit at an element: the slot is reserved whether or not anything is written
+/// into it. Writing nothing left the element pointing at an object that was
+/// never created, which MATLAB cannot dereference.
+#[test]
+fn mat_v73_null_under_omit_policy_still_fills_a_cell_element() {
+    let path = temp_path("null-omit-cell");
+    let value = Value::Array(vec![Value::from(1u32), Value::Null, Value::from(2u32)]);
+    let bytes = beve::to_vec(&value).unwrap();
+    let options = MatV73Options {
+        null_policy: NullPolicy::Omit,
+        ..Default::default()
+    };
+    beve::beve_slice_to_mat_v73_file(&bytes, &path, RootBinding::NamedVariable("items"), &options)
+        .unwrap();
+
+    let file = File::open(&path).unwrap();
+    let ds = file.dataset("items").unwrap();
+    assert_eq!(ds.shape().unwrap(), vec![1, 3]);
+    assert_eq!(
+        read_attr_string(&ds.attrs().unwrap(), "MATLAB_class"),
+        "cell"
+    );
+
+    let refs = file.group("#refs#").unwrap();
+    // Every element reference must resolve. The three elements take the first
+    // three slots, in order, and none of them may be absent.
+    for (i, name) in [
+        "ref_0000000000000000",
+        "ref_0000000000000001",
+        "ref_0000000000000002",
+    ]
+    .iter()
+    .enumerate()
+    {
+        refs.dataset(name).unwrap_or_else(|e| {
+            panic!("cell element {i} references a missing object at {name}: {e:?}")
+        });
+    }
+
+    // The null element carries the empty-struct-array marker, which is what an
+    // unrepresentable "absent" lowers to.
+    let middle = refs.dataset("ref_0000000000000001").unwrap();
+    let middle_attrs = middle.attrs().unwrap();
+    assert_eq!(read_attr_string(&middle_attrs, "MATLAB_class"), "struct");
+    assert_eq!(read_attr_u64(&middle_attrs, "MATLAB_empty"), 1);
+
+    // The neighbours are untouched.
+    assert_eq!(
+        refs.dataset("ref_0000000000000000")
+            .unwrap()
+            .read_u32()
+            .unwrap(),
+        vec![1]
+    );
+    assert_eq!(
+        refs.dataset("ref_0000000000000002")
+            .unwrap()
+            .read_u32()
+            .unwrap(),
+        vec![2]
+    );
+
+    std::fs::remove_file(path).unwrap();
+}
+
+/// A null at the root under `Omit` writes a valid file that binds no variable,
+/// which is the semantics hdf5-pure 0.30 settled on for its own root: the policy
+/// says to drop the slot, and there is no MATLAB value for "no workspace at all"
+/// to write instead. `NullPolicy::Error` is the policy that reports it.
+#[test]
+fn mat_v73_root_null_under_omit_policy_writes_a_variable_free_file() {
+    let path = temp_path("root-null-omit");
+    let bytes = beve::to_vec(&Value::Null).unwrap();
+    let options = MatV73Options {
+        null_policy: NullPolicy::Omit,
+        ..Default::default()
+    };
+    beve::beve_slice_to_mat_v73_file(
+        &bytes,
+        &path,
+        RootBinding::NamedVariable("nothing"),
+        &options,
+    )
+    .unwrap();
+
+    let file = File::open(&path).unwrap();
+    let root = file.root();
+    assert!(root.datasets().unwrap().is_empty());
+    assert!(root.groups().unwrap().is_empty());
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn mat_v73_row_major_matrix_reorders_to_column_major() {
     let path = temp_path("matrix");
     let matrix = beve::MatrixOwned {
@@ -1164,4 +1296,106 @@ fn mat_v73_oversized_complex_length_errors_instead_of_allocating() {
         );
         assert!(!path.exists(), "{label}: no file should be produced");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Streaming output
+// ---------------------------------------------------------------------------
+
+/// Content exercising the parts of the writer whose addresses are planned
+/// before anything is emitted: complex arrays, nested groups, and strings
+/// (which pull in the MCOS subsystem and the `#refs#` group).
+fn streaming_fixture() -> Vec<u8> {
+    #[derive(serde::Serialize)]
+    struct Inner {
+        label: String,
+        iq: Vec<Complex<i16>>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct Root {
+        nested: Inner,
+        samples: Vec<f64>,
+        note: String,
+    }
+
+    beve::to_vec(&Root {
+        nested: Inner {
+            label: "channel".into(),
+            iq: vec![
+                Complex { re: 1i16, im: -1 },
+                Complex { re: 2, im: -2 },
+                Complex { re: 3, im: -3 },
+            ],
+        },
+        samples: (0..64).map(|i| i as f64).collect(),
+        note: "hello".into(),
+    })
+    .unwrap()
+}
+
+#[test]
+fn streamed_writer_matches_buffered_bytes() {
+    let bytes = streaming_fixture();
+    let options = MatV73Options::default();
+
+    let buffered =
+        beve::beve_slice_to_mat_v73_bytes(&bytes, RootBinding::NamedVariable("cap"), &options)
+            .unwrap();
+
+    let mut streamed: Vec<u8> = Vec::new();
+    beve::beve_slice_to_mat_v73_writer(
+        &bytes,
+        &mut streamed,
+        RootBinding::NamedVariable("cap"),
+        &options,
+    )
+    .unwrap();
+
+    assert_eq!(
+        buffered, streamed,
+        "the streamed writer must produce the same file as the buffered one"
+    );
+    assert_eq!(&streamed[..6], b"MATLAB", "userblock leads the file");
+}
+
+#[test]
+fn streamed_file_matches_buffered_bytes_and_opens() {
+    let bytes = streaming_fixture();
+    let options = MatV73Options::default();
+    let buffered =
+        beve::beve_slice_to_mat_v73_bytes(&bytes, RootBinding::NamedVariable("cap"), &options)
+            .unwrap();
+
+    let path = temp_path("streamed-file");
+    beve::beve_slice_to_mat_v73_file(&bytes, &path, RootBinding::NamedVariable("cap"), &options)
+        .unwrap();
+
+    let on_disk = std::fs::read(&path).unwrap();
+    assert_eq!(
+        buffered, on_disk,
+        "streaming to a file must not change the file's bytes"
+    );
+
+    // Opening proves the streamed layout is coherent, not merely equal to a
+    // buffered blob that might itself be wrong.
+    let file = File::open(&path).unwrap();
+    assert!(file.group("/cap").is_ok(), "root variable is reachable");
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn streamed_writer_reports_walk_errors() {
+    // Truncated payload: the walk fails before any exit is reached, so the
+    // streaming entry point must surface it rather than panic.
+    let bytes = vec![0x1E, 0x41, 0x03];
+    let mut sink: Vec<u8> = Vec::new();
+    let err = beve::beve_slice_to_mat_v73_writer(
+        &bytes,
+        &mut sink,
+        RootBinding::NamedVariable("broken"),
+        &MatV73Options::default(),
+    )
+    .unwrap_err();
+    assert!(!err.to_string().is_empty());
 }

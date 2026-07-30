@@ -8,6 +8,11 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/beve-org/beve-rs"
 homepage = "https://github.com/beve-org/beve-rs"
 readme = "README.md"
+# `dev/` holds design notes written against the implementation as it stood when
+# each was drafted, so they date as the code moves and are not reference docs for
+# a consumer. `docs/` is the published reference material; keep these out of the
+# `.crate`.
+exclude = ["dev/"]
 
 [features]
 # Lean core by default. The `mat` feature (MATLAB v7.3 / HDF5 file interop) is

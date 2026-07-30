@@ -806,6 +806,93 @@ mod reader_writer_parity {
         assert_eq!(back, units);
     }
 
+    /// Where the two writers agree, and the one documented place they do not.
+    ///
+    /// Sequences agree, because both coalesce a homogeneous one into a typed
+    /// array. Tuples do not, and cannot: serde routes Rust arrays through
+    /// `serialize_tuple`, so a homogeneous `[u8; 4]` is indistinguishable from a
+    /// mixed `(u8, bool)`, and the two want opposite encodings. The buffered
+    /// writer detects and can rewrite its own header when a later element
+    /// disagrees; the streaming writer would be committed the moment it wrote
+    /// one, so it emits generic unconditionally rather than failing on every
+    /// mixed tuple.
+    ///
+    /// Both encodings are valid and decode to the same value through either
+    /// reader, which is what this pins. Anyone tempted to "fix" the divergence
+    /// should read the streaming `serialize_tuple` comment first.
+    #[test]
+    fn the_two_writers_agree_except_on_tuples_where_they_provably_cannot() {
+        macro_rules! bytes_both_ways {
+            ($value:expr) => {{
+                let buffered = beve::to_vec(&$value).unwrap();
+                let mut streamed = Vec::new();
+                beve::to_writer_streaming(&mut streamed, &$value).unwrap();
+                // Whichever they produce must be a well-formed document.
+                for (which, b) in [("buffered", &buffered), ("streaming", &streamed)] {
+                    beve::validate_slice(b).unwrap_or_else(|e| {
+                        panic!(
+                            "{which} produced a malformed document for {}: {e:?}",
+                            stringify!($value)
+                        )
+                    });
+                }
+                (buffered, streamed)
+            }};
+        }
+        macro_rules! agree {
+            ($value:expr) => {{
+                let (buffered, streamed) = bytes_both_ways!($value);
+                assert_eq!(
+                    buffered,
+                    streamed,
+                    "writers must agree for {}: {buffered:02x?} vs {streamed:02x?}",
+                    stringify!($value)
+                );
+            }};
+        }
+        /// Asserts the divergence exists AND that both forms decode to the same
+        /// value through both readers, which is the property that makes it benign.
+        macro_rules! differ_but_round_trip {
+            ($value:expr, $ty:ty) => {{
+                let (buffered, streamed) = bytes_both_ways!($value);
+                assert_ne!(
+                    buffered,
+                    streamed,
+                    "expected the documented tuple divergence for {}",
+                    stringify!($value)
+                );
+                for (which, b) in [("buffered", &buffered), ("streaming", &streamed)] {
+                    let via_slice: $ty = beve::from_slice(b)
+                        .unwrap_or_else(|e| panic!("{which} bytes failed from_slice: {e:?}"));
+                    let via_reader: $ty = beve::from_reader_streaming(&b[..])
+                        .unwrap_or_else(|e| panic!("{which} bytes failed streaming read: {e:?}"));
+                    assert_eq!(via_slice, $value, "{which} bytes, buffered reader");
+                    assert_eq!(via_reader, $value, "{which} bytes, streaming reader");
+                }
+            }};
+        }
+
+        // Sequences agree, homogeneous or not.
+        agree!(vec![1u8, 2, 3]);
+        agree!(vec![1.5f64, 2.5]);
+        agree!(vec!["a".to_string(), "b".to_string()]);
+        agree!(Vec::<u8>::new());
+        // A mixed tuple agrees too: the buffered writer also lands on generic.
+        agree!((1u8, true));
+        agree!((1u8, "two".to_string(), 3.5f64));
+        // Nested sequences agree.
+        agree!(vec![vec![1u8, 2], vec![3, 4]]);
+
+        // Homogeneous arrays and tuples are the documented exception: buffered
+        // coalesces to a typed array, streaming stays generic.
+        differ_but_round_trip!([1u8, 2, 3, 4], [u8; 4]);
+        differ_but_round_trip!([1.5f64, 2.5], [f64; 2]);
+        differ_but_round_trip!((1u8, 2u8), (u8, u8));
+
+        // A mixed-width tuple is not homogeneous, so both stay generic.
+        agree!((1u8, 2u16));
+    }
+
     /// Version 1 fixtures must decode identically in both readers too.
     #[test]
     fn version_1_variants_decode_the_same_in_both_readers() {

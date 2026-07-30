@@ -432,7 +432,12 @@ fn read_large_recording() -> beve::Result<Recording> {
 }
 ```
 
-Both directions process data incrementally with no intermediate allocations beyond the output values themselves. Homogeneous sequences (`Vec<f64>`, `Vec<u32>`, `Vec<bool>`, `Vec<String>`, etc.) are automatically encoded as compact typed arrays, producing byte-for-byte identical output to `to_vec`. The streaming serializer requires all containers to have known lengths (structs, `Vec`, `HashMap`, etc.) — this covers virtually all standard Rust types.
+Both directions process data incrementally with no intermediate allocations beyond the output values themselves. Homogeneous *sequences* (`Vec<f64>`, `Vec<u32>`, `Vec<bool>`, `Vec<String>`, etc.) are automatically encoded as compact typed arrays, producing byte-for-byte identical output to `to_vec`.
+
+Two constraints follow from writing front-to-back, with no ability to revise a header already emitted:
+
+- **Containers must have known lengths** (structs, `Vec`, `HashMap`, etc.), which covers virtually all standard Rust types. A custom `Serialize` that passes `None` for a length is an error here, and `#[serde(flatten)]` is rejected for the same reason.
+- **Tuples and fixed-size arrays encode as generic arrays**, where `to_vec` coalesces a homogeneous one into a typed array. Serde routes Rust arrays through the same hook as tuples, so `[u8; 4]` cannot be told apart from `(u8, bool)`; detecting from the first element would commit this writer to a header it cannot revise, and every mixed tuple would then fail. Both encodings are valid and read back identically through either reader, so this affects bytes and size, not meaning. Use `to_vec`, or a `Vec<T>`, when the compact form matters.
 
 ### Data Delimiters
 When writing multiple values to the same stream, use `beve::write_delimiter` to insert the BEVE data delimiter byte (`0x06`) between entries — analogous to `\n` in NDJSON. `from_slice` and `from_reader_streaming` skip delimiters transparently during deserialization (note: `validate_slice` expects a single value and will reject delimiter-separated streams):

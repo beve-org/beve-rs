@@ -5,6 +5,15 @@
 Implemented (beve side). The remaining repe-side adoption (last checklist item) is
 tracked separately.
 
+> **Historical note, 5.0.0.** The API sketches below predate BEVE Version 2 and
+> are kept as a record of the design, not as documentation. The serializer options
+> they refer to (`SerializerOptions`, `EnumEncoding`, and every `*_with_options`
+> entry point, including `serialized_size_with_options`) were removed in 5.0.0:
+> variant shape is a per-type concern that serde attributes already express, so
+> there is no serializer-global knob to thread through a measuring pass. Read
+> `serialized_size`'s own rustdoc for current behavior. This file is excluded from
+> the published crate.
+
 ## Summary
 
 Add a way to compute the exact number of bytes a value will occupy when encoded

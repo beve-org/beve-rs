@@ -12,7 +12,7 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
   Note one case that changes from valid output to an error: declaring entries and then writing none previously emitted a well-formed empty object, because the no-keys-written fallback writes its own zero-count header and never consulted the declared length. That was the same mistake getting a pass on an accident of the empty-map path, and it corrupts as soon as one entry survives the filter.
 
-- A key with no value following it is also reported. `serialize_key` has already written key bytes, so a missing `serialize_value` leaves half an entry on the wire. This one corrupts unknown-length maps (`serialize_map(None)`) too, where the count is patched afterwards from the number of *values* and so cannot account for the orphan.
+- A key with no value following it is also reported. `serialize_key` has already written key bytes, so a missing `serialize_value` leaves half an entry on the wire. This one corrupts unknown-length maps (`serialize_map(None)`) too, where the count is patched afterwards from the number of *values* and so cannot account for the orphan (#36).
 
 ## 5.0.1 - 2026-07-30
 

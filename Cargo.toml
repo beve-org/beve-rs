@@ -1,6 +1,6 @@
 [package]
 name = "beve"
-version = "5.0.0"
+version = "5.0.1"
 edition = "2024"
 rust-version = "1.89"
 description = "Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specification with serde support"

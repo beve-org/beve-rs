@@ -2465,6 +2465,9 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
 
 pub struct StructSerializer<'a> {
     map: MapSerializer<'a>,
+    /// The count already written into the object header, kept so `end` can
+    /// confirm the body matched it. See `check_struct_field_count`.
+    declared: usize,
 }
 
 impl<'a> StructSerializer<'a> {
@@ -2474,7 +2477,7 @@ impl<'a> StructSerializer<'a> {
         map.ser.push(TYPE_OBJECT | (KEY_STRING << 3));
         write_size(len as u64, &mut map.ser.buf);
         map.mode = KeyMode::String;
-        Self { map }
+        Self { map, declared: len }
     }
 }
 
@@ -2488,22 +2491,43 @@ impl<'a> ser::SerializeStruct for StructSerializer<'a> {
     ) -> Result<()> {
         write_size(key.len() as u64, &mut self.map.ser.buf);
         self.map.ser.extend_from_slice(key.as_bytes());
-        value.serialize(&mut *self.map.ser)
-    }
-
-    /// The object header was written up front from `len`, and there is no size
-    /// patch to revise, so a skipped field would leave the count one higher than
-    /// the fields on the wire and the document would fail to parse. Refuse
-    /// instead of emitting something a reader cannot decode. Serde's derive never
-    /// calls this; a hand-written `Serialize` can.
-    fn skip_field(&mut self, _key: &'static str) -> Result<()> {
-        Err(Error::Unsupported(
-            "skip_field: a BEVE object header commits to its field count, so a field cannot be skipped after it is written",
-        ))
-    }
-    fn end(self) -> Result<()> {
+        value.serialize(&mut *self.map.ser)?;
+        self.map.count += 1;
         Ok(())
     }
+
+    /// A no-op, which is what serde's default does and what every other format
+    /// does. The object header commits to a field count, but `serialize_struct`
+    /// was already handed the post-skip count: serde's contract is that `len` is
+    /// "the number of data fields that will be serialized", excluding skipped
+    /// ones, and `serde_derive` honors it by emitting the count as
+    /// `... + if skip_serializing_if(&field) { 0 } else { 1 }` per field. So by
+    /// the time a skip is reported the header on the wire is already correct and
+    /// there is nothing to revise.
+    ///
+    /// A hand-written `Serialize` that declares an unadjusted `len` and then
+    /// skips would desync the count, so `end` verifies the tally rather than
+    /// letting a malformed document reach a reader.
+    fn skip_field(&mut self, _key: &'static str) -> Result<()> {
+        Ok(())
+    }
+    fn end(self) -> Result<()> {
+        check_struct_field_count(self.declared, self.map.count)
+    }
+}
+
+/// Guards the one way a struct body can desync from its header: a hand-written
+/// `Serialize` that passes a `len` disagreeing with the fields it goes on to
+/// emit. Serde's derive cannot trip this. Catching it here turns a document that
+/// silently fails to parse later into an error at the point of the mistake.
+pub(crate) fn check_struct_field_count(declared: usize, written: usize) -> Result<()> {
+    if declared != written {
+        return Err(Error::MessageOwned(format!(
+            "struct declared {declared} field(s) to `serialize_struct` but serialized {written}; \
+             `len` must be the number of fields actually written, excluding skipped ones"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

@@ -5,7 +5,7 @@ Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specificat
 Grab the crate from [crates.io](https://crates.io/crates/beve) and add it to your project with `cargo add beve` or by editing `Cargo.toml`:
 ```toml
 [dependencies]
-beve = "5"
+beve = "6"
 ```
 By default the crate is lean: it depends only on `serde`, `half`, and `simdutf8`, and requires Rust 1.89 or newer. Half-precision floats via `half::f16` are supported alongside the standard numeric types. The MATLAB/HDF5 export path is gated behind the opt-in [`mat` feature](#matlab--mat-export), so the HDF5 dependency stack is never pulled into a default build.
 
@@ -278,7 +278,7 @@ For foreign complex types (e.g. `num_complex::Complex`), annotate the field with
 The `mat` feature is **off by default** (it pulls in `hdf5-pure` and its compression stack, which the core ser/de does not need). Enable it to convert BEVE payloads directly into MATLAB v7.3 MAT files:
 ```toml
 [dependencies]
-beve = { version = "2", features = ["mat"] }
+beve = { version = "6", features = ["mat"] }
 ```
 
 The MAT feature uses a pure-Rust HDF5 writer (`hdf5-pure`) and requires no system libraries. The CLI's `to-mat` command is likewise only present when the binary is built with `--features mat`.

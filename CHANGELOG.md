@@ -1,6 +1,10 @@
 # Changelog
 
-## 5.0.0
+This crate follows [Semantic Versioning](https://semver.org/). Dates are the crates.io publication date.
+
+Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
+
+## 5.0.0 - 2026-07-30
 
 BEVE **Version 2** compliance. Variants are now ordinary values, and the crate writes exactly what `serde_json` writes.
 
@@ -52,3 +56,132 @@ The `mat` feature now requires **hdf5-pure 0.30** (was 0.28), which brings `Null
 
 - `docs/enums.md` is rewritten for Version 2.
 - Interop against a pre-Version-2 Glaze cannot exercise variants; those cases are gated behind `GLAZE_INTEROP_V2=1` pending `stephenberry/glaze#2707`.
+
+## 4.0.0 - 2026-07-28
+
+**Breaking:** the `mat` feature moves to hdf5-pure 0.28 (was 0.21). The crate re-exports that crate's option enums (`Compression`, `InvalidNamePolicy`, `NullPolicy`, ...) and `MatV73Options` has public fields typed by them, so the bump is incompatible even though the conversion API itself is unchanged. If you enable `mat` and also depend on hdf5-pure directly, move your own dependency to 0.28.
+
+**Breaking:** five error strings no longer occur, so code matching on them needs updating: `only floating-point complex supported in MAT conversion at {path}`, the same for `MAT matrix conversion`, `unsupported complex element width at {path}`, `unsupported complex scalar width at {path}`, and `unsupported complex matrix element width at {path}`.
+
+MAT conversion now keys on the element type carried in the BEVE complex header, so an integer complex payload keeps its width instead of being rejected: `i8`–`i64` and `u8`–`u64` become the matching MATLAB integer complex class, `f32`/`f64` are unchanged, `f16`/`bf16` widen to `single` only under `UnsupportedPolicy::LossyNumericWidening`, and `i128`/`u128` are an error because MATLAB has no 128-bit class. Nothing on this path promotes an integer to a float: a file reporting `single` for `int16` samples misstates its own provenance undetectably. Scalars, arrays, and matrix-extension payloads all take the same path. The bulk readers in the MAT codec also bound a wire-supplied length before allocating (#33).
+
+## 3.0.0 - 2026-07-13
+
+**Breaking:** the `mat` feature moves to hdf5-pure 0.21 (was 0.5), incompatible for the same public-re-export reason as 4.0.0, and the declared MSRV moves to **1.89** (was 1.88) because hdf5-pure 0.21 requires it. The conversion API keeps its names and signatures, and a default build is unaffected.
+
+## 2.5.0 - 2026-06-11
+
+`beve::typed::<scalar>` and `beve::complex_array::<scalar>` are `#[serde(with = ...)]` helpers that decode a numeric or complex `Vec<T>` struct field at memcpy speed, the counterpart to the bulk encode the crate already did (~43 GiB/s against ~0.85 GiB/s element-wise). The complex path is bounded on `bytemuck::AnyBitPattern` for soundness, and both stay format-agnostic, so a JSON round-trip still works through the portable element form. MSRV is now declared (`rust-version = "1.88"`), and CI gained a big-endian (s390x) job that exercises the byte-swap branches (#32).
+
+## 2.4.0 - 2026-06-11
+
+- `read_typed_slice_from_reader` and `read_complex_slice_from_reader` are the `Read`-based counterparts of the in-memory bulk readers, decoding a large numeric or complex buffer straight from a stream without first materializing the encoded bytes. The payload is read in capped allocation steps, so a corrupt or hostile length fails gracefully rather than forcing one huge up-front allocation (#30).
+- Per-element integer typed-array decode converts at native width instead of widening every element through a 16-byte buffer and a `u128`/`i128` round-trip. 8- and 16-byte widths keep the previous path, which was already optimal, so their output is byte-identical (#31).
+
+## 2.3.0 - 2026-06-09
+
+`write_aligned_typed_slice_at(out, slice, base_offset)` sizes the padding run for the marker's eventual frame offset rather than its position within `out`, so a body built in a standalone buffer stays borrowable once concatenated behind a fixed prefix. `write_aligned_typed_slice` is now defined in terms of it and is byte-for-byte unchanged (#29).
+
+## 2.2.0 - 2026-06-09
+
+The BEVE spec's aligned typed array wire type (`0x5C`): write, owned read, zero-copy borrow, and offset-aware size, in a new `aligned` module (#28).
+
+## 2.1.0 - 2026-06-09
+
+`to_writer_complex_slice` is the streaming counterpart of `to_vec_complex_slice`, writing the complex header, the SIZE prefix, and then the interleaved payload with a single bulk `write_all` on little-endian targets. `complex_slice_size` gives the O(1) encoded length from the same SIZE codec the writer uses, so it cannot drift. Together they allow zero-body-buffer framing of complex arrays (#27).
+
+## 2.0.0 - 2026-06-08
+
+**Breaking:** `mat` is no longer a default feature. The default build is lean (serde, half, simdutf8) and no longer pulls in hdf5-pure and its compression stack for callers who only use core BEVE ser/de. Migration is one line: `beve = { version = "2", features = ["mat"] }`. Removing a feature from the default set is breaking under Cargo's semver rules, hence the major bump (#26).
+
+## 1.6.0 - 2026-06-08
+
+- `read_typed_slice` is the bulk decode counterpart of `to_vec_typed_slice` for plain numeric arrays, which previously fell back to per-element serde. This completes the typed-slice read/write family (#24).
+- `Complex<f16>` and `Complex<bf16>` work through serde. They had neither a `Serialize` impl nor a deserializer arm for the half-float byte codes, though the bulk path already handled them (#25).
+
+## 1.5.0 - 2026-06-01
+
+`read_complex_slice` decodes a complex array in bulk after validating the extension header, replacing the per-element visitor dispatch that dominated the cost of `from_slice::<Vec<Complex<T>>>` (#23).
+
+## 1.4.0 - 2026-05-30
+
+- `serialized_size` computes the exact byte length `to_writer_streaming` will emit, without producing the bytes, by driving the same encoder through a counting sink — so it cannot drift from what is actually written. This enables single-pass length-prefixed framing over a non-seekable transport: measure the body, write the prefix, stream the body once. It is O(1) for `serialize_bytes` and `TypedSlice<T>` bodies, O(N) for a bare numeric `Vec<T>`, and rejects unknown-length containers exactly as the streaming writer does (#22).
+- `TypedSlice<T>`, `to_writer_typed_slice`, and the closed-form `typed_slice_size` give O(1) encoding and measuring of a contiguous numeric slice: header, SIZE prefix, and one bulk `write_all` on little-endian targets, with a per-element fallback on big-endian (#21).
+- The `field` module is now public, surfacing its JSON Pointer (RFC 6901) reference documentation. Additive: `from_field`, `from_field_slice`, and `skip_value` remain re-exported at the crate root.
+
+## 1.3.0 - 2026-04-30
+
+The `mat` feature moves to hdf5-pure 0.5 (was 0.4).
+
+## 1.2.0 - 2026-04-27
+
+MAT v7.3 conversion is driven through hdf5-pure 0.4's `MatBuilder`, which owns the MATLAB conventions (`MATLAB_class`, empty markers, the lazy `#refs#` group, the `#subsystem#`/MCOS subsystem). `src/mat.rs` is now a thin BEVE wire-format walker rather than a second implementation of that machinery (#19).
+
+## 1.1.0 - 2026-04-09
+
+`DATA_DELIMITER` and `write_delimiter` frame consecutive BEVE values in one stream, the role `\n` plays in NDJSON. The deserializers skip delimiter bytes transparently; `validate_slice` still expects exactly one value with no trailing bytes, so it rejects a delimited stream (#18).
+
+## 1.0.0 - 2026-04-07
+
+**Breaking:** the fixed-width complex helpers `to_vec_complex32`, `to_vec_complex64`, `to_vec_complex32_slice`, and `to_vec_complex64_slice` are replaced by the generic `ext::complex` module, which covers every complex element type across the buffered and streaming paths (#17).
+
+## 0.8.0 - 2026-03-27
+
+- Streaming serialization and deserialization: `to_writer_streaming` and `from_reader_streaming` encode and decode against `Write`/`Read` without holding the whole document (#16).
+- Selective field loading: `from_field` and `from_field_slice` read one field out of a document by JSON Pointer (RFC 6901) instead of decoding all of it, and `skip_value` steps over one encoded value. Adds the `docs/` set covering enums, JSON interop, typed arrays, zero-copy, and this path (#15).
+
+## 0.7.0 - 2026-03-16
+
+`beve-cli`, a command-line converter with `to-json`, `from-json`, and `to-mat` subcommands (#14).
+
+## 0.6.1 - 2026-03-15
+
+Documentation only.
+
+## 0.6.0 - 2026-03-14
+
+- MATLAB `.mat` support is backed by the pure-Rust `hdf5-pure` instead of `hdf5_metno`, so the export path needs no system HDF5 library (#13).
+- Zero-copy strings and typed `u8` arrays on the read path (#12).
+
+## 0.5.0 - 2026-03-13
+
+MATLAB v7.3 `.mat` conversion from BEVE, with the output cross-checked against matio (#11).
+
+## 0.4.3 - 2026-03-05
+
+Fixed: an empty hash map did not round-trip (#10).
+
+## 0.4.2 - 2026-02-27
+
+- Matrix support gains owned and raw forms alongside the borrowed one (`MatrixOwned<T>`, `RawMatrix`, `DecodedMatrix<T>`) and `decode_matrix_slice`, whose `MatrixDecodeMode` chooses whether the payload is decoded or left raw (#9).
+- `to_vec_into` encodes into a caller-supplied `Vec`, so a repeated encode can reuse one buffer (#9).
+
+## 0.4.1 - 2026-02-24
+
+`validate_slice` and `validate_reader` check that a document is well formed without decoding it into a type (#8).
+
+## 0.4.0 - 2025-12-02
+
+- `beve::Value` and `from_value` for dynamic documents, where the type is not known at compile time (#5).
+- 128-bit numbers move behind a boxed `BigInt` (and `BigIntKey` for object keys), so the common `Number` and `Key` cases no longer pay for the width of the largest variant (#6).
+- Value conversion failures report through a `ValueError` enum rather than a string (#7).
+
+## 0.3.0 - 2025-10-16
+
+Complex number support and boolean typed arrays (#4).
+
+## 0.2.0 - 2025-10-16
+
+JSON round-trip conversion (#3).
+
+## 0.1.2 - 2025-09-24
+
+Crate metadata and documentation links.
+
+## 0.1.1 - 2025-09-24
+
+Fixed the repository link in the crate metadata.
+
+## 0.1.0 - 2025-09-24
+
+First release: BEVE serialization and deserialization with serde, half-precision float support, property tests, and cross-language interop tests against Glaze.

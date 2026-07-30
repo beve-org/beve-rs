@@ -4,6 +4,16 @@ This crate follows [Semantic Versioning](https://semver.org/). Dates are the cra
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Fixed
+
+- **`#[serde(skip_serializing_if = ...)]` works again.** 5.0.0 made `SerializeStruct::skip_field` return `Unsupported` on both struct serializers, so serializing a struct failed whenever such a field was actually skipped. (A value whose predicate was false still encoded, which is what let the regression through: the attribute alone is harmless, only the skip fails.) The premise was wrong: serde's contract is that the `len` given to `serialize_struct` is "the number of data fields that will be serialized", excluding skipped ones, and `serde_derive` honors it, emitting that count as `... + if skip_serializing_if(&field) { 0 } else { 1 }` per field. The object header is therefore already correct by the time a skip is reported, so `skip_field` is a no-op, as it is in every other format. (The 5.0.0 note claiming serde's derive never calls `skip_field` was also wrong; it does.)
+
+  Struct *variants* were never affected, because neither variant serializer overrode `skip_field`. 5.0.0 accepted a skipped field inside `Enum::Variant { .. }` while rejecting the identical field on a plain struct.
+
+- A struct whose body does not match the `len` it declared is now caught at `end`, with a message naming both counts, instead of writing an object header that promises a field the reader never finds. This is the corruption 5.0.0 was reaching for; verifying the tally catches over- and under-declaring alike without breaking the derive, and only a hand-written `Serialize` can trip it. Maps are not covered by this guard: a hand-written `serialize_map(Some(n))` that writes a different number of entries still produces a document `validate_slice` rejects (#35).
+
 ## 5.0.0 - 2026-07-30
 
 BEVE **Version 2** compliance. Variants are now ordinary values, and the crate writes exactly what `serde_json` writes.

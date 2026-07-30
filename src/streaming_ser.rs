@@ -11,7 +11,7 @@ use serde::ser::{self, Serialize};
 use crate::error::{Error, Result};
 use crate::ext::{NT_COMPLEX, NT_RAW_VALUE, typed_array_tag};
 use crate::header::*;
-use crate::ser::{BytesExtractor, TypedArrayWriteSink, U16Extractor};
+use crate::ser::{BytesExtractor, TypedArrayWriteSink, U16Extractor, check_struct_field_count};
 use crate::size::encode_size_to_array;
 
 // ---------------------------------------------------------------------------
@@ -426,7 +426,7 @@ impl<'a, W: Write> ser::Serializer for &'a mut StreamingSerializer<W> {
     fn serialize_struct(self, _name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
         self.write_byte(TYPE_OBJECT | (KEY_STRING << 3))?;
         self.write_size(len as u64)?;
-        Ok(StreamingStructSerializer { ser: self })
+        Ok(StreamingStructSerializer::new(self, len))
     }
 
     fn serialize_struct_variant(
@@ -440,7 +440,7 @@ impl<'a, W: Write> ser::Serializer for &'a mut StreamingSerializer<W> {
         self.write_byte(TYPE_OBJECT | (KEY_STRING << 3))?;
         self.write_size(len as u64)?;
         Ok(StreamingVariantStructSerializer {
-            inner: StreamingStructSerializer { ser: self },
+            inner: StreamingStructSerializer::new(self, len),
         })
     }
 
@@ -942,7 +942,7 @@ impl<'a, 'b, W: Write> ser::Serializer for &'b mut StreamingElemSer<'a, 'b, W> {
         self.seq.ensure_generic()?;
         self.seq.ser.write_byte(TYPE_OBJECT | (KEY_STRING << 3))?;
         self.seq.ser.write_size(len as u64)?;
-        Ok(StreamingStructSerializer { ser: self.seq.ser })
+        Ok(StreamingStructSerializer::new(self.seq.ser, len))
     }
 
     fn serialize_struct_variant(
@@ -957,7 +957,7 @@ impl<'a, 'b, W: Write> ser::Serializer for &'b mut StreamingElemSer<'a, 'b, W> {
         self.seq.ser.write_byte(TYPE_OBJECT | (KEY_STRING << 3))?;
         self.seq.ser.write_size(len as u64)?;
         Ok(StreamingVariantStructSerializer {
-            inner: StreamingStructSerializer { ser: self.seq.ser },
+            inner: StreamingStructSerializer::new(self.seq.ser, len),
         })
     }
 
@@ -1298,6 +1298,20 @@ impl<'a, W: Write> ser::SerializeMap for StreamingMapSerializer<'a, W> {
 
 pub struct StreamingStructSerializer<'a, W: Write> {
     ser: &'a mut StreamingSerializer<W>,
+    /// The count already written into the object header, kept so `end` can
+    /// confirm the body matched it. See `check_struct_field_count`.
+    declared: usize,
+    written: usize,
+}
+
+impl<'a, W: Write> StreamingStructSerializer<'a, W> {
+    fn new(ser: &'a mut StreamingSerializer<W>, declared: usize) -> Self {
+        Self {
+            ser,
+            declared,
+            written: 0,
+        }
+    }
 }
 
 impl<'a, W: Write> ser::SerializeStruct for StreamingStructSerializer<'a, W> {
@@ -1311,22 +1325,22 @@ impl<'a, W: Write> ser::SerializeStruct for StreamingStructSerializer<'a, W> {
     ) -> Result<()> {
         self.ser.write_size(key.len() as u64)?;
         self.ser.write_all(key.as_bytes())?;
-        value.serialize(&mut *self.ser)
+        value.serialize(&mut *self.ser)?;
+        self.written += 1;
+        Ok(())
     }
 
-    /// The object header was written up front from `len`, and there is no size
-    /// patch to revise, so a skipped field would leave the count one higher than
-    /// the fields on the wire and the document would fail to parse. Refuse
-    /// instead of emitting something a reader cannot decode. Serde's derive never
-    /// calls this; a hand-written `Serialize` can.
+    /// A no-op, for the reasons spelled out on the in-memory serializer's
+    /// `skip_field`: `serialize_struct` was handed the post-skip field count, so
+    /// the header already on the wire is correct and nothing needs revising.
+    /// Streaming makes revising impossible anyway, which is exactly why `end`
+    /// verifies the tally instead.
     fn skip_field(&mut self, _key: &'static str) -> Result<()> {
-        Err(Error::Unsupported(
-            "skip_field: a BEVE object header commits to its field count, so a field cannot be skipped after it is written",
-        ))
+        Ok(())
     }
 
     fn end(self) -> Result<()> {
-        Ok(())
+        check_struct_field_count(self.declared, self.written)
     }
 }
 

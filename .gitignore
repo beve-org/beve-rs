@@ -1,3 +1,7 @@
 .DS_Store
 /reference
 /target
+# Scratch space for release notes, one-off repro binaries, captured payloads:
+# in-repo so that work stays next to the code it is about, untracked so none of
+# it reaches the `.crate` or a commit.
+/tmp

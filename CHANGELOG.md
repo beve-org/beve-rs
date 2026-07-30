@@ -44,6 +44,9 @@ The `mat` feature now requires **hdf5-pure 0.30** (was 0.28), which brings `Null
 - An unknown-length sequence whose first element was a newtype variant wrote an array header counting one element too few, so the tail decoded as trailing data and `from_slice` silently returned a short sequence.
 - A unit-variant target reading a variant that carries a payload behaved differently in the two readers: the streaming reader substituted the discarded payload for the next element, while the buffered reader guessed from how many bytes were left in the whole document and could consume a sibling. Both now discard exactly one value and report a malformed one instead of swallowing the error. This is not only schema drift: version 4 wrote a unit variant leading a sequence as the type-tag extension plus an explicit `null`, so a 4.x-written `Vec<SomeUnitEnum>` depends on that value being consumed.
 - A truncated single-key variant object, whose header promises a value that is not present, is now rejected rather than decoding as a unit variant.
+- `is_human_readable` was missing on the buffered reader and the sequence-element serializer, both of which then defaulted to `true` where every other impl returns `false`. `from_slice::<Ipv4Addr>` could not read this crate's own output, and a `Vec<Ipv4Addr>` encoded as strings through one writer and as octets through the other.
+- `SerializeStruct::skip_field` wrote a document whose object header counted a field that was not on the wire, so `validate_slice` reported EOF. Both struct serializers now refuse it. Serde's derive never calls it; a hand-written `Serialize` can.
+- A null cell-array element under `NullPolicy::Omit` left the element referencing an object that was never written, which MATLAB could not dereference. A cell array's element count is fixed by its dims, so `Omit` has nothing to omit there; such an element now takes the empty-struct-array marker.
 
 ### Notes
 

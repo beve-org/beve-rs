@@ -464,6 +464,34 @@ fn mat_v73_null_under_omit_policy_still_fills_a_cell_element() {
     std::fs::remove_file(path).unwrap();
 }
 
+/// A null at the root under `Omit` writes a valid file that binds no variable,
+/// which is the semantics hdf5-pure 0.30 settled on for its own root: the policy
+/// says to drop the slot, and there is no MATLAB value for "no workspace at all"
+/// to write instead. `NullPolicy::Error` is the policy that reports it.
+#[test]
+fn mat_v73_root_null_under_omit_policy_writes_a_variable_free_file() {
+    let path = temp_path("root-null-omit");
+    let bytes = beve::to_vec(&Value::Null).unwrap();
+    let options = MatV73Options {
+        null_policy: NullPolicy::Omit,
+        ..Default::default()
+    };
+    beve::beve_slice_to_mat_v73_file(
+        &bytes,
+        &path,
+        RootBinding::NamedVariable("nothing"),
+        &options,
+    )
+    .unwrap();
+
+    let file = File::open(&path).unwrap();
+    let root = file.root();
+    assert!(root.datasets().unwrap().is_empty());
+    assert!(root.groups().unwrap().is_empty());
+
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn mat_v73_row_major_matrix_reorders_to_column_major() {
     let path = temp_path("matrix");

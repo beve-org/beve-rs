@@ -68,9 +68,3 @@ harness = false
 [[bench]]
 name = "serde_with_decode"
 harness = false
-
-# TEMPORARY: `NullPolicy::Omit`, which `mat::handle_null` matches on, is not in
-# a published hdf5-pure yet. Remove this section once it is released, and raise
-# the `hdf5-pure` requirement above to that version.
-[patch.crates-io]
-hdf5-pure = { path = "../hdf5-pure" }

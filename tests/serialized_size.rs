@@ -1,5 +1,4 @@
-//! Exactness tests for [`beve::serialized_size`] and
-//! [`beve::serialized_size`].
+//! Exactness tests for [`beve::serialized_size`].
 //!
 //! The central invariant is that the measured length always equals the number of
 //! bytes [`beve::to_writer_streaming`] actually writes for the same value and

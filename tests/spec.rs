@@ -821,4 +821,48 @@ mod reader_writer_parity {
         );
         assert_readers_agree(&[0x51, 0x01, 0x00, 0x00, 0x00], UnitEnum::Beta);
     }
+
+    /// Byte-for-byte output captured from beve 4.0.0, covering the three places
+    /// it put a unit variant. Each is a distinct wire form, and the middle one
+    /// regressed once already:
+    ///
+    /// - top level and struct field: a bare positional index, no extension
+    /// - leading a sequence: the type-tag extension, the index, and an explicit
+    ///   `null` payload (`write_null` after `write_enum_tag`)
+    ///
+    /// That third form is why a unit-variant target must consume a value after
+    /// the extension. Reading the tag and stopping leaves the `null` to be taken
+    /// as the next element, which made a 4.x-written `Vec<SomeUnitEnum>`
+    /// undecodable.
+    #[test]
+    fn unit_variants_written_by_version_4_still_decode() {
+        // `UnitEnum::Beta` at the root.
+        assert_readers_agree(&[0x51, 0x01, 0x00, 0x00, 0x00], UnitEnum::Beta);
+
+        // `vec![UnitEnum::Beta, UnitEnum::Alpha]`: the first element carries the
+        // extension plus a null, the second is a bare index.
+        assert_readers_agree(
+            &[
+                0x05, 0x08, 0x0e, 0x51, 0x01, 0x00, 0x00, 0x00, 0x00, 0x51, 0x00, 0x00, 0x00, 0x00,
+            ],
+            vec![UnitEnum::Beta, UnitEnum::Alpha],
+        );
+
+        // A unit variant as a struct field, with a sibling field after it. The
+        // bare index must not swallow the next key.
+        #[derive(Debug, PartialEq, Deserialize)]
+        struct V4Outer {
+            a: UnitEnum,
+            b: u8,
+        }
+        assert_readers_agree(
+            &[
+                0x03, 0x08, 0x04, b'a', 0x51, 0x01, 0x00, 0x00, 0x00, 0x04, b'b', 0x11, 0x05,
+            ],
+            V4Outer {
+                a: UnitEnum::Beta,
+                b: 5,
+            },
+        );
+    }
 }

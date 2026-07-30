@@ -1304,6 +1304,17 @@ impl<'a, W: Write> ser::SerializeStruct for StreamingStructSerializer<'a, W> {
         value.serialize(&mut *self.ser)
     }
 
+    /// The object header was written up front from `len`, and there is no size
+    /// patch to revise, so a skipped field would leave the count one higher than
+    /// the fields on the wire and the document would fail to parse. Refuse
+    /// instead of emitting something a reader cannot decode. Serde's derive never
+    /// calls this; a hand-written `Serialize` can.
+    fn skip_field(&mut self, _key: &'static str) -> Result<()> {
+        Err(Error::Unsupported(
+            "skip_field: a BEVE object header commits to its field count, so a field cannot be skipped after it is written",
+        ))
+    }
+
     fn end(self) -> Result<()> {
         Ok(())
     }

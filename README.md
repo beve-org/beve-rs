@@ -434,7 +434,6 @@ fn read_large_recording() -> beve::Result<Recording> {
 
 Both directions process data incrementally with no intermediate allocations beyond the output values themselves. Homogeneous sequences (`Vec<f64>`, `Vec<u32>`, `Vec<bool>`, `Vec<String>`, etc.) are automatically encoded as compact typed arrays, producing byte-for-byte identical output to `to_vec`. The streaming serializer requires all containers to have known lengths (structs, `Vec`, `HashMap`, etc.) — this covers virtually all standard Rust types.
 
-
 ### Data Delimiters
 When writing multiple values to the same stream, use `beve::write_delimiter` to insert the BEVE data delimiter byte (`0x06`) between entries — analogous to `\n` in NDJSON. `from_slice` and `from_reader_streaming` skip delimiters transparently during deserialization (note: `validate_slice` expects a single value and will reject delimiter-separated streams):
 ```rust

@@ -31,7 +31,7 @@ Variant shape is a per-type concern, which serde already models with attributes;
 | `Serializer::with_options`, `Serializer::with_capacity_and_options` | `Serializer::new`, `Serializer::with_capacity` |
 | `StreamingSerializer::with_options` | `StreamingSerializer::new` |
 
-`EnumEncoding::String` was the closest thing to a default, and it is now simply the behavior. Callers who passed options only for that can drop the argument. For any other shape, annotate the type: `#[serde(tag = "...")]` for internally tagged (the shape a Glaze `std::variant` with `tag`/`ids` produces), `#[serde(tag, content)]` for adjacently tagged, `#[serde(untagged)]` for a bare value.
+`EnumEncoding::String` was the closest thing to a default, and it is now simply the behavior. Callers who passed options only for that can drop the argument. For any other shape, annotate the type: `#[serde(tag = "...")]` for internally tagged (the shape a Glaze `std::variant` with `tag`/`ids` produces), `#[serde(tag = "...", content = "...")]` for adjacently tagged, `#[serde(untagged)]` for a bare value.
 
 ### Added: streaming MAT v7.3 conversion
 
@@ -42,7 +42,7 @@ The `mat` feature now requires **hdf5-pure 0.30** (was 0.28), which brings `Null
 ### Fixed
 
 - An unknown-length sequence whose first element was a newtype variant wrote an array header counting one element too few, so the tail decoded as trailing data and `from_slice` silently returned a short sequence.
-- A unit-variant target reading a variant that carries a payload (ordinary schema drift) behaved differently in the two readers: the streaming reader substituted the discarded payload for the next element, while the buffered reader guessed from how many bytes were left in the document and could consume a sibling. Both now discard exactly the value the header declares, and report a malformed one instead of swallowing the error.
+- A unit-variant target reading a variant that carries a payload behaved differently in the two readers: the streaming reader substituted the discarded payload for the next element, while the buffered reader guessed from how many bytes were left in the whole document and could consume a sibling. Both now discard exactly one value and report a malformed one instead of swallowing the error. This is not only schema drift: version 4 wrote a unit variant leading a sequence as the type-tag extension plus an explicit `null`, so a 4.x-written `Vec<SomeUnitEnum>` depends on that value being consumed.
 - A truncated single-key variant object, whose header promises a value that is not present, is now rejected rather than decoding as a unit variant.
 
 ### Notes

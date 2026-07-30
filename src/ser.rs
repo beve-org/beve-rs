@@ -1643,6 +1643,14 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
         Ok(VariantStructSerializer::new(self.seq.ser, len))
     }
 
+    /// Must match the top-level serializer (`false`). Serde's default is `true`,
+    /// so leaving it out made a sequence element encode differently from the same
+    /// value at the top level: a `Vec<Ipv4Addr>` wrote the string `"127.0.0.1"`
+    /// where the streaming writer wrote the four octets.
+    fn is_human_readable(&self) -> bool {
+        false
+    }
+
     // helper impls
 }
 
@@ -2481,6 +2489,17 @@ impl<'a> ser::SerializeStruct for StructSerializer<'a> {
         write_size(key.len() as u64, &mut self.map.ser.buf);
         self.map.ser.extend_from_slice(key.as_bytes());
         value.serialize(&mut *self.map.ser)
+    }
+
+    /// The object header was written up front from `len`, and there is no size
+    /// patch to revise, so a skipped field would leave the count one higher than
+    /// the fields on the wire and the document would fail to parse. Refuse
+    /// instead of emitting something a reader cannot decode. Serde's derive never
+    /// calls this; a hand-written `Serialize` can.
+    fn skip_field(&mut self, _key: &'static str) -> Result<()> {
+        Err(Error::Unsupported(
+            "skip_field: a BEVE object header commits to its field count, so a field cannot be skipped after it is written",
+        ))
     }
     fn end(self) -> Result<()> {
         Ok(())

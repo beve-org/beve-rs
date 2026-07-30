@@ -546,11 +546,7 @@ impl<'de> Deserializer<'de> {
                 match ext {
                     EXT_TYPE_TAG => {
                         let tag = self.read_enum_tag()?;
-                        let access = EnumAccess {
-                            de: self,
-                            tag,
-                            payload: Payload::AbsentOrUnknown,
-                        };
+                        let access = EnumAccess { de: self, tag };
                         visitor.visit_enum(access)
                     }
                     EXT_COMPLEX => {
@@ -821,7 +817,6 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
                 let access = EnumAccess {
                     de: self,
                     tag: EnumTag::Name(name),
-                    payload: Payload::Present,
                 };
                 visitor.visit_enum(access)
             }
@@ -833,11 +828,7 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
                 match ext {
                     EXT_TYPE_TAG => {
                         let tag = self.read_enum_tag()?;
-                        let access = EnumAccess {
-                            de: self,
-                            tag,
-                            payload: Payload::AbsentOrUnknown,
-                        };
+                        let access = EnumAccess { de: self, tag };
                         visitor.visit_enum(access)
                     }
                     _ => Err(Error::InvalidHeader(header)),
@@ -875,6 +866,14 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
     }
     fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         self.deserialize_any(visitor)
+    }
+
+    /// BEVE is a binary format, so types that offer a compact non-textual form
+    /// take it. This has to be stated: serde's default is `true`, and a reader
+    /// disagreeing with the writer means the crate cannot read its own output
+    /// for any type that branches on it, such as `std::net::IpAddr`.
+    fn is_human_readable(&self) -> bool {
+        false
     }
 }
 
@@ -1426,28 +1425,21 @@ enum EnumTag<'de> {
     Name(&'de str),
 }
 
-/// Whether the wire form guarantees that a value follows the variant tag.
+/// Access for a variant whose wire form is followed by exactly one value.
 ///
-/// This has to be carried from the header that was parsed, because it is not
-/// recoverable afterwards: the cursor sits on a byte that could equally be this
-/// variant's payload or the next sibling in the enclosing container. Guessing
-/// from "are there bytes left" reads a sibling as a payload.
-#[derive(Clone, Copy)]
-pub(crate) enum Payload {
-    /// A Version 2 single-key object, whose header declared `count == 1`.
-    /// Exactly one value follows, so a unit-variant target must discard it.
-    Present,
-    /// A Version 1 type-tag extension, which carries no count. A unit variant
-    /// wrote no payload, so nothing is consumed; a document whose payload this
-    /// schema has since dropped surfaces as a decode error rather than being
-    /// papered over by consuming whatever comes next.
-    AbsentOrUnknown,
-}
-
+/// Both forms that reach here carry a payload, so the count never has to be
+/// guessed. A Version 2 variant is a single-key object whose header declared
+/// `count == 1`. Version 1's type-tag extension always paired the tag with a
+/// value too, including for a unit variant, which was written as the tag plus an
+/// explicit `null`. The forms that genuinely carry no payload, a bare positional
+/// index and a bare name, go to [`VariantAccessNoValue`] instead and never
+/// construct this.
+///
+/// That is why `unit_variant` can consume unconditionally. Guessing from "are
+/// there bytes left" would read a sibling as a payload.
 struct EnumAccess<'a, 'de> {
     de: &'a mut Deserializer<'de>,
     tag: EnumTag<'de>,
-    payload: Payload,
 }
 impl<'de, 'a> de::EnumAccess<'de> for EnumAccess<'a, 'de> {
     type Error = Error;
@@ -1457,28 +1449,15 @@ impl<'de, 'a> de::EnumAccess<'de> for EnumAccess<'a, 'de> {
         self,
         seed: V,
     ) -> Result<(V::Value, Self::Variant)> {
-        let payload = self.payload;
         match self.tag {
             EnumTag::Index(idx) => {
                 let idx_de = NumDe::Unsigned(idx as u128);
                 let v = seed.deserialize(idx_de)?;
-                Ok((
-                    v,
-                    VariantAccess {
-                        de: self.de,
-                        payload,
-                    },
-                ))
+                Ok((v, VariantAccess { de: self.de }))
             }
             EnumTag::Name(name) => {
                 let v = seed.deserialize(BorrowedStrDeserializer::<Error>::new(name))?;
-                Ok((
-                    v,
-                    VariantAccess {
-                        de: self.de,
-                        payload,
-                    },
-                ))
+                Ok((v, VariantAccess { de: self.de }))
             }
         }
     }
@@ -1486,21 +1465,16 @@ impl<'de, 'a> de::EnumAccess<'de> for EnumAccess<'a, 'de> {
 
 struct VariantAccess<'a, 'de> {
     de: &'a mut Deserializer<'de>,
-    payload: Payload,
 }
 impl<'de, 'a> de::VariantAccess<'de> for VariantAccess<'a, 'de> {
     type Error = Error;
     fn unit_variant(self) -> Result<()> {
-        match self.payload {
-            // The object header promised exactly one value. Discard it, and let
-            // a truncated or malformed payload surface: swallowing the error
-            // would leave the cursor mid-value and corrupt every later read.
-            Payload::Present => {
-                serde::de::Deserializer::deserialize_ignored_any(self.de, de::IgnoredAny)?;
-                Ok(())
-            }
-            Payload::AbsentOrUnknown => Ok(()),
-        }
+        // A value always follows here (see the note on `EnumAccess`), so discard
+        // exactly one and let a truncated or malformed payload surface:
+        // swallowing the error would leave the cursor mid-value and corrupt
+        // every later read.
+        serde::de::Deserializer::deserialize_ignored_any(self.de, de::IgnoredAny)?;
+        Ok(())
     }
     fn newtype_variant_seed<T: de::DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value> {
         seed.deserialize(self.de)

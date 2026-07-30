@@ -11,7 +11,10 @@ use serde::ser::{self, Serialize};
 use crate::error::{Error, Result};
 use crate::ext::{NT_COMPLEX, NT_RAW_VALUE, typed_array_tag};
 use crate::header::*;
-use crate::ser::{BytesExtractor, TypedArrayWriteSink, U16Extractor, check_struct_field_count};
+use crate::ser::{
+    BytesExtractor, TypedArrayWriteSink, U16Extractor, check_map_entry_count,
+    check_struct_field_count,
+};
 use crate::size::encode_size_to_array;
 
 // ---------------------------------------------------------------------------
@@ -420,6 +423,7 @@ impl<'a, W: Write> ser::Serializer for &'a mut StreamingSerializer<W> {
             len,
             mode: KeyMode::Unknown,
             count: 0,
+            keys: 0,
         })
     }
 
@@ -935,6 +939,7 @@ impl<'a, 'b, W: Write> ser::Serializer for &'b mut StreamingElemSer<'a, 'b, W> {
             len,
             mode: KeyMode::Unknown,
             count: 0,
+            keys: 0,
         })
     }
 
@@ -1062,6 +1067,9 @@ pub struct StreamingMapSerializer<'a, W: Write> {
     len: usize,
     mode: KeyMode,
     count: usize,
+    /// Keys accepted so far. Compared against `count` in `end`, so a key whose
+    /// value never arrives is reported rather than left on the wire.
+    keys: usize,
 }
 
 impl<'a, W: Write> ser::SerializeMap for StreamingMapSerializer<'a, W> {
@@ -1274,7 +1282,9 @@ impl<'a, W: Write> ser::SerializeMap for StreamingMapSerializer<'a, W> {
         }
 
         let mut ks = KeySer { map: self };
-        key.serialize(&mut ks)
+        key.serialize(&mut ks)?;
+        self.keys += 1;
+        Ok(())
     }
 
     fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> {
@@ -1284,6 +1294,7 @@ impl<'a, W: Write> ser::SerializeMap for StreamingMapSerializer<'a, W> {
     }
 
     fn end(self) -> Result<()> {
+        check_map_entry_count(Some(self.len), self.keys, self.count)?;
         if matches!(self.mode, KeyMode::Unknown) {
             self.ser.write_byte(TYPE_OBJECT | (KEY_STRING << 3))?;
             self.ser.write_size(0)?;

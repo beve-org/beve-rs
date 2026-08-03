@@ -4,6 +4,12 @@ This crate follows [Semantic Versioning](https://semver.org/). Dates are the cra
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Changed
+
+- **Breaking:** the `mat` feature moves to **hdf5-pure 0.33** (was 0.31). The conversion API is unchanged, and so are the option enums this crate re-exports (`Compression`, `NullPolicy`, ...), but beve's public API is typed by them, so a caller who enables `mat` and also depends on hdf5-pure directly must move to 0.33 for a single major version to resolve. Files beve writes are unaffected; the MAT writer does not read HDF5 files, so 0.33's refusal to open a file whose superblock marks it as held by a writer does not reach this crate. What a `mat` caller does see is better error text: 0.32 gives HDF5's descriptive types (`Datatype`, `Filter`, `Layout`, ...) a `Display` that reads as HDF5 rather than as a Rust value, and beve surfaces hdf5-pure's errors as their message.
+
 ## 6.0.0 - 2026-07-30
 
 ### Changed

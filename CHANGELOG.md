@@ -4,6 +4,12 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Fixed
+
+- A build of the published crate no longer warns `Failed to build Glaze interop helper` when no C++23 compiler is present. The C++ test fixtures under `tests/cpp/` were shipping in the `.crate` while the Glaze headers they `#include` were not, so `build.rs` tried to compile them and failed on every such downstream build rather than skipping them, as it already does when the sources are absent. `tests/cpp/` is now excluded from the package.
+
 ## 6.1.0 - 2026-08-03
 
 ### Changed

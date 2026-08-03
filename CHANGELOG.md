@@ -1,14 +1,20 @@
 # Changelog
 
-This crate follows [Semantic Versioning](https://semver.org/). Dates are the crates.io publication date.
+This crate follows [Semantic Versioning](https://semver.org/), with one exemption: the `mat` feature's [hdf5-pure version](README.md#versioning-of-the-hdf5-pure-dependency) moves in minor releases. Dates are the crates.io publication date.
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
-## Unreleased
+## 6.1.0 - 2026-08-03
 
 ### Changed
 
-- **Breaking:** the `mat` feature moves to **hdf5-pure 0.33** (was 0.31). The conversion API is unchanged, and so are the option enums this crate re-exports (`Compression`, `NullPolicy`, ...), but beve's public API is typed by them, so a caller who enables `mat` and also depends on hdf5-pure directly must move to 0.33 for a single major version to resolve. Files beve writes are unaffected; the MAT writer does not read HDF5 files, so 0.33's refusal to open a file whose superblock marks it as held by a writer does not reach this crate. What a `mat` caller does see is better error text: 0.32 gives HDF5's descriptive types (`Datatype`, `Filter`, `Layout`, ...) a `Display` that reads as HDF5 rather than as a Rust value, and beve surfaces hdf5-pure's errors as their message.
+- The `mat` feature moves to **hdf5-pure 0.33** (was 0.31). The conversion API, the re-exported option enums, and the files beve writes are all unchanged. What you gain is better error text: 0.32 gave HDF5's descriptive types (`Datatype`, `Filter`, `Layout`, ...) a `Display` that reads as HDF5 rather than as a Rust value.
+
+  If you depend on hdf5-pure directly as well, move to 0.33 in step with this release — beve's public API is typed by the re-exported enums, so the versions must agree.
+
+### Added
+
+- A documented [versioning policy](README.md#versioning-of-the-hdf5-pure-dependency) for the `mat` feature's hdf5-pure dependency: an hdf5-pure move ships as a beve minor version, not a major.
 
 ## 6.0.0 - 2026-07-30
 

@@ -332,6 +332,20 @@ Current mappings:
 - BEVE matrix extensions, including row-major to column-major reorder when needed
 - `null` as `struct([])` by default
 
+### On-disk format and compression
+MAT files are written in the **HDF5 1.8** format (`MatV73Options::libver`, defaulting to `LibVer::V18`), which is what MATLAB's `load` accepts. A version 3 superblock is an HDF5 1.10 addition, and MATLAB's MAT v7.3 loader refuses one even on releases whose own libhdf5 reads it without difficulty, so a 1.10 file fails to `load` outright.
+
+`Compression` is the one thing that format cannot carry: compression needs chunked storage, whose chunk indices arrived in 1.10. The pair is refused rather than silently resolved, since dropping the compression loses what you asked for and raising the format produces a file MATLAB cannot read. Set `libver` yourself to take that trade:
+```rust
+let options = MatV73Options {
+    compression: Compression::Deflate { level: 4, shuffle: false },
+    // Required for compression, and no longer loadable by MATLAB.
+    // Still readable by h5py, `h5dump`, and hdf5-pure.
+    libver: LibVer::V110,
+    ..Default::default()
+};
+```
+
 Complex values keep their element type. MATLAB has first-class complex integer
 arrays, so a complex `i16` payload becomes a complex `int16` MATLAB array rather
 than being widened to `single`; the same holds for the other integer widths

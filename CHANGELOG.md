@@ -6,7 +6,23 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 ## Unreleased
 
+### Added
+
+- `MatV73Options::libver` selects the newest HDF5 on-disk format a MAT file may use, defaulting to `LibVer::V18`. `LibVer` is re-exported from hdf5-pure alongside the option enums. **Breaking** for a caller who builds `MatV73Options` with a struct literal that names every field; `..Default::default()` is unaffected.
+
+### Changed
+
+- The `mat` feature moves to **hdf5-pure 0.34** (was 0.33).
+
+  If you depend on hdf5-pure directly as well, move to 0.34 in step with this release — beve's public API is typed by the re-exported enums, so the versions must agree.
+
+- **Breaking:** an empty array is written as MATLAB `0x0` rather than `0x1`. `0x0` is MATLAB's canonical empty and what MATLAB itself overwhelmingly writes; an empty vector has no orientation for `OneDimensionalMode` to preserve, and the difference is visible, since `[[], 1]` is `1` where `[zeros(0, 1), 1]` is a dimension mismatch.
+
+- **Breaking:** `Compression` now requires `libver = LibVer::V110`, and is refused with an error naming the option otherwise. Compression needs chunked storage, whose chunk indices arrived in HDF5 1.10, so it cannot hold against the new 1.8 default. The pair is refused rather than resolved either way: dropping the compression loses what was asked for, and raising the format silently produces a file MATLAB cannot `load`.
+
 ### Fixed
+
+- **MAT files beve writes now load in MATLAB.** Output is written in the HDF5 1.8 format instead of 1.10, so `load` accepts it. A version 3 superblock is an HDF5 1.10 addition and MATLAB's MAT v7.3 loader refuses one — even on releases whose own libhdf5 reads it without difficulty — so every file beve produced through 6.1.0 failed to `load`, typically as "Not a binary MAT-file". Files remain readable by h5py, `h5dump`, and hdf5-pure as before, and `MatV73Options::libver` takes the old format back.
 
 - A build of the published crate no longer warns `Failed to build Glaze interop helper` when no C++23 compiler is present. The C++ test fixtures under `tests/cpp/` were shipping in the `.crate` while the Glaze headers they `#include` were not, so `build.rs` tried to compile them and failed on every such downstream build rather than skipping them, as it already does when the sources are absent. `tests/cpp/` is now excluded from the package.
 

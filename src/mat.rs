@@ -27,6 +27,7 @@ const ARRAY_FLOAT_F16_CODE: u8 = 1;
 
 // Re-export shared option enums from hdf5-pure so beve users keep using them
 // under the same names.
+pub use hdf5_pure::LibVer;
 pub use hdf5_pure::mat::{
     Compression, EmptyMarkerEncoding, InvalidNamePolicy, NullPolicy, OneDimensionalMode,
     RowMajorPolicy, StringClass, UnsupportedPolicy,
@@ -45,8 +46,8 @@ pub enum RootBinding<'a> {
 /// Options for BEVE -> MATLAB v7.3 conversion.
 ///
 /// Convenience wrapper over [`hdf5_pure::mat::Options`] that pins
-/// `string_class = String` and `empty_marker_encoding = DataAsDims` (the BEVE
-/// historical defaults). The remaining policies mirror upstream.
+/// `string_class = String` (the BEVE historical default, and what real
+/// MATLAB's `save -v7.3` produces). The remaining policies mirror upstream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatV73Options {
     pub compression: Compression,
@@ -55,6 +56,19 @@ pub struct MatV73Options {
     pub unsupported_policy: UnsupportedPolicy,
     pub one_dimensional_mode: OneDimensionalMode,
     pub row_major_policy: RowMajorPolicy,
+    /// The newest HDF5 on-disk format the MAT file may use.
+    ///
+    /// Defaults to [`LibVer::V18`], the newest format every MATLAB release can
+    /// open: a version 3 superblock is an HDF5 1.10 addition, and MATLAB's MAT
+    /// v7.3 loader refuses one even on releases whose own libhdf5 reads it
+    /// without difficulty.
+    ///
+    /// [`LibVer::V110`] is what [`Compression`] needs, since compression
+    /// requires chunked storage and the chunk indices hdf5-pure writes arrived
+    /// in 1.10. Compression against a lower bound is refused rather than
+    /// resolved either way, so raise this deliberately and accept that MATLAB
+    /// will not `load` the result.
+    pub libver: LibVer,
 }
 
 impl Default for MatV73Options {
@@ -66,13 +80,14 @@ impl Default for MatV73Options {
             unsupported_policy: UnsupportedPolicy::Error,
             one_dimensional_mode: OneDimensionalMode::ColumnVector,
             row_major_policy: RowMajorPolicy::ReorderToColumnMajor,
+            libver: LibVer::V18,
         }
     }
 }
 
 impl MatV73Options {
     /// Convert to the underlying hdf5-pure options. Always pins
-    /// `string_class = String` and `empty_marker_encoding = DataAsDims`.
+    /// `string_class = String`.
     ///
     /// `unit_variant_encoding` and `empty_sequence_policy` are deliberately not
     /// mirrored: hdf5-pure consults them only from its serde writer, to recover
@@ -86,6 +101,7 @@ impl MatV73Options {
         opts.unsupported_policy = self.unsupported_policy;
         opts.one_dimensional_mode = self.one_dimensional_mode;
         opts.row_major_policy = self.row_major_policy;
+        opts.libver = self.libver;
         opts
     }
 }

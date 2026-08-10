@@ -79,9 +79,9 @@ pub use crate::json::{
 };
 #[cfg(feature = "mat")]
 pub use crate::mat::{
-    Compression, InvalidNamePolicy, MatV73Options, NullPolicy, OneDimensionalMode, RootBinding,
-    RowMajorPolicy, UnsupportedPolicy, beve_file_to_mat_v73_file, beve_slice_to_mat_v73_bytes,
-    beve_slice_to_mat_v73_file, beve_slice_to_mat_v73_writer,
+    Compression, InvalidNamePolicy, LibVer, MatV73Options, NullPolicy, OneDimensionalMode,
+    RootBinding, RowMajorPolicy, UnsupportedPolicy, beve_file_to_mat_v73_file,
+    beve_slice_to_mat_v73_bytes, beve_slice_to_mat_v73_file, beve_slice_to_mat_v73_writer,
 };
 pub use crate::ser::{Serializer, to_vec, to_vec_into};
 /// `#[serde(with = ...)]` helpers for bulk (memcpy) decode of numeric

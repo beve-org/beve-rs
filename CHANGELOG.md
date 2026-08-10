@@ -4,7 +4,9 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
-## Unreleased
+## 7.1.0 - 2026-08-10
+
+A minor under the hdf5-pure exemption above. No beve API change and no change to what the output means. The `.mat` bytes do change for a value that interns objects under `#refs#` — a cell array or a struct — since each interned object now carries the `H5PATH` attribute MATLAB writes; everything else is byte-identical to 7.0.1.
 
 ### Changed
 

@@ -34,6 +34,19 @@ pub enum BigInt {
 ///
 /// Common cases (64-bit integers and floats) are stored inline for efficiency.
 /// Rare 128-bit integers are boxed to keep the enum size small (16 bytes).
+///
+/// Every primitive integer and float converts with [`From`], so building one by
+/// hand rarely means naming a variant:
+///
+/// ```rust
+/// use beve::{Number, Value};
+///
+/// assert_eq!(Number::from(42u8), Number::U64(42));
+/// assert_eq!(Value::Number(1i64.into()), Value::from(1i64));
+///
+/// // A 128-bit value that still fits 64 bits takes the unboxed variant.
+/// assert_eq!(Number::from(7i128), Number::I64(7));
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub enum Number {
     /// Signed 64-bit integer (common case)
@@ -158,6 +171,61 @@ impl fmt::Display for Number {
                 BigInt::I128(n) => write!(f, "{}", n),
                 BigInt::U128(n) => write!(f, "{}", n),
             },
+        }
+    }
+}
+
+/// Generates the `From` impls that reach a 64-bit [`Number`] variant by
+/// widening. Signedness is carried, never inferred from magnitude: a `u8`
+/// becomes `U64` however small it is, so the variant reflects the type the
+/// caller wrote and BEVE tags the value accordingly.
+macro_rules! number_from_widening {
+    ($( ($prim:ty, $variant:ident, $wide:ty) ),* $(,)?) => {
+        $(
+            impl From<$prim> for Number {
+                fn from(n: $prim) -> Self {
+                    Number::$variant(n as $wide)
+                }
+            }
+        )*
+    };
+}
+
+number_from_widening!(
+    (i8, I64, i64),
+    (i16, I64, i64),
+    (i32, I64, i64),
+    (i64, I64, i64),
+    (isize, I64, i64),
+    (u8, U64, u64),
+    (u16, U64, u64),
+    (u32, U64, u64),
+    (u64, U64, u64),
+    (usize, U64, u64),
+    (f32, F64, f64),
+    (f64, F64, f64),
+);
+
+// The 128-bit integers are the one pair that does not simply widen: `Big` costs
+// a heap allocation, so a value that still fits its 64-bit variant takes that
+// variant instead. This is what makes `Number::from(1i128)` equal
+// `Number::from(1i64)` rather than comparing unequal on representation alone,
+// and it matches the narrowing `Key` already does.
+
+impl From<i128> for Number {
+    fn from(n: i128) -> Self {
+        match i64::try_from(n) {
+            Ok(small) => Number::I64(small),
+            Err(_) => Number::Big(Box::new(BigInt::I128(n))),
+        }
+    }
+}
+
+impl From<u128> for Number {
+    fn from(n: u128) -> Self {
+        match u64::try_from(n) {
+            Ok(small) => Number::U64(small),
+            Err(_) => Number::Big(Box::new(BigInt::U128(n))),
         }
     }
 }
@@ -465,85 +533,30 @@ impl From<bool> for Value {
     }
 }
 
-impl From<i8> for Value {
-    fn from(n: i8) -> Self {
-        Value::Number(Number::I64(n as i64))
+impl From<Number> for Value {
+    fn from(n: Number) -> Self {
+        Value::Number(n)
     }
 }
 
-impl From<i16> for Value {
-    fn from(n: i16) -> Self {
-        Value::Number(Number::I64(n as i64))
-    }
+// Every numeric `Value` goes through `Number`'s conversion rather than
+// restating it, so the choice of variant — and the 128-bit narrowing — is
+// defined in exactly one place.
+macro_rules! value_from_number {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl From<$ty> for Value {
+                fn from(n: $ty) -> Self {
+                    Value::Number(Number::from(n))
+                }
+            }
+        )*
+    };
 }
 
-impl From<i32> for Value {
-    fn from(n: i32) -> Self {
-        Value::Number(Number::I64(n as i64))
-    }
-}
-
-impl From<i64> for Value {
-    fn from(n: i64) -> Self {
-        Value::Number(Number::I64(n))
-    }
-}
-
-impl From<i128> for Value {
-    fn from(n: i128) -> Self {
-        if let Ok(small) = i64::try_from(n) {
-            Value::Number(Number::I64(small))
-        } else {
-            Value::Number(Number::Big(Box::new(BigInt::I128(n))))
-        }
-    }
-}
-
-impl From<u8> for Value {
-    fn from(n: u8) -> Self {
-        Value::Number(Number::U64(n as u64))
-    }
-}
-
-impl From<u16> for Value {
-    fn from(n: u16) -> Self {
-        Value::Number(Number::U64(n as u64))
-    }
-}
-
-impl From<u32> for Value {
-    fn from(n: u32) -> Self {
-        Value::Number(Number::U64(n as u64))
-    }
-}
-
-impl From<u64> for Value {
-    fn from(n: u64) -> Self {
-        Value::Number(Number::U64(n))
-    }
-}
-
-impl From<u128> for Value {
-    fn from(n: u128) -> Self {
-        if let Ok(small) = u64::try_from(n) {
-            Value::Number(Number::U64(small))
-        } else {
-            Value::Number(Number::Big(Box::new(BigInt::U128(n))))
-        }
-    }
-}
-
-impl From<f32> for Value {
-    fn from(n: f32) -> Self {
-        Value::Number(Number::F64(n as f64))
-    }
-}
-
-impl From<f64> for Value {
-    fn from(n: f64) -> Self {
-        Value::Number(Number::F64(n))
-    }
-}
+value_from_number!(
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64
+);
 
 impl From<String> for Value {
     fn from(s: String) -> Self {

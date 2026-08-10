@@ -24,10 +24,13 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v4
 
+      # Only a C++ compiler: `build.rs` shells out to `$CXX` for the Glaze
+      # interop fixtures and links nothing native. The `mat` feature's HDF5
+      # stack is `hdf5-pure`, which is pure Rust, so no libhdf5 is involved.
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config g++ libhdf5-dev libmatio-dev
+          sudo apt-get install -y g++
 
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@master
@@ -69,7 +72,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config g++ libhdf5-dev
+          sudo apt-get install -y g++
 
       - name: Install Rust 1.89.0
         uses: dtolnay/rust-toolchain@1.89.0

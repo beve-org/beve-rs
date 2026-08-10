@@ -4,6 +4,12 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Changed
+
+- The README no longer claims a MATIO-based oracle validates the `mat` output. That oracle was real until the `.mat` path moved to hdf5-pure, which removed the build wiring for it; the claim outlived it. What the limit actually is — MATLAB `string` coverage is structural, against MATLAB-generated fixtures — is unchanged and still documented. Repo hygiene only: the dead `tests/cpp/matio_oracle.cpp` and the system packages CI installed for it are gone too.
+
 ## 7.0.1 - 2026-08-10
 
 Documentation only. No code, API, or output changes.

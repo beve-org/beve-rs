@@ -359,7 +359,7 @@ Important limits:
 - `bf16` and `f16` complex arrays follow the same rule: they widen to `single` under `UnsupportedPolicy::LossyNumericWidening` and error otherwise
 - 128-bit complex (`i128`/`u128`) is always rejected. MATLAB has no 128-bit class, and unlike a real 128-bit *scalar* there is no `StringFallback` representation for a complex one
 - non-string object keys are converted to their string representation (e.g. integer key `48000` becomes field name `"x48000"` with `InvalidNamePolicy::Sanitize`)
-- the MATIO-based oracle used in tests does not decode MATLAB `string` objects semantically, so string coverage is validated structurally against MATLAB-generated fixtures
+- MATLAB `string` object coverage is validated structurally, against MATLAB-generated fixtures, rather than by decoding the objects semantically
 
 ## CLI
 

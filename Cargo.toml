@@ -14,7 +14,7 @@ readme = "README.md"
 # `.crate`.
 #
 # `tests/cpp/` holds the C++ fixtures `build.rs` compiles for the Glaze interop
-# and matio oracle tests. They are useless to a consumer: the Glaze headers they
+# tests. They are useless to a consumer: the Glaze headers they
 # `#include` live in `reference/`, which is gitignored and never ships. Worse
 # than useless, in fact — `build.rs` skips the helpers when the sources are gone,
 # but if they ship without the headers it instead tries to compile them, fails,

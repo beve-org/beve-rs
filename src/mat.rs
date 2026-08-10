@@ -1,5 +1,8 @@
 //! BEVE -> MATLAB v7.3 conversion.
 //!
+//! Requires the `mat` feature, which is off by default:
+//! `beve = { version = "7", features = ["mat"] }`.
+//!
 //! Walks the BEVE wire format and emits MATLAB-equivalent values directly
 //! through `hdf5_pure::mat::MatBuilder`. No intermediate value tree is
 //! materialized: the BEVE reader and the MAT builder advance in lockstep.

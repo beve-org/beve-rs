@@ -4,6 +4,14 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## 7.0.1 - 2026-08-10
+
+Documentation only. No code, API, or output changes.
+
+### Fixed
+
+- [docs.rs](https://docs.rs/beve) documents the `mat` module. docs.rs builds a crate with its default features, and `mat` is off by default, so the entire MATLAB export API — `MatV73Options`, `RootBinding`, the re-exported option enums, and the conversion functions — was missing from the published documentation through 7.0.0. The crate now sets `all-features = true` for its docs.rs build. The `mat` module also says which feature it needs, which is otherwise not visible from the rendered page.
+
 ## 7.0.0 - 2026-08-10
 
 A major rather than a minor, despite the hdf5-pure exemption above: the exemption covers the dependency coupling, and this release also breaks beve's own surface. `MatV73Options` gains a public field, `compression` stops working until `libver` is raised, and the bytes written change.

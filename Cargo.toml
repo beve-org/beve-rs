@@ -1,6 +1,6 @@
 [package]
 name = "beve"
-version = "7.0.0"
+version = "7.0.1"
 edition = "2024"
 rust-version = "1.89"
 description = "Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specification with serde support"
@@ -20,6 +20,14 @@ readme = "README.md"
 # but if they ship without the headers it instead tries to compile them, fails,
 # and warns every downstream build that lacks a C++23 compiler.
 exclude = ["dev/", "tests/cpp/"]
+
+# `mat` is off by default, and docs.rs builds a crate with its default features
+# unless told otherwise — which rendered the whole `mat` module invisible there
+# through 7.0.0. Build the docs with every feature on so the MATLAB export API
+# is documented. Safe to turn on: `mat`'s only dependency is `hdf5-pure`, which
+# is pure Rust and needs no system libraries.
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 # Lean core by default. The `mat` feature (MATLAB v7.3 / HDF5 file interop) is

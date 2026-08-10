@@ -8,6 +8,12 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 ### Changed
 
+- The `mat` feature moves to **hdf5-pure 0.35** (was 0.34). No beve API change, but the bytes change for some values: every object a `.mat` write interns under `#refs#` — the elements of a cell array, the fields of a struct — now carries the `H5PATH` attribute MATLAB writes on its own, which hdf5-pure wrote on none. Output that interns nothing, such as a numeric array or an empty array, is byte-identical to 7.0.1; output that interns grows by 59 bytes per interned object. Files written by earlier versions still read, and the on-disk format is unchanged — `MatV73Options::libver` still pins `LibVer::V18`, so MATLAB still loads what this crate writes.
+
+  Upstream's two breaking changes do not reach the BEVE walker. `beve::mat` deliberately does not mirror `empty_sequence_policy`, so the empty-cell-array change (`0x1` to `0x0`) applies only to hdf5-pure's serde writer; beve reads the shape out of the BEVE document instead of choosing it. And beve's cell arrays already took the orientation `one_dimensional_mode` asked for, so upstream giving cells that option changes nothing here — verified by comparing shapes across both versions.
+
+  If you depend on hdf5-pure directly as well, move to 0.35 in step with this release — beve's public API is typed by the re-exported enums, so the versions must agree.
+
 - The README no longer claims a MATIO-based oracle validates the `mat` output. That oracle was real until the `.mat` path moved to hdf5-pure, which removed the build wiring for it; the claim outlived it. What the limit actually is — MATLAB `string` coverage is structural, against MATLAB-generated fixtures — is unchanged and still documented. Repo hygiene only: the dead `tests/cpp/matio_oracle.cpp` and the system packages CI installed for it are gone too.
 
 ## 7.0.1 - 2026-08-10

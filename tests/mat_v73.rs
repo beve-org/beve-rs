@@ -7,8 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use beve::fast::{MatrixLayoutFast, to_vec_matrix_f64};
 use beve::{
-    Complex, InvalidNamePolicy, Key, MatV73Options, NullPolicy, Object, RootBinding,
-    UnsupportedPolicy, Value,
+    Complex, Compression, InvalidNamePolicy, Key, LibVer, MatV73Options, NullPolicy, Object,
+    RootBinding, UnsupportedPolicy, Value,
 };
 use hdf5_pure::{AttrValue, DType, File};
 
@@ -538,7 +538,10 @@ fn mat_v73_empty_complex_array_uses_complex_dataset_type() {
 
     let file = File::open(&path).unwrap();
     let ds = file.dataset("z").unwrap();
-    assert_eq!(ds.shape().unwrap(), vec![1, 0]);
+    // MATLAB 0x0 (HDF5 stores the dims reversed), which is MATLAB's canonical
+    // empty: an empty vector has no orientation to preserve, and `[[], 1]` is
+    // `1` where `[zeros(0, 1), 1]` is a dimension mismatch.
+    assert_eq!(ds.shape().unwrap(), vec![0, 0]);
     let attrs = ds.attrs().unwrap();
     assert_eq!(read_attr_string(&attrs, "MATLAB_class"), "double");
     assert!(!attrs.contains_key("MATLAB_empty"));
@@ -995,7 +998,8 @@ fn mat_v73_empty_complex_i16_array_keeps_int16_class() {
     let raw = assert_complex_dataset(&file, "z", "int16", DType::I16);
     assert!(raw.is_empty());
     let ds = file.dataset("z").unwrap();
-    assert_eq!(ds.shape().unwrap(), vec![1, 0]);
+    // MATLAB 0x0 — see `mat_v73_empty_complex_array_uses_complex_dataset_type`.
+    assert_eq!(ds.shape().unwrap(), vec![0, 0]);
     assert!(!ds.attrs().unwrap().contains_key("MATLAB_empty"));
 
     std::fs::remove_file(path).unwrap();
@@ -1379,6 +1383,103 @@ fn streamed_file_matches_buffered_bytes_and_opens() {
     // buffered blob that might itself be wrong.
     let file = File::open(&path).unwrap();
     assert!(file.group("/cap").is_ok(), "root variable is reachable");
+    std::fs::remove_file(&path).ok();
+}
+
+/// The default output must stay in the HDF5 1.8 format. MATLAB's MAT v7.3
+/// loader refuses a version 3 superblock — an HDF5 1.10 addition — even on
+/// releases whose own libhdf5 reads one, so a 1.10 file cannot be `load`ed at
+/// all. This is the assertion that keeps `load` working.
+#[test]
+fn mat_v73_defaults_to_the_hdf5_1_8_format_matlab_can_load() {
+    assert_eq!(MatV73Options::default().libver, LibVer::V18);
+
+    let path = temp_path("libver-default");
+    let bytes = beve::to_vec(&vec![1.0f64, 2.0, 3.0]).unwrap();
+    let file = convert_named(&bytes, &path, "values", &MatV73Options::default());
+
+    assert_eq!(file.libver_bound(), LibVer::V18);
+    assert_eq!(file.superblock().version, 2);
+
+    std::fs::remove_file(&path).ok();
+}
+
+/// Compression needs chunked storage, whose chunk indices arrived in HDF5
+/// 1.10, so it cannot hold against the 1.8 default. hdf5-pure refuses the pair
+/// rather than resolving it either way — dropping the compression loses what
+/// was asked for, and raising the format silently yields a file MATLAB cannot
+/// read. beve surfaces that refusal as the error message.
+#[test]
+fn mat_v73_compression_at_the_default_libver_is_refused() {
+    let path = temp_path("compression-refused");
+    let bytes = beve::to_vec(&vec![1.0f64; 512]).unwrap();
+    let options = MatV73Options {
+        compression: Compression::Deflate {
+            level: 4,
+            shuffle: false,
+        },
+        ..Default::default()
+    };
+    let err = beve::beve_slice_to_mat_v73_file(
+        &bytes,
+        &path,
+        RootBinding::NamedVariable("values"),
+        &options,
+    )
+    .unwrap_err();
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("libver"),
+        "the error must name the option to change, got: {msg}"
+    );
+    std::fs::remove_file(&path).ok();
+}
+
+/// Raising `libver` is how a caller takes compression, and with it a file
+/// MATLAB will not `load`. The point of the knob is that the trade is explicit.
+#[test]
+fn mat_v73_compression_works_when_libver_is_raised() {
+    let path = temp_path("compression-v110");
+    let bytes = beve::to_vec(&vec![1.0f64; 512]).unwrap();
+    let options = MatV73Options {
+        compression: Compression::Deflate {
+            level: 4,
+            shuffle: false,
+        },
+        libver: LibVer::V110,
+        ..Default::default()
+    };
+    let file = convert_named(&bytes, &path, "values", &options);
+
+    assert_eq!(file.libver_bound(), LibVer::V110);
+    let ds = file.dataset("values").unwrap();
+    assert_eq!(ds.read_f64().unwrap(), vec![1.0f64; 512]);
+
+    std::fs::remove_file(&path).ok();
+}
+
+/// An empty vector is MATLAB's canonical `[]` — `0x0` under either
+/// `OneDimensionalMode`, since there is no orientation to preserve.
+///
+/// An empty generic BEVE array becomes an empty `cell` (the element type that
+/// would name a numeric class is exactly what an empty array lacks) and takes
+/// the empty-marker path rather than the zero-element dataset the complex
+/// cases take, so its dims live in the marker's payload. Asserted here because
+/// beve reaches this shape through `MatBuilder::vector_dims`, the same rule the
+/// complex cases go through.
+#[test]
+fn mat_v73_empty_array_is_zero_by_zero() {
+    let path = temp_path("empty-array");
+    let bytes = beve::to_vec(&Vec::<f64>::new()).unwrap();
+    let file = convert_named(&bytes, &path, "e", &MatV73Options::default());
+
+    let ds = file.dataset("e").unwrap();
+    let attrs = ds.attrs().unwrap();
+    assert_eq!(read_attr_u64(&attrs, "MATLAB_empty"), 1);
+    assert_eq!(read_attr_string(&attrs, "MATLAB_class"), "cell");
+    assert_eq!(ds.read_u64().unwrap(), vec![0, 0]);
+
     std::fs::remove_file(&path).ok();
 }
 

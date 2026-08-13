@@ -4,7 +4,9 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
-## Unreleased
+## 7.2.0 - 2026-08-13
+
+A minor: the new `From` conversions are additive API, and everything else is a speedup, a fix, or internal. `ComplexSlice` writes a complex array in one bulk copy, 85x faster to encode with byte-identical output. Three pre-existing bugs are fixed, all of them the same mis-sizing of a `Complex<bf16>` payload — which is why a `bf16` complex could not be written by the streaming serializer, read back by the streaming deserializer, or skipped past by `from_field`.
 
 ### Added
 

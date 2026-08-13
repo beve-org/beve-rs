@@ -217,7 +217,7 @@ impl<W: Write> StreamingSerializer<W> {
         byte_code: u8,
         payload: &[u8],
     ) -> Result<()> {
-        let elem_bytes = complex_elem_bytes(class, byte_code);
+        let elem_bytes = complex_elem_bytes(class, byte_code)?;
         if payload.len() != elem_bytes {
             return Err(Error::Mismatch("invalid complex payload size"));
         }
@@ -655,7 +655,7 @@ impl<'a, 'b, W: Write> StreamingElemSer<'a, 'b, W> {
     #[cold]
     #[inline(never)]
     fn emit_complex_cold(&mut self, class: u8, byte_code: u8, payload: &[u8]) -> Result<()> {
-        let elem_bytes = complex_elem_bytes(class, byte_code);
+        let elem_bytes = complex_elem_bytes(class, byte_code)?;
         if payload.len() != elem_bytes {
             return Err(Error::Mismatch("invalid complex payload size"));
         }

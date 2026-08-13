@@ -26,6 +26,10 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 - **Half-float complex values can be read back by the streaming deserializer.** `from_reader_streaming` refused byte codes 0 and 1 with `Unsupported("unsupported complex float width")`, so a `Complex<f16>` or `Complex<bf16>` that `from_slice` decoded without complaint could not be decoded from a reader. It now decodes the same four float widths the slice deserializer always has.
 
+- **`from_field` can read past a `Complex<bf16>`.** `skip_value` sized a complex payload with the generic `1 << byte_code` scalar width, which is 1 byte for `bf16` — 2 bytes wide at byte code 0 — so it advanced half the payload and left the reader misaligned. Every field after a `bf16` complex was then garbage: `from_field` returned `Eof` past an array, or an `InvalidType` on a key that was no longer a key, for a document `from_slice` decoded correctly. Only `bf16` was affected; `f16` shares the 2-byte exception but happens to match the generic formula at byte code 1.
+
+  The width rule now lives in one place, `header::complex_component_bytes`, which both serializers and all three readers share. It had been written out three times — once in `ser.rs`, correctly; once in `json.rs`, correctly; and once in `field.rs`, wrongly — with nothing tying the copies together.
+
 ## 7.1.0 - 2026-08-10
 
 A minor under the hdf5-pure exemption above. No beve API change and no change to what the output means. The `.mat` bytes do change for a value that interns objects under `#refs#` — a cell array or a struct — since each interned object now carries the `H5PATH` attribute MATLAB writes; everything else is byte-identical to 7.0.1.

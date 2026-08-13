@@ -491,19 +491,23 @@ pub fn skip_value(input: &[u8], pos: &mut usize) -> Result<()> {
                     }
                     let is_array = (ch & 0x01) != 0;
                     let cbc = (ch >> 5) & 0x07;
-                    let elem_bytes = byte_count_to_bytes(cbc)?;
-                    if is_array {
-                        let n = read_size(input, pos)? as usize;
-                        let total = (2usize)
-                            .checked_mul(n)
-                            .and_then(|v| v.checked_mul(elem_bytes))
-                            .ok_or(Error::InvalidSize)?;
-                        advance(input, pos, total)?;
+                    // Not `byte_count_to_bytes`: a complex component does not
+                    // follow the generic scalar width. Sharing the rule is what
+                    // keeps `bf16` skippable — it is 2 bytes at byte code 0,
+                    // where the generic formula says 1.
+                    let component_bytes = complex_component_bytes(class, cbc)
+                        .ok_or(Error::Unsupported("unsupported complex width"))?;
+                    let n = if is_array {
+                        read_size(input, pos)? as usize
                     } else {
-                        // scalar complex: 2 components
-                        let total = 2usize.checked_mul(elem_bytes).ok_or(Error::InvalidSize)?;
-                        advance(input, pos, total)?;
-                    }
+                        1
+                    };
+                    // 2 components per value.
+                    let total = (2usize)
+                        .checked_mul(n)
+                        .and_then(|v| v.checked_mul(component_bytes))
+                        .ok_or(Error::InvalidSize)?;
+                    advance(input, pos, total)?;
                 }
                 _ => {
                     return Err(Error::Unsupported("cannot skip unsupported extension"));

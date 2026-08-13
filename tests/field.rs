@@ -729,6 +729,58 @@ fn skip_complex_array() {
     assert_eq!(v, "done");
 }
 
+/// Every complex width, scalar and array, each followed by a sentinel field.
+///
+/// `skip_value` sizes a complex payload from the header alone, and the FLOAT
+/// class breaks the generic `1 << byte_code` scalar rule at both of its half
+/// widths: `bf16` is 2 bytes at byte code 0, where the generic formula says 1.
+/// Getting that wrong does not fail loudly at the complex value — it leaves the
+/// reader misaligned, so the *sentinel after it* is what catches the mistake.
+/// The two cases above pin only f32 and f64, whose widths the generic formula
+/// happens to get right, which is how `bf16` stayed broken: reading `/after`
+/// past one returned `Eof`.
+#[test]
+fn skip_complex_every_width() {
+    use beve::Complex;
+    use half::{bf16, f16};
+
+    macro_rules! check_width {
+        ($($t:ty => $v:expr),* $(,)?) => {$({
+            #[derive(Serialize)]
+            struct Scalar { z: Complex<$t>, after: u32 }
+            let bytes = beve::to_vec(&Scalar { z: Complex { re: $v, im: $v }, after: 7 }).unwrap();
+            let after: u32 = beve::from_field(&bytes, "/after")
+                .unwrap_or_else(|e| panic!("scalar Complex<{}>: {e:?}", stringify!($t)));
+            assert_eq!(after, 7, "scalar Complex<{}>", stringify!($t));
+
+            #[derive(Serialize)]
+            struct Array { zs: Vec<Complex<$t>>, after: u32 }
+            let zs = vec![Complex { re: $v, im: $v }; 3];
+            let bytes = beve::to_vec(&Array { zs, after: 7 }).unwrap();
+            let after: u32 = beve::from_field(&bytes, "/after")
+                .unwrap_or_else(|e| panic!("array Complex<{}>: {e:?}", stringify!($t)));
+            assert_eq!(after, 7, "array Complex<{}>", stringify!($t));
+        })*};
+    }
+
+    check_width! {
+        f16 => f16::from_f32(1.5),
+        bf16 => bf16::from_f32(1.5),
+        f32 => 1.5f32,
+        f64 => 1.5f64,
+        i8 => 1i8,
+        i16 => 1i16,
+        i32 => 1i32,
+        i64 => 1i64,
+        i128 => 1i128,
+        u8 => 1u8,
+        u16 => 1u16,
+        u32 => 1u32,
+        u64 => 1u64,
+        u128 => 1u128,
+    }
+}
+
 // ---- skip_value: nested objects ----
 
 #[test]

@@ -901,22 +901,15 @@ fn parse_complex_header_byte(header: u8) -> Result<(bool, ComplexNumeric, u8)> {
 }
 
 fn complex_elem_len(kind: ComplexNumeric, byte_code: u8) -> Result<usize> {
-    match kind {
-        ComplexNumeric::Float => match byte_code {
-            0 | 1 => Ok(2),
-            2 => Ok(4),
-            3 => Ok(8),
-            _ => Err(Error::Unsupported("complex float width unsupported")),
-        },
-        ComplexNumeric::Signed | ComplexNumeric::Unsigned => match byte_code {
-            0 => Ok(1),
-            1 => Ok(2),
-            2 => Ok(4),
-            3 => Ok(8),
-            4 => Ok(16),
-            _ => Err(Error::Unsupported("complex width not supported")),
-        },
-    }
+    let class = match kind {
+        ComplexNumeric::Float => NUM_FLOAT,
+        ComplexNumeric::Signed => NUM_SIGNED,
+        ComplexNumeric::Unsigned => NUM_UNSIGNED,
+    };
+    complex_component_bytes(class, byte_code).ok_or(match kind {
+        ComplexNumeric::Float => Error::Unsupported("complex float width unsupported"),
+        _ => Error::Unsupported("complex width not supported"),
+    })
 }
 
 fn write_complex_extension(reader: &mut BeveReader<'_>, out: &mut Vec<u8>) -> Result<()> {

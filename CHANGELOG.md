@@ -6,11 +6,19 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 ## Unreleased
 
+### Added
+
+- `Number` converts from every primitive integer and float with `From`, so `Value::Number(1i64.into())` compiles. Building a `Value` by hand no longer means naming the variant and picking the right one — `Number::I64(1)` versus `Number::U64(1)` versus `Number::F64(1.0)` — which is friction that lands hardest in tests and repro cases. Signedness follows the type rather than the magnitude, so `1u8` becomes `U64`; a 128-bit value that still fits 64 bits takes the unboxed variant, the same narrowing `Key` already does.
+
+- `Value` converts from `Number`, and from `usize` and `isize`. It already accepted every other primitive integer and float.
+
 ### Changed
 
 - **`ComplexSlice` writes a complex array in one bulk copy** instead of a `serialize_element` per value, which is what the `beve::complex::*_array` `serialize_with` helpers route through — so a field using one of those gets the speedup with no code change. Encoding 4096 `Complex<f64>` goes from 110 µs to 1.3 µs, matching the bulk *reader* it now mirrors; the win scales with the array, and on a multi-gigabyte payload it is the difference between an encode that is CPU-bound and one that is memcpy-bound.
 
   The bytes are unchanged. Three cases keep the element-wise path deliberately: human-readable formats still see a portable sequence, big-endian targets still convert per scalar, and an **empty** slice still encodes as a generic empty array rather than becoming a zero-length complex array — consumers that read the element type off the header, the MATLAB export among them, can tell those apart.
+
+- `Value`'s numeric `From` impls delegate to `Number`'s instead of restating them, so the two cannot drift about which variant a primitive lands in. No existing conversion changes.
 
 ### Fixed
 

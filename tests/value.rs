@@ -1,6 +1,6 @@
 #![deny(warnings)]
 
-use beve::{Key, Number, Object, Value, from_value, from_value_ref};
+use beve::{BigInt, Key, Number, Object, Value, from_value, from_value_ref};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -435,6 +435,92 @@ fn test_from_impls() {
 
     let v: Value = Some(42).into();
     assert!(v.is_number());
+}
+
+#[test]
+fn number_from_primitives_picks_variant_by_signedness() {
+    // Signedness comes from the type, not the magnitude: 1u8 is unsigned.
+    assert_eq!(Number::from(1i8), Number::I64(1));
+    assert_eq!(Number::from(1i16), Number::I64(1));
+    assert_eq!(Number::from(1i32), Number::I64(1));
+    assert_eq!(Number::from(1i64), Number::I64(1));
+    assert_eq!(Number::from(1isize), Number::I64(1));
+
+    assert_eq!(Number::from(1u8), Number::U64(1));
+    assert_eq!(Number::from(1u16), Number::U64(1));
+    assert_eq!(Number::from(1u32), Number::U64(1));
+    assert_eq!(Number::from(1u64), Number::U64(1));
+    assert_eq!(Number::from(1usize), Number::U64(1));
+
+    assert_eq!(Number::from(2.5f32), Number::F64(2.5));
+    assert_eq!(Number::from(2.5f64), Number::F64(2.5));
+
+    // Negative values keep their sign through the widening cast.
+    assert_eq!(Number::from(-1i8), Number::I64(-1));
+    assert_eq!(Number::from(i64::MIN), Number::I64(i64::MIN));
+    assert_eq!(Number::from(u64::MAX), Number::U64(u64::MAX));
+}
+
+#[test]
+fn number_from_128_bit_narrows_when_it_fits() {
+    // Boxing is reserved for values that genuinely need 128 bits.
+    assert_eq!(Number::from(7i128), Number::I64(7));
+    assert_eq!(Number::from(7u128), Number::U64(7));
+    assert_eq!(Number::from(i64::MIN as i128), Number::I64(i64::MIN));
+    assert_eq!(Number::from(u64::MAX as u128), Number::U64(u64::MAX));
+
+    let too_big = i64::MAX as i128 + 1;
+    assert_eq!(
+        Number::from(too_big),
+        Number::Big(Box::new(BigInt::I128(too_big)))
+    );
+
+    let too_big = u64::MAX as u128 + 1;
+    assert_eq!(
+        Number::from(too_big),
+        Number::Big(Box::new(BigInt::U128(too_big)))
+    );
+}
+
+#[test]
+fn number_and_value_conversions_agree() {
+    // `Value`'s numeric `From` impls delegate to `Number`'s, so the two must
+    // never disagree about which variant a primitive lands in.
+    assert_eq!(Value::from(1i32), Value::Number(Number::from(1i32)));
+    assert_eq!(Value::from(1u32), Value::Number(Number::from(1u32)));
+    assert_eq!(Value::from(2.5f64), Value::Number(Number::from(2.5f64)));
+    assert_eq!(Value::from(9usize), Value::Number(Number::U64(9)));
+    assert_eq!(Value::from(-9isize), Value::Number(Number::I64(-9)));
+
+    let too_big = i64::MAX as i128 + 1;
+    assert_eq!(Value::from(too_big), Value::Number(Number::from(too_big)));
+
+    // The expression this exists for: no variant named, no turbofish.
+    let v = Value::Number(1i64.into());
+    assert_eq!(v.as_i64(), Some(1));
+
+    // And a `Number` lifts into a `Value` without naming the variant either.
+    assert_eq!(Value::from(Number::I64(3)), Value::Number(Number::I64(3)));
+}
+
+#[test]
+fn number_conversions_survive_a_serialization_round_trip() {
+    // The variant `From` picks is the one BEVE writes, so an unsigned type
+    // stays unsigned on the wire rather than being re-tagged as signed.
+    let value = Value::Object(
+        [
+            (Key::from("unsigned"), Value::from(7u8)),
+            (Key::from("signed"), Value::from(-7i16)),
+            (Key::from("float"), Value::from(2.5f32)),
+            (Key::from("wide"), Value::from(i64::MAX as i128 + 1)),
+        ]
+        .into_iter()
+        .collect(),
+    );
+
+    let bytes = beve::to_vec(&value).unwrap();
+    let back: Value = beve::from_slice(&bytes).unwrap();
+    assert_eq!(back, value);
 }
 
 // ============ Number method tests ============

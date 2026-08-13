@@ -9,11 +9,11 @@ use std::io::Write;
 use serde::ser::{self, Serialize};
 
 use crate::error::{Error, Result};
-use crate::ext::{NT_COMPLEX, NT_RAW_VALUE, typed_array_tag};
+use crate::ext::{NT_COMPLEX, NT_RAW_VALUE, complex_array_tag, typed_array_tag};
 use crate::header::*;
 use crate::ser::{
     BytesExtractor, TypedArrayWriteSink, U16Extractor, check_map_entry_count,
-    check_struct_field_count,
+    check_struct_field_count, complex_elem_bytes,
 };
 use crate::size::encode_size_to_array;
 
@@ -183,13 +183,45 @@ impl<W: Write> StreamingSerializer<W> {
         self.write_all(payload)
     }
 
+    /// Write a whole complex array from an already-interleaved `(re, im)`
+    /// payload: extension header, complex header, SIZE, then one bulk
+    /// `write_all` of the body. The counterpart of
+    /// [`Self::write_typed_array_bytes`] for the [`crate::ComplexSlice`]
+    /// bulk-write dispatch, and byte-for-byte what the element-wise sequence
+    /// path emits.
+    ///
+    /// The SIZE prefix is an element count, not a byte count, so the payload is
+    /// divided by the width of one complex value — derived here from
+    /// `class`/`byte_code` rather than passed in, so it cannot disagree with the
+    /// header those two bytes encode.
+    fn write_complex_array_bytes(
+        &mut self,
+        class: u8,
+        byte_code: u8,
+        payload: &[u8],
+    ) -> Result<()> {
+        // Checked before anything reaches the writer: a payload that is not a
+        // whole number of elements would otherwise be framed by a SIZE prefix
+        // that truncates it, and here the truncated bytes are already gone
+        // downstream by the time anyone could notice.
+        let elem_bytes = complex_elem_bytes(class, byte_code)?;
+        if !payload.len().is_multiple_of(elem_bytes) {
+            return Err(Error::Mismatch("invalid complex payload size"));
+        }
+        self.write_byte(make_extension_header(EXT_COMPLEX))?;
+        self.write_byte(complex_header(class, byte_code, true))?;
+        let count = payload.len() / elem_bytes;
+        self.write_size(count as u64)?;
+        self.write_all(payload)
+    }
+
     fn write_complex_single_payload(
         &mut self,
         class: u8,
         byte_code: u8,
         payload: &[u8],
     ) -> Result<()> {
-        let elem_bytes = (1usize << byte_code) * 2;
+        let elem_bytes = complex_elem_bytes(class, byte_code)?;
         if payload.len() != elem_bytes {
             return Err(Error::Mismatch("invalid complex payload size"));
         }
@@ -328,6 +360,11 @@ impl<'a, W: Write> ser::Serializer for &'a mut StreamingSerializer<W> {
                     // the writer with no copy (one `write_all` of the body).
                     value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
                         self.write_typed_array_bytes(class, byte_code, elem_size, bytes)
+                    }))
+                } else if let Some((class, byte_code, _)) = complex_array_tag(name) {
+                    // `ComplexSlice<T>` field: same deal, complex framing.
+                    value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
+                        self.write_complex_array_bytes(class, byte_code, bytes)
                     }))
                 } else {
                     value.serialize(self)
@@ -622,7 +659,7 @@ impl<'a, 'b, W: Write> StreamingElemSer<'a, 'b, W> {
     #[cold]
     #[inline(never)]
     fn emit_complex_cold(&mut self, class: u8, byte_code: u8, payload: &[u8]) -> Result<()> {
-        let elem_bytes = (1usize << byte_code) * 2;
+        let elem_bytes = complex_elem_bytes(class, byte_code)?;
         if payload.len() != elem_bytes {
             return Err(Error::Mismatch("invalid complex payload size"));
         }
@@ -850,6 +887,14 @@ impl<'a, 'b, W: Write> ser::Serializer for &'b mut StreamingElemSer<'a, 'b, W> {
                     let ser = &mut *self.seq.ser;
                     value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
                         ser.write_typed_array_bytes(class, byte_code, elem_size, bytes)
+                    }))
+                } else if let Some((class, byte_code, _)) = complex_array_tag(name) {
+                    // Likewise a full VALUE: a complex ARRAY nested in a sequence
+                    // is one generic-array element, not a run of complex singles.
+                    self.seq.ensure_generic()?;
+                    let ser = &mut *self.seq.ser;
+                    value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
+                        ser.write_complex_array_bytes(class, byte_code, bytes)
                     }))
                 } else {
                     value.serialize(self)

@@ -198,6 +198,22 @@ fn bench_complex_arrays(c: &mut Criterion) {
     let complex_bytes = beve::to_vec_complex_slice(slice);
 
     let mut group = c.benchmark_group("complex_arrays_f64");
+    // Encode: a plain `Vec<Complex<f64>>` walks elements one at a time, while
+    // `ComplexSlice` hands the whole payload over for one copy. Same bytes out;
+    // the mirror of `numeric_arrays_f64`'s serde_to_vec / typed_to_vec pair.
+    group.bench_function("serde_to_vec", |b| {
+        b.iter(|| {
+            let bytes = beve::to_vec(black_box(&values)).expect("serialize complex slice");
+            black_box(bytes);
+        });
+    });
+    group.bench_function("complex_slice_to_vec", |b| {
+        b.iter(|| {
+            let bytes = beve::to_vec(black_box(&beve::ComplexSlice(slice)))
+                .expect("serialize complex slice");
+            black_box(bytes);
+        });
+    });
     // Decode: generic serde (nested per-element visitors) vs the bulk reader
     // (one bounds check + one contiguous copy). Same input bytes.
     group.bench_function("serde_from_slice", |b| {

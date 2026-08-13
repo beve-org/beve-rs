@@ -337,7 +337,7 @@ impl ser::Serializer for BytesExtractor {
 }
 
 use crate::error::{Error, Result};
-use crate::ext::{NT_COMPLEX, NT_RAW_VALUE, typed_array_tag};
+use crate::ext::{NT_COMPLEX, NT_RAW_VALUE, complex_array_tag, typed_array_tag};
 use crate::header::*;
 use crate::size::{encode_size_to_array, read_size, write_size};
 
@@ -690,6 +690,39 @@ impl Serializer {
         self.extend_from_slice(payload);
     }
 
+    /// Append a whole complex array from an already-interleaved `(re, im)`
+    /// payload: extension header, complex header, SIZE, then one copy of the
+    /// body. The counterpart of [`Self::write_typed_array_bytes`] for the
+    /// [`crate::ComplexSlice`] bulk-write dispatch, and byte-for-byte what the
+    /// element-wise sequence path builds.
+    ///
+    /// The SIZE prefix is an element count, not a byte count, so the payload is
+    /// divided by the width of one complex value — derived here from
+    /// `class`/`byte_code` rather than passed in, so it cannot disagree with the
+    /// header those two bytes encode.
+    fn write_complex_array_bytes(
+        &mut self,
+        class: u8,
+        byte_code: u8,
+        payload: &[u8],
+    ) -> Result<()> {
+        // Checked before anything is emitted: a payload that is not a whole
+        // number of elements would otherwise be framed by a SIZE prefix that
+        // truncates it, and the reader would silently treat the remainder as the
+        // next sibling value. This is the array twin of the check
+        // `write_complex_single_payload` has always made.
+        let elem_bytes = complex_elem_bytes(class, byte_code)?;
+        if !payload.len().is_multiple_of(elem_bytes) {
+            return Err(Error::Mismatch("invalid complex payload size"));
+        }
+        self.push(make_extension_header(EXT_COMPLEX));
+        self.push(Self::complex_header(class, byte_code, true));
+        let count = payload.len() / elem_bytes;
+        write_size(count as u64, &mut self.buf);
+        self.extend_from_slice(payload);
+        Ok(())
+    }
+
     fn write_generic_array_header(&mut self, len: usize) {
         self.push(TYPE_GENERIC_ARRAY);
         write_size(len as u64, &mut self.buf);
@@ -730,7 +763,7 @@ impl Serializer {
         byte_code: u8,
         payload: &[u8],
     ) -> Result<()> {
-        let elem_bytes = complex_elem_bytes(class, byte_code);
+        let elem_bytes = complex_elem_bytes(class, byte_code)?;
         if payload.len() != elem_bytes {
             return Err(Error::Mismatch("invalid complex payload size"));
         }
@@ -747,23 +780,21 @@ impl Serializer {
 }
 
 /// Byte size of one complex value (`re` + `im`) for a given numeric `class` and
-/// `byte_code`.
+/// `byte_code`, or [`Error::Mismatch`] when the two name a width BEVE does not
+/// define.
 ///
-/// The FLOAT class encodes the two 2-byte half floats with `byte_code` 0 (bf16)
-/// and 1 (f16); these do **not** follow the generic `1 << byte_code` scalar width
-/// (which would give 1 and 2 bytes), they are both 2 bytes. Every other
-/// class/byte_code follows `1 << byte_code` (0:1, 1:2, 2:4, 3:8, 4:16). Using the
-/// generic formula for the complex payload size silently mis-sizes a bf16 complex
-/// (and only by coincidence sizes f16 correctly), so all three complex-payload
-/// paths route through here.
+/// The width rule itself lives in [`complex_component_bytes`] so that the
+/// readers share it rather than restate it; this is the writer-facing doubling
+/// of it. Both serializers route every complex payload through here. Neither
+/// may reach the error in practice — each caller derives `class` and
+/// `byte_code` from a `BeveTypedSlice` const, so the check folds away — but it
+/// is a real error rather than a debug assert because the alternative is
+/// writing a length the reader cannot honor.
 #[inline]
-fn complex_elem_bytes(class: u8, byte_code: u8) -> usize {
-    let scalar = if class == NUM_FLOAT && byte_code <= 1 {
-        2 // bf16 (byte_code 0) and f16 (byte_code 1) are both 2 bytes
-    } else {
-        1usize << byte_code
-    };
-    scalar * 2
+pub(crate) fn complex_elem_bytes(class: u8, byte_code: u8) -> Result<usize> {
+    complex_component_bytes(class, byte_code)
+        .map(|component| component * 2)
+        .ok_or(Error::Mismatch("invalid complex payload size"))
 }
 
 pub fn to_vec<T: Serialize>(value: &T) -> Result<Vec<u8>> {
@@ -991,6 +1022,11 @@ impl<'a> ser::Serializer for &'a mut Serializer {
                     value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
                         self.write_typed_array_bytes(class, byte_code, elem_size, bytes);
                         Ok(())
+                    }))
+                } else if let Some((class, byte_code, _)) = complex_array_tag(name) {
+                    // `ComplexSlice<T>` field: same deal, complex framing.
+                    value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
+                        self.write_complex_array_bytes(class, byte_code, bytes)
                     }))
                 } else {
                     value.serialize(self)
@@ -1329,7 +1365,7 @@ impl<'a> SeqSerializer<'a> {
             SeqMode::TypedComplex { class, byte_code } => (class, byte_code),
             _ => return Ok(()),
         };
-        let elem_bytes = complex_elem_bytes(class, byte_code);
+        let elem_bytes = complex_elem_bytes(class, byte_code)?;
         let start_pos = self.start_pos;
         let header_len = if self.patch.is_some() {
             2 + 8
@@ -1560,6 +1596,16 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
                     value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
                         ser.write_typed_array_bytes(class, byte_code, elem_size, bytes);
                         Ok(())
+                    }))?;
+                    self.seq.count += 1;
+                    Ok(())
+                } else if let Some((class, byte_code, _)) = complex_array_tag(name) {
+                    // Likewise a full VALUE: a complex ARRAY nested in a sequence
+                    // is one generic-array element, not a run of complex singles.
+                    self.seq.ensure_generic_mode()?;
+                    let ser = &mut *self.seq.ser;
+                    value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
+                        ser.write_complex_array_bytes(class, byte_code, bytes)
                     }))?;
                     self.seq.count += 1;
                     Ok(())
@@ -1838,7 +1884,7 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
         byte_code: u8,
         payload: &[u8],
     ) -> Result<()> {
-        let elem_bytes = complex_elem_bytes(class, byte_code);
+        let elem_bytes = complex_elem_bytes(class, byte_code)?;
         if payload.len() != elem_bytes {
             return Err(Error::Mismatch("invalid complex payload size"));
         }

@@ -14,7 +14,25 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 ### Changed
 
+- **`ComplexSlice` writes a complex array in one bulk copy** instead of a `serialize_element` per value. Both families of complex-array helpers route through it, so a field using either gets the speedup with no code change: the `beve::complex::*_array` `serialize_with` helpers, and the encode half of the `beve::complex_array::*` `serde(with)` helpers. Encoding 4096 `Complex<f64>` goes from 110 µs to 1.3 µs, matching the bulk *reader* it now mirrors; the win scales with the array, and on a multi-gigabyte payload it is the difference between an encode that is CPU-bound and one that is memcpy-bound.
+
+  The bytes are unchanged. Three cases keep the element-wise path deliberately: human-readable formats still see a portable sequence, big-endian targets still convert per scalar, and an **empty** slice still encodes as a generic empty array rather than becoming a zero-length complex array — consumers that read the element type off the header, the MATLAB export among them, can tell those apart.
+
 - `Value`'s numeric `From` impls delegate to `Number`'s instead of restating them, so the two cannot drift about which variant a primitive lands in. No existing conversion changes.
+
+- Internal only, no API change: the complex-array marker table is now one table rather than two. There were two `complex_array_tag` functions with the same name and the same `Option<(u8, u8, usize)>` signature, keyed on the same marker strings, whose third element meant different things — one the width of a whole complex value, the other the width of one component. Swapping one for the other would have compiled silently and produced a document off by a factor of two in either direction. The writers now get the doubled width from `complex_elem_bytes` instead, which lets both directions share the single table, and the `serde(with)` helpers name the marker constants rather than repeating the string literals.
+
+- A complex-array payload that is not a whole number of elements is now an `Error::Mismatch` in both serializers rather than a `debug_assert` that vanishes in release, where the SIZE prefix would have truncated it and the reader would have read the remainder as the next sibling value.
+
+### Fixed
+
+- **`Complex<bf16>` can be written by the streaming serializer.** It sized a complex payload as `(1 << byte_code) * 2`, which is right for every width except `bf16` — 2 bytes wide but byte code 0 — so `to_writer_streaming` rejected every `Complex<bf16>`, single or array, as `Mismatch("invalid complex payload size")`. Both writers now share `complex_elem_bytes`. The buffered serializer was never affected.
+
+- **Half-float complex values can be read back by the streaming deserializer.** `from_reader_streaming` refused byte codes 0 and 1 with `Unsupported("unsupported complex float width")`, so a `Complex<f16>` or `Complex<bf16>` that `from_slice` decoded without complaint could not be decoded from a reader. It now decodes the same four float widths the slice deserializer always has.
+
+- **`from_field` can read past a `Complex<bf16>`.** `skip_value` sized a complex payload with the generic `1 << byte_code` scalar width, which is 1 byte for `bf16` — 2 bytes wide at byte code 0 — so it advanced half the payload and left the reader misaligned. Every field after a `bf16` complex was then garbage: `from_field` returned `Eof` past an array, or an `InvalidType` on a key that was no longer a key, for a document `from_slice` decoded correctly. Only `bf16` was affected; `f16` shares the 2-byte exception but happens to match the generic formula at byte code 1.
+
+  The width rule now lives in one place, `header::complex_component_bytes`, which both serializers and all three readers share. It had been written out three times — once in `ser.rs`, correctly; once in `json.rs`, correctly; and once in `field.rs`, wrongly — with nothing tying the copies together.
 
 ## 7.1.0 - 2026-08-10
 

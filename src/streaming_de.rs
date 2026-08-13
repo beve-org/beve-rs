@@ -541,9 +541,7 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
                         None => self.deserialize_any(visitor),
                     };
                 }
-                if let Some((class, byte_code, scalar_size)) =
-                    crate::serde_arrays::complex_array_tag(name)
-                {
+                if let Some((class, byte_code, scalar_size)) = crate::ext::complex_array_tag(name) {
                     return match self.complex_array_payload(class, byte_code, scalar_size)? {
                         Some(v) => visitor.visit_byte_buf(v),
                         None => self.deserialize_any(visitor),
@@ -1024,7 +1022,13 @@ impl<'de, 'a, R: Read> de::SeqAccess<'de> for ComplexPairStreaming<'a, R> {
         }
         self.state += 1;
         let deser = match self.class {
+            // Byte codes 0 and 1 are bf16 and f16, both 2 bytes wide. They are
+            // the half-float pair `de::ComplexPairAccess` has always decoded;
+            // omitting them here made every half-float complex readable from a
+            // slice but not from a reader.
             NUM_FLOAT => match self.byte_code {
+                0 => NumDe::Half(HalfKind::Bf16, self.de.parse_bf16_bits()?),
+                1 => NumDe::Half(HalfKind::F16, self.de.parse_f16_bits()?),
                 2 => NumDe::F32(self.de.parse_f32()?),
                 3 => NumDe::F64(self.de.parse_f64()?),
                 _ => return Err(Error::Unsupported("unsupported complex float width")),

@@ -33,6 +33,35 @@ pub const EXT_TYPE_TAG: u8 = 1;
 pub const EXT_MATRICES: u8 = 2;
 pub const EXT_COMPLEX: u8 = 3;
 
+/// Byte width of one complex *component* (`re` alone, or `im` alone) for a
+/// complex extension's numeric `class` and `byte_code`, or `None` when the two
+/// name a width BEVE does not define.
+///
+/// This is the single source of truth for the rule, because the rule has one
+/// exception that is easy to miss and silent when missed: the FLOAT class
+/// encodes both of its half widths as 2 bytes — `bf16` at `byte_code` 0 and
+/// `f16` at `byte_code` 1 — so it does **not** follow the generic
+/// `1 << byte_code` scalar width, which would give 1 and 2 there. A path that
+/// reaches for the generic formula mis-sizes every `bf16` complex, and sizes
+/// `f16` correctly only by coincidence. There is no 16-byte float, so FLOAT
+/// stops at `byte_code` 3 while the integer classes go to 4.
+#[inline]
+pub fn complex_component_bytes(class: u8, byte_code: u8) -> Option<usize> {
+    match class {
+        NUM_FLOAT => match byte_code {
+            0 | 1 => Some(2),
+            2 => Some(4),
+            3 => Some(8),
+            _ => None,
+        },
+        NUM_SIGNED | NUM_UNSIGNED => match byte_code {
+            0..=4 => Some(1usize << byte_code),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[inline]
 pub fn make_header(ty: u8, subtype: u8, byte_count_code: u8) -> u8 {
     // Generic constructor for headers that follow: [byte_count:3][subtype:2][type:3]

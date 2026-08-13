@@ -1097,6 +1097,106 @@ fn streaming_complex_integer_roundtrip() {
     assert_eq!(back, values);
 }
 
+/// Half-float complex, single and array, through the streaming writer.
+///
+/// These are the two widths that break a `1 << byte_code` size rule: `f16` and
+/// `bf16` are both 2 bytes, but `bf16` reports byte code 0. Sizing a `bf16`
+/// complex payload from the byte code gives 2 where the value is 4, and the
+/// streaming writer rejected every one of them as "invalid complex payload
+/// size" — it could not write a `Complex<bf16>` at all. The buffered writer was
+/// never affected; both now share `complex_elem_bytes`.
+#[test]
+fn streaming_half_float_complex_roundtrip() {
+    use half::{bf16, f16};
+
+    let single = beve::Complex {
+        re: bf16::from_f32(1.5),
+        im: bf16::from_f32(-2.25),
+    };
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &single).unwrap();
+    let back: beve::Complex<bf16> = beve::from_reader_streaming(Cursor::new(&buf)).unwrap();
+    assert_eq!(back, single);
+    assert_eq!(
+        buf,
+        beve::to_vec(&single).unwrap(),
+        "bf16 single vs buffered"
+    );
+
+    let values = vec![
+        beve::Complex {
+            re: bf16::from_f32(0.5),
+            im: bf16::from_f32(1.0),
+        },
+        beve::Complex {
+            re: bf16::from_f32(-3.0),
+            im: bf16::from_f32(0.0),
+        },
+    ];
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &values).unwrap();
+    let back: Vec<beve::Complex<bf16>> = beve::from_reader_streaming(Cursor::new(&buf)).unwrap();
+    assert_eq!(back, values);
+    assert_eq!(
+        buf,
+        beve::to_vec(&values).unwrap(),
+        "bf16 array vs buffered"
+    );
+
+    let values = vec![beve::Complex {
+        re: f16::from_f32(2.0),
+        im: f16::from_f32(-0.5),
+    }];
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &values).unwrap();
+    let back: Vec<beve::Complex<f16>> = beve::from_reader_streaming(Cursor::new(&buf)).unwrap();
+    assert_eq!(back, values);
+    assert_eq!(buf, beve::to_vec(&values).unwrap(), "f16 array vs buffered");
+}
+
+/// A `ComplexSlice` nested in a **sequence** (not a tuple), through the
+/// streaming writer.
+///
+/// The distinction is the whole point of this test. `serialize_tuple` writes the
+/// generic header up front and pins the sequence to `SeqMode::Generic`, whose
+/// elements dispatch straight to the top-level serializer — so the tuple case in
+/// `complex_slice.rs` never exercises the streaming *element* serializer's
+/// complex-array arm. Only a real `Vec<ComplexSlice<_>>` starts in
+/// `SeqMode::Detecting` and reaches it.
+///
+/// The claim is the same one the rest of the suite makes: bulk output equals
+/// element-wise output. A complex array nested in a sequence is one whole VALUE,
+/// so it must become a single generic-array element rather than a run of complex
+/// singles — which is what the arm's `ensure_generic()` is for.
+#[test]
+fn streaming_complex_slice_nested_in_sequence() {
+    use beve::{Complex, ComplexSlice};
+
+    let a: Vec<Complex<i16>> = (0..5).map(|i| Complex { re: i, im: -i }).collect();
+    let b: Vec<Complex<i16>> = (0..9).map(|i| Complex { re: 2 * i, im: i }).collect();
+
+    let slices = vec![ComplexSlice(&a), ComplexSlice(&b)];
+    let vecs = vec![a.clone(), b.clone()];
+
+    let mut bulk = Vec::new();
+    beve::to_writer_streaming(&mut bulk, &slices).unwrap();
+    let mut plain = Vec::new();
+    beve::to_writer_streaming(&mut plain, &vecs).unwrap();
+    assert_eq!(
+        bulk, plain,
+        "streaming: Vec<ComplexSlice> must equal Vec<Vec<Complex>>"
+    );
+
+    assert_eq!(
+        bulk,
+        beve::to_vec(&slices).unwrap(),
+        "streaming must equal buffered for the same nesting"
+    );
+
+    let back: Vec<Vec<Complex<i16>>> = beve::from_reader_streaming(Cursor::new(&bulk)).unwrap();
+    assert_eq!(back, vecs, "nested round-trip through the reader");
+}
+
 #[test]
 fn streaming_complex_in_struct_roundtrip() {
     #[derive(Serialize, Deserialize, Debug, PartialEq)]

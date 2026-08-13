@@ -541,9 +541,7 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
                         None => self.deserialize_any(visitor),
                     };
                 }
-                if let Some((class, byte_code, scalar_size)) =
-                    crate::serde_arrays::complex_array_tag(name)
-                {
+                if let Some((class, byte_code, scalar_size)) = crate::ext::complex_array_tag(name) {
                     return match self.complex_array_payload(class, byte_code, scalar_size)? {
                         Some(v) => visitor.visit_byte_buf(v),
                         None => self.deserialize_any(visitor),

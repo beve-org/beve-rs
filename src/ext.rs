@@ -121,9 +121,12 @@ where
 
 /// A contiguous slice of complex values, serialized as a BEVE complex array
 /// with a single bulk write of the borrowed payload — the complex counterpart
-/// of [`TypedSlice`], and what the [`complex`] `serialize_with` helpers route
-/// through, so a field using one of those gets the bulk path with no further
-/// opt-in.
+/// of [`TypedSlice`].
+///
+/// Both families of complex-array helpers route through this type, so a field
+/// using either gets the bulk path with no further opt-in: the [`complex`]
+/// `serialize_with` helpers, and the encode half of the
+/// [`complex_array`](crate::complex_array) `serde(with)` helpers.
 ///
 /// The encoded bytes are identical to serializing the same values one at a
 /// time, so this is a throughput change and not a format change; the
@@ -159,17 +162,22 @@ pub(crate) fn serialize_complex_slice<S, T>(
 ) -> core::result::Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
+    // Not decoration: `BeveTypedSlice` is what makes the reinterpret below
+    // sound, by restricting `T` to the fixed-width scalars whose every bit
+    // pattern is valid. Without it the bound would be `Complex<T>: Serialize`,
+    // which a padded or niche-carrying `T` could satisfy.
+    T: BeveTypedSlice,
     Complex<T>: Serialize,
 {
     // `cfg!` rather than `#[cfg]` so the bulk arm is type-checked on every
     // target; it folds to a constant, so big-endian still compiles it out.
     if cfg!(target_endian = "little") && !s.is_human_readable() && !slice.is_empty() {
-        // SAFETY: `Complex<T>` is `#[repr(C)]` over two `T` with no padding, and
-        // the scalars this is instantiated for are fixed-width with every bit
-        // pattern valid, so the slice's bytes are exactly the interleaved
-        // `(re, im)` payload. Mirrors `fast::to_writer_complex_slice`. The
-        // borrowed view is only read inside `serialize_newtype_struct`, during
-        // which `slice` stays alive.
+        // SAFETY: `Complex<T>` is `#[repr(C)]` over two `T`, and `T: BeveTypedSlice`
+        // is a fixed-width scalar with every bit pattern valid, so there is no
+        // padding and the slice's bytes are exactly the interleaved `(re, im)`
+        // payload. Mirrors `fast::to_writer_complex_slice`. The borrowed view is
+        // only read inside `serialize_newtype_struct`, during which `slice` stays
+        // alive.
         let payload: &[u8] = unsafe {
             core::slice::from_raw_parts(slice.as_ptr() as *const u8, core::mem::size_of_val(slice))
         };
@@ -202,21 +210,24 @@ macro_rules! impl_complex_slice_serialize {
             }
         )*
 
-        /// Map a beve complex-array newtype name (the tag [`ComplexSlice`] sets
-        /// via `serialize_newtype_struct`) to its `(class, byte_code, elem_bytes)`.
+        /// Map a beve complex-array newtype name to its
+        /// `(class, byte_code, scalar_size)`, where `scalar_size` is the width of
+        /// one *component* — the same shape [`typed_array_tag`] returns, and the
+        /// same units, so the two cannot be confused for each other.
         ///
-        /// `elem_bytes` is the width of one COMPLEX value, `2 * ELEM_SIZE`, which
-        /// the writing sink divides the borrowed payload length by to recover the
-        /// element count for the SIZE prefix. It is derived from `ELEM_SIZE`
-        /// rather than `1 << byte_code` because `bf16` uses `byte_code` 0 while
-        /// being 2 bytes wide; see `ser::complex_elem_bytes`.
+        /// This is the one table for the complex markers, read by both directions:
+        /// [`ComplexSlice`] and the [`crate::complex_array`] helpers set these
+        /// names on the way out, and both deserializers match them on the way in.
+        /// A writer needing the width of a whole complex VALUE doubles it through
+        /// `ser::complex_elem_bytes` rather than carrying a second, differently
+        /// scaled copy of the width here.
         pub(crate) fn complex_array_tag(name: &str) -> Option<(u8, u8, usize)> {
             match name {
                 $(
                     $nt_const => Some((
                         <$scalar as BeveTypedSlice>::CLASS,
                         <$scalar as BeveTypedSlice>::BYTE_CODE,
-                        <$scalar as BeveTypedSlice>::ELEM_SIZE * 2,
+                        <$scalar as BeveTypedSlice>::ELEM_SIZE,
                     )),
                 )*
                 _ => None,

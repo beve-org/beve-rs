@@ -14,11 +14,15 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 ### Changed
 
-- **`ComplexSlice` writes a complex array in one bulk copy** instead of a `serialize_element` per value, which is what the `beve::complex::*_array` `serialize_with` helpers route through — so a field using one of those gets the speedup with no code change. Encoding 4096 `Complex<f64>` goes from 110 µs to 1.3 µs, matching the bulk *reader* it now mirrors; the win scales with the array, and on a multi-gigabyte payload it is the difference between an encode that is CPU-bound and one that is memcpy-bound.
+- **`ComplexSlice` writes a complex array in one bulk copy** instead of a `serialize_element` per value. Both families of complex-array helpers route through it, so a field using either gets the speedup with no code change: the `beve::complex::*_array` `serialize_with` helpers, and the encode half of the `beve::complex_array::*` `serde(with)` helpers. Encoding 4096 `Complex<f64>` goes from 110 µs to 1.3 µs, matching the bulk *reader* it now mirrors; the win scales with the array, and on a multi-gigabyte payload it is the difference between an encode that is CPU-bound and one that is memcpy-bound.
 
   The bytes are unchanged. Three cases keep the element-wise path deliberately: human-readable formats still see a portable sequence, big-endian targets still convert per scalar, and an **empty** slice still encodes as a generic empty array rather than becoming a zero-length complex array — consumers that read the element type off the header, the MATLAB export among them, can tell those apart.
 
 - `Value`'s numeric `From` impls delegate to `Number`'s instead of restating them, so the two cannot drift about which variant a primitive lands in. No existing conversion changes.
+
+- Internal only, no API change: the complex-array marker table is now one table rather than two. There were two `complex_array_tag` functions with the same name and the same `Option<(u8, u8, usize)>` signature, keyed on the same marker strings, whose third element meant different things — one the width of a whole complex value, the other the width of one component. Swapping one for the other would have compiled silently and produced a document off by a factor of two in either direction. The writers now get the doubled width from `complex_elem_bytes` instead, which lets both directions share the single table, and the `serde(with)` helpers name the marker constants rather than repeating the string literals.
+
+- A complex-array payload that is not a whole number of elements is now an `Error::Mismatch` in both serializers rather than a `debug_assert` that vanishes in release, where the SIZE prefix would have truncated it and the reader would have read the remainder as the next sibling value.
 
 ### Fixed
 

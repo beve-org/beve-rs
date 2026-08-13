@@ -749,9 +749,7 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
                         None => self.deserialize_any(visitor),
                     };
                 }
-                if let Some((class, byte_code, scalar_size)) =
-                    crate::serde_arrays::complex_array_tag(name)
-                {
+                if let Some((class, byte_code, scalar_size)) = crate::ext::complex_array_tag(name) {
                     return match self.complex_array_payload(class, byte_code, scalar_size)? {
                         Some(bytes) => visitor.visit_borrowed_bytes(bytes),
                         None => self.deserialize_any(visitor),

@@ -49,42 +49,14 @@ use crate::ext::{Complex, ComplexSlice, serialize_typed_slice};
 use crate::fast::BeveTypedSlice;
 
 // ---------------------------------------------------------------------------
-// Decode markers for complex arrays (the typed-array markers reuse
-// `crate::ext::typed_array_tag` / `NT_TYPED_ARRAY_*`).
+// The markers for both array kinds live in `crate::ext`, next to the wrapper
+// types that write them: `typed_array_tag` / `NT_TYPED_ARRAY_*` and
+// `complex_array_tag` / `NT_COMPLEX_ARRAY_*`. The `#[serde(with = ...)]`
+// helpers below name those constants rather than repeating the string
+// literals, so an encode marker and its decode marker cannot drift apart --
+// a typo in a repeated literal would not fail to compile, it would silently
+// drop the field to the element-wise path.
 // ---------------------------------------------------------------------------
-
-/// Map a complex-array newtype marker name to `(class, byte_code, scalar_size)`
-/// of its element scalar. `None` for any other name.
-pub(crate) fn complex_array_tag(name: &str) -> Option<(u8, u8, usize)> {
-    macro_rules! arm {
-        ($($scalar:ty => $name:literal),* $(,)?) => {
-            match name {
-                $(
-                    $name => Some((
-                        <$scalar as BeveTypedSlice>::CLASS,
-                        <$scalar as BeveTypedSlice>::BYTE_CODE,
-                        <$scalar as BeveTypedSlice>::ELEM_SIZE,
-                    )),
-                )*
-                _ => None,
-            }
-        };
-    }
-    arm! {
-        f32 => "__beve_complex_array_f32",
-        f64 => "__beve_complex_array_f64",
-        i8 => "__beve_complex_array_i8",
-        i16 => "__beve_complex_array_i16",
-        i32 => "__beve_complex_array_i32",
-        i64 => "__beve_complex_array_i64",
-        i128 => "__beve_complex_array_i128",
-        u8 => "__beve_complex_array_u8",
-        u16 => "__beve_complex_array_u16",
-        u32 => "__beve_complex_array_u32",
-        u64 => "__beve_complex_array_u64",
-        u128 => "__beve_complex_array_u128",
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Shared bulk-copy core
@@ -315,16 +287,16 @@ pub mod complex_array {
         };
     }
 
-    complex_with!(f32, f32, "__beve_complex_array_f32");
-    complex_with!(f64, f64, "__beve_complex_array_f64");
-    complex_with!(i8, i8, "__beve_complex_array_i8");
-    complex_with!(i16, i16, "__beve_complex_array_i16");
-    complex_with!(i32, i32, "__beve_complex_array_i32");
-    complex_with!(i64, i64, "__beve_complex_array_i64");
-    complex_with!(i128, i128, "__beve_complex_array_i128");
-    complex_with!(u8, u8, "__beve_complex_array_u8");
-    complex_with!(u16, u16, "__beve_complex_array_u16");
-    complex_with!(u32, u32, "__beve_complex_array_u32");
-    complex_with!(u64, u64, "__beve_complex_array_u64");
-    complex_with!(u128, u128, "__beve_complex_array_u128");
+    complex_with!(f32, f32, crate::ext::NT_COMPLEX_ARRAY_F32);
+    complex_with!(f64, f64, crate::ext::NT_COMPLEX_ARRAY_F64);
+    complex_with!(i8, i8, crate::ext::NT_COMPLEX_ARRAY_I8);
+    complex_with!(i16, i16, crate::ext::NT_COMPLEX_ARRAY_I16);
+    complex_with!(i32, i32, crate::ext::NT_COMPLEX_ARRAY_I32);
+    complex_with!(i64, i64, crate::ext::NT_COMPLEX_ARRAY_I64);
+    complex_with!(i128, i128, crate::ext::NT_COMPLEX_ARRAY_I128);
+    complex_with!(u8, u8, crate::ext::NT_COMPLEX_ARRAY_U8);
+    complex_with!(u16, u16, crate::ext::NT_COMPLEX_ARRAY_U16);
+    complex_with!(u32, u32, crate::ext::NT_COMPLEX_ARRAY_U32);
+    complex_with!(u64, u64, crate::ext::NT_COMPLEX_ARRAY_U64);
+    complex_with!(u128, u128, crate::ext::NT_COMPLEX_ARRAY_U128);
 }

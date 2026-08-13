@@ -1154,6 +1154,49 @@ fn streaming_half_float_complex_roundtrip() {
     assert_eq!(buf, beve::to_vec(&values).unwrap(), "f16 array vs buffered");
 }
 
+/// A `ComplexSlice` nested in a **sequence** (not a tuple), through the
+/// streaming writer.
+///
+/// The distinction is the whole point of this test. `serialize_tuple` writes the
+/// generic header up front and pins the sequence to `SeqMode::Generic`, whose
+/// elements dispatch straight to the top-level serializer — so the tuple case in
+/// `complex_slice.rs` never exercises the streaming *element* serializer's
+/// complex-array arm. Only a real `Vec<ComplexSlice<_>>` starts in
+/// `SeqMode::Detecting` and reaches it.
+///
+/// The claim is the same one the rest of the suite makes: bulk output equals
+/// element-wise output. A complex array nested in a sequence is one whole VALUE,
+/// so it must become a single generic-array element rather than a run of complex
+/// singles — which is what the arm's `ensure_generic()` is for.
+#[test]
+fn streaming_complex_slice_nested_in_sequence() {
+    use beve::{Complex, ComplexSlice};
+
+    let a: Vec<Complex<i16>> = (0..5).map(|i| Complex { re: i, im: -i }).collect();
+    let b: Vec<Complex<i16>> = (0..9).map(|i| Complex { re: 2 * i, im: i }).collect();
+
+    let slices = vec![ComplexSlice(&a), ComplexSlice(&b)];
+    let vecs = vec![a.clone(), b.clone()];
+
+    let mut bulk = Vec::new();
+    beve::to_writer_streaming(&mut bulk, &slices).unwrap();
+    let mut plain = Vec::new();
+    beve::to_writer_streaming(&mut plain, &vecs).unwrap();
+    assert_eq!(
+        bulk, plain,
+        "streaming: Vec<ComplexSlice> must equal Vec<Vec<Complex>>"
+    );
+
+    assert_eq!(
+        bulk,
+        beve::to_vec(&slices).unwrap(),
+        "streaming must equal buffered for the same nesting"
+    );
+
+    let back: Vec<Vec<Complex<i16>>> = beve::from_reader_streaming(Cursor::new(&bulk)).unwrap();
+    assert_eq!(back, vecs, "nested round-trip through the reader");
+}
+
 #[test]
 fn streaming_complex_in_struct_roundtrip() {
     #[derive(Serialize, Deserialize, Debug, PartialEq)]

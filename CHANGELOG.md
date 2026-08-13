@@ -4,6 +4,18 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Added
+
+- `Number` converts from every primitive integer and float with `From`, so `Value::Number(1i64.into())` compiles. Building a `Value` by hand no longer means naming the variant and picking the right one — `Number::I64(1)` versus `Number::U64(1)` versus `Number::F64(1.0)` — which is friction that lands hardest in tests and repro cases. Signedness follows the type rather than the magnitude, so `1u8` becomes `U64`; a 128-bit value that still fits 64 bits takes the unboxed variant, the same narrowing `Key` already does.
+
+- `Value` converts from `Number`, and from `usize` and `isize`. It already accepted every other primitive integer and float.
+
+### Changed
+
+- `Value`'s numeric `From` impls delegate to `Number`'s instead of restating them, so the two cannot drift about which variant a primitive lands in. No existing conversion changes.
+
 ## 7.1.0 - 2026-08-10
 
 A minor under the hdf5-pure exemption above. No beve API change and no change to what the output means. The `.mat` bytes do change for a value that interns objects under `#refs#` — a cell array or a struct — since each interned object now carries the `H5PATH` attribute MATLAB writes; everything else is byte-identical to 7.0.1.

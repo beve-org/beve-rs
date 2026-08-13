@@ -337,7 +337,7 @@ impl ser::Serializer for BytesExtractor {
 }
 
 use crate::error::{Error, Result};
-use crate::ext::{NT_COMPLEX, NT_RAW_VALUE, typed_array_tag};
+use crate::ext::{NT_COMPLEX, NT_RAW_VALUE, complex_array_tag, typed_array_tag};
 use crate::header::*;
 use crate::size::{encode_size_to_array, read_size, write_size};
 
@@ -690,6 +690,33 @@ impl Serializer {
         self.extend_from_slice(payload);
     }
 
+    /// Append a whole complex array from an already-interleaved `(re, im)`
+    /// payload: extension header, complex header, SIZE, then one copy of the
+    /// body. The counterpart of [`Self::write_typed_array_bytes`] for the
+    /// [`crate::ComplexSlice`] bulk-write dispatch, and byte-for-byte what the
+    /// element-wise sequence path builds.
+    ///
+    /// `elem_bytes` is the width of one complex value, so the SIZE prefix
+    /// (an element count, not a byte count) is `payload.len() / elem_bytes`.
+    fn write_complex_array_bytes(
+        &mut self,
+        class: u8,
+        byte_code: u8,
+        elem_bytes: usize,
+        payload: &[u8],
+    ) {
+        self.push(make_extension_header(EXT_COMPLEX));
+        self.push(Self::complex_header(class, byte_code, true));
+        debug_assert_eq!(
+            payload.len() % elem_bytes,
+            0,
+            "complex-array payload must be a whole number of elements"
+        );
+        let count = payload.len() / elem_bytes;
+        write_size(count as u64, &mut self.buf);
+        self.extend_from_slice(payload);
+    }
+
     fn write_generic_array_header(&mut self, len: usize) {
         self.push(TYPE_GENERIC_ARRAY);
         write_size(len as u64, &mut self.buf);
@@ -754,10 +781,11 @@ impl Serializer {
 /// (which would give 1 and 2 bytes), they are both 2 bytes. Every other
 /// class/byte_code follows `1 << byte_code` (0:1, 1:2, 2:4, 3:8, 4:16). Using the
 /// generic formula for the complex payload size silently mis-sizes a bf16 complex
-/// (and only by coincidence sizes f16 correctly), so all three complex-payload
-/// paths route through here.
+/// (and only by coincidence sizes f16 correctly), so every complex-payload path
+/// in both serializers routes through here. The streaming serializer did not,
+/// and rejected every `Complex<bf16>` it was handed.
 #[inline]
-fn complex_elem_bytes(class: u8, byte_code: u8) -> usize {
+pub(crate) fn complex_elem_bytes(class: u8, byte_code: u8) -> usize {
     let scalar = if class == NUM_FLOAT && byte_code <= 1 {
         2 // bf16 (byte_code 0) and f16 (byte_code 1) are both 2 bytes
     } else {
@@ -990,6 +1018,12 @@ impl<'a> ser::Serializer for &'a mut Serializer {
                     // `TypedSlice<T>` field: write the borrowed payload in place.
                     value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
                         self.write_typed_array_bytes(class, byte_code, elem_size, bytes);
+                        Ok(())
+                    }))
+                } else if let Some((class, byte_code, elem_bytes)) = complex_array_tag(name) {
+                    // `ComplexSlice<T>` field: same deal, complex framing.
+                    value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
+                        self.write_complex_array_bytes(class, byte_code, elem_bytes, bytes);
                         Ok(())
                     }))
                 } else {
@@ -1559,6 +1593,17 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
                     let ser = &mut *self.seq.ser;
                     value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
                         ser.write_typed_array_bytes(class, byte_code, elem_size, bytes);
+                        Ok(())
+                    }))?;
+                    self.seq.count += 1;
+                    Ok(())
+                } else if let Some((class, byte_code, elem_bytes)) = complex_array_tag(name) {
+                    // Likewise a full VALUE: a complex ARRAY nested in a sequence
+                    // is one generic-array element, not a run of complex singles.
+                    self.seq.ensure_generic_mode()?;
+                    let ser = &mut *self.seq.ser;
+                    value.serialize(TypedArrayWriteSink(move |bytes: &[u8]| {
+                        ser.write_complex_array_bytes(class, byte_code, elem_bytes, bytes);
                         Ok(())
                     }))?;
                     self.seq.count += 1;

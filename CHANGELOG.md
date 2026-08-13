@@ -4,6 +4,20 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Changed
+
+- **`ComplexSlice` writes a complex array in one bulk copy** instead of a `serialize_element` per value, which is what the `beve::complex::*_array` `serialize_with` helpers route through — so a field using one of those gets the speedup with no code change. Encoding 4096 `Complex<f64>` goes from 110 µs to 1.3 µs, matching the bulk *reader* it now mirrors; the win scales with the array, and on a multi-gigabyte payload it is the difference between an encode that is CPU-bound and one that is memcpy-bound.
+
+  The bytes are unchanged. Three cases keep the element-wise path deliberately: human-readable formats still see a portable sequence, big-endian targets still convert per scalar, and an **empty** slice still encodes as a generic empty array rather than becoming a zero-length complex array — consumers that read the element type off the header, the MATLAB export among them, can tell those apart.
+
+### Fixed
+
+- **`Complex<bf16>` can be written by the streaming serializer.** It sized a complex payload as `(1 << byte_code) * 2`, which is right for every width except `bf16` — 2 bytes wide but byte code 0 — so `to_writer_streaming` rejected every `Complex<bf16>`, single or array, as `Mismatch("invalid complex payload size")`. Both writers now share `complex_elem_bytes`. The buffered serializer was never affected.
+
+- **Half-float complex values can be read back by the streaming deserializer.** `from_reader_streaming` refused byte codes 0 and 1 with `Unsupported("unsupported complex float width")`, so a `Complex<f16>` or `Complex<bf16>` that `from_slice` decoded without complaint could not be decoded from a reader. It now decodes the same four float widths the slice deserializer always has.
+
 ## 7.1.0 - 2026-08-10
 
 A minor under the hdf5-pure exemption above. No beve API change and no change to what the output means. The `.mat` bytes do change for a value that interns objects under `#refs#` — a cell array or a struct — since each interned object now carries the `H5PATH` attribute MATLAB writes; everything else is byte-identical to 7.0.1.

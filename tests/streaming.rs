@@ -1097,6 +1097,63 @@ fn streaming_complex_integer_roundtrip() {
     assert_eq!(back, values);
 }
 
+/// Half-float complex, single and array, through the streaming writer.
+///
+/// These are the two widths that break a `1 << byte_code` size rule: `f16` and
+/// `bf16` are both 2 bytes, but `bf16` reports byte code 0. Sizing a `bf16`
+/// complex payload from the byte code gives 2 where the value is 4, and the
+/// streaming writer rejected every one of them as "invalid complex payload
+/// size" — it could not write a `Complex<bf16>` at all. The buffered writer was
+/// never affected; both now share `complex_elem_bytes`.
+#[test]
+fn streaming_half_float_complex_roundtrip() {
+    use half::{bf16, f16};
+
+    let single = beve::Complex {
+        re: bf16::from_f32(1.5),
+        im: bf16::from_f32(-2.25),
+    };
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &single).unwrap();
+    let back: beve::Complex<bf16> = beve::from_reader_streaming(Cursor::new(&buf)).unwrap();
+    assert_eq!(back, single);
+    assert_eq!(
+        buf,
+        beve::to_vec(&single).unwrap(),
+        "bf16 single vs buffered"
+    );
+
+    let values = vec![
+        beve::Complex {
+            re: bf16::from_f32(0.5),
+            im: bf16::from_f32(1.0),
+        },
+        beve::Complex {
+            re: bf16::from_f32(-3.0),
+            im: bf16::from_f32(0.0),
+        },
+    ];
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &values).unwrap();
+    let back: Vec<beve::Complex<bf16>> = beve::from_reader_streaming(Cursor::new(&buf)).unwrap();
+    assert_eq!(back, values);
+    assert_eq!(
+        buf,
+        beve::to_vec(&values).unwrap(),
+        "bf16 array vs buffered"
+    );
+
+    let values = vec![beve::Complex {
+        re: f16::from_f32(2.0),
+        im: f16::from_f32(-0.5),
+    }];
+    let mut buf = Vec::new();
+    beve::to_writer_streaming(&mut buf, &values).unwrap();
+    let back: Vec<beve::Complex<f16>> = beve::from_reader_streaming(Cursor::new(&buf)).unwrap();
+    assert_eq!(back, values);
+    assert_eq!(buf, beve::to_vec(&values).unwrap(), "f16 array vs buffered");
+}
+
 #[test]
 fn streaming_complex_in_struct_roundtrip() {
     #[derive(Serialize, Deserialize, Debug, PartialEq)]

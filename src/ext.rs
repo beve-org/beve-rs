@@ -119,39 +119,128 @@ where
     }
 }
 
+/// A contiguous slice of complex values, serialized as a BEVE complex array
+/// with a single bulk write of the borrowed payload — the complex counterpart
+/// of [`TypedSlice`], and what the [`complex`] `serialize_with` helpers route
+/// through, so a field using one of those gets the bulk path with no further
+/// opt-in.
+///
+/// The encoded bytes are identical to serializing the same values one at a
+/// time, so this is a throughput change and not a format change; the
+/// `complex_slice_bulk_matches_element_wise` tests pin that.
+///
+/// An **empty** slice keeps the element-wise encoding (a generic empty array,
+/// not a zero-length complex array), which is what this wrapper has always
+/// written. That differs from [`TypedSlice`], whose empty form is a typed empty
+/// array, and from [`crate::to_writer_complex_slice`], whose empty form is a
+/// zero-length complex array. All three decode back to an empty `Vec`, but the
+/// distinction is visible to consumers that read the element type off the
+/// header — notably the MATLAB export, where a typed empty array becomes a cell
+/// and a generic one becomes `[]`.
 pub struct ComplexSlice<'a, T>(pub &'a [Complex<T>]);
 
+/// Shared `Serialize` body for every `ComplexSlice<T>`: hand the interleaved
+/// `(re, im)` payload to the serializer as borrowed bytes tagged by `name`, so
+/// beve emits it with one `write_all` instead of a `serialize_element` per
+/// sample. The tagged form is beve-private, which costs nothing in portability
+/// that this wrapper had to begin with: `Complex<T>`'s own `Serialize` already
+/// emits a beve-private newtype, so the element-wise path was never portable to
+/// another binary format either.
+///
+/// Three cases keep the element-wise path, and each is load-bearing:
+/// human-readable formats (JSON and friends must still see a sequence),
+/// big-endian targets (the in-memory bytes are not little-endian), and the
+/// empty slice (see [`ComplexSlice`]'s note on empty encoding).
+#[inline]
+pub(crate) fn serialize_complex_slice<S, T>(
+    slice: &[Complex<T>],
+    name: &'static str,
+    s: S,
+) -> core::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+    Complex<T>: Serialize,
+{
+    // `cfg!` rather than `#[cfg]` so the bulk arm is type-checked on every
+    // target; it folds to a constant, so big-endian still compiles it out.
+    if cfg!(target_endian = "little") && !s.is_human_readable() && !slice.is_empty() {
+        // SAFETY: `Complex<T>` is `#[repr(C)]` over two `T` with no padding, and
+        // the scalars this is instantiated for are fixed-width with every bit
+        // pattern valid, so the slice's bytes are exactly the interleaved
+        // `(re, im)` payload. Mirrors `fast::to_writer_complex_slice`. The
+        // borrowed view is only read inside `serialize_newtype_struct`, during
+        // which `slice` stays alive.
+        let payload: &[u8] = unsafe {
+            core::slice::from_raw_parts(slice.as_ptr() as *const u8, core::mem::size_of_val(slice))
+        };
+        return s.serialize_newtype_struct(name, &RawBytes(payload));
+    }
+    let mut seq = s.serialize_seq(Some(slice.len()))?;
+    for c in slice {
+        ser::SerializeSeq::serialize_element(&mut seq, c)?;
+    }
+    ser::SerializeSeq::end(seq)
+}
+
+/// Generates, per scalar type: the complex-array newtype-name constant, the
+/// `Serialize for ComplexSlice<'_, T>` impl, and an arm of the shared
+/// [`complex_array_tag`] lookup — the same shape as
+/// [`impl_typed_slice_serialize`], and for the same reason: both serializers
+/// consult one table instead of hand-maintaining a per-type dispatch.
 macro_rules! impl_complex_slice_serialize {
-    ($scalar:ty) => {
-        impl<'a> Serialize for ComplexSlice<'a, $scalar> {
-            fn serialize<S: serde::Serializer>(
-                &self,
-                s: S,
-            ) -> core::result::Result<S::Ok, S::Error> {
-                let mut seq = s.serialize_seq(Some(self.0.len()))?;
-                for c in self.0 {
-                    ser::SerializeSeq::serialize_element(&mut seq, c)?;
+    ($( ($scalar:ty, $nt_const:ident, $nt_name:literal) ),* $(,)?) => {
+        $(
+            pub(crate) const $nt_const: &str = $nt_name;
+
+            impl<'a> Serialize for ComplexSlice<'a, $scalar> {
+                fn serialize<S: serde::Serializer>(
+                    &self,
+                    s: S,
+                ) -> core::result::Result<S::Ok, S::Error> {
+                    serialize_complex_slice(self.0, $nt_const, s)
                 }
-                ser::SerializeSeq::end(seq)
+            }
+        )*
+
+        /// Map a beve complex-array newtype name (the tag [`ComplexSlice`] sets
+        /// via `serialize_newtype_struct`) to its `(class, byte_code, elem_bytes)`.
+        ///
+        /// `elem_bytes` is the width of one COMPLEX value, `2 * ELEM_SIZE`, which
+        /// the writing sink divides the borrowed payload length by to recover the
+        /// element count for the SIZE prefix. It is derived from `ELEM_SIZE`
+        /// rather than `1 << byte_code` because `bf16` uses `byte_code` 0 while
+        /// being 2 bytes wide; see `ser::complex_elem_bytes`.
+        pub(crate) fn complex_array_tag(name: &str) -> Option<(u8, u8, usize)> {
+            match name {
+                $(
+                    $nt_const => Some((
+                        <$scalar as BeveTypedSlice>::CLASS,
+                        <$scalar as BeveTypedSlice>::BYTE_CODE,
+                        <$scalar as BeveTypedSlice>::ELEM_SIZE * 2,
+                    )),
+                )*
+                _ => None,
             }
         }
     };
 }
 
-impl_complex_slice_serialize!(f16);
-impl_complex_slice_serialize!(bf16);
-impl_complex_slice_serialize!(f32);
-impl_complex_slice_serialize!(f64);
-impl_complex_slice_serialize!(i8);
-impl_complex_slice_serialize!(i16);
-impl_complex_slice_serialize!(i32);
-impl_complex_slice_serialize!(i64);
-impl_complex_slice_serialize!(i128);
-impl_complex_slice_serialize!(u8);
-impl_complex_slice_serialize!(u16);
-impl_complex_slice_serialize!(u32);
-impl_complex_slice_serialize!(u64);
-impl_complex_slice_serialize!(u128);
+impl_complex_slice_serialize! {
+    (f16,  NT_COMPLEX_ARRAY_F16,  "__beve_complex_array_f16"),
+    (bf16, NT_COMPLEX_ARRAY_BF16, "__beve_complex_array_bf16"),
+    (f32,  NT_COMPLEX_ARRAY_F32,  "__beve_complex_array_f32"),
+    (f64,  NT_COMPLEX_ARRAY_F64,  "__beve_complex_array_f64"),
+    (i8,   NT_COMPLEX_ARRAY_I8,   "__beve_complex_array_i8"),
+    (i16,  NT_COMPLEX_ARRAY_I16,  "__beve_complex_array_i16"),
+    (i32,  NT_COMPLEX_ARRAY_I32,  "__beve_complex_array_i32"),
+    (i64,  NT_COMPLEX_ARRAY_I64,  "__beve_complex_array_i64"),
+    (i128, NT_COMPLEX_ARRAY_I128, "__beve_complex_array_i128"),
+    (u8,   NT_COMPLEX_ARRAY_U8,   "__beve_complex_array_u8"),
+    (u16,  NT_COMPLEX_ARRAY_U16,  "__beve_complex_array_u16"),
+    (u32,  NT_COMPLEX_ARRAY_U32,  "__beve_complex_array_u32"),
+    (u64,  NT_COMPLEX_ARRAY_U64,  "__beve_complex_array_u64"),
+    (u128, NT_COMPLEX_ARRAY_U128, "__beve_complex_array_u128"),
+}
 
 // -------- Typed numeric slices (opt-in zero-copy serde bulk path) --------
 

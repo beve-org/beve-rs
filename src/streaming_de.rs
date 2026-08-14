@@ -8,9 +8,8 @@ use serde::de::{self, DeserializeOwned, Visitor};
 use serde::forward_to_deserialize_any;
 
 use crate::de::{
-    ComplexArrayPayload, EnumIndexAccess, HalfBitsDeserializer, HalfKind, NumDe,
-    VariantAccessNoValue, byte_count_to_bytes, complex_widening_supported, le_signed,
-    widen_complex_components,
+    ComplexArrayPlan, EnumIndexAccess, HalfBitsDeserializer, HalfKind, NumDe, VariantAccessNoValue,
+    byte_count_to_bytes, complex_array_plan, le_signed, widen_complex_components,
 };
 use crate::error::{Error, Result};
 use crate::header::*;
@@ -28,6 +27,23 @@ use crate::size::{read_size_from_reader, read_size_from_reader_with_first_byte};
 pub struct StreamingDeserializer<R: Read> {
     reader: R,
     peeked: Option<u8>,
+}
+
+/// What this decoder's bulk complex-array marker found on the wire. The slice
+/// decoder's twin ([`crate::de`]) has a borrowed variant in place of `Scalar`:
+/// a reader has nothing to lend, and cannot rewind past a header it has read.
+enum StreamingComplexPayload {
+    /// A payload already at the destination width, read into a buffer.
+    Owned(Vec<u8>),
+    /// Header consumed, and only the element-wise path can convert this pair.
+    ElementWise {
+        len: usize,
+        src_class: u8,
+        src_byte_code: u8,
+    },
+    /// A single complex value rather than an array: the 2-element scalar pair
+    /// `deserialize_any` would have presented, its header already consumed.
+    Scalar { class: u8, byte_code: u8 },
 }
 
 impl<R: Read> StreamingDeserializer<R> {
@@ -151,16 +167,17 @@ impl<R: Read> StreamingDeserializer<R> {
 
     /// Complex-array twin of [`typed_array_payload`](Self::typed_array_payload).
     ///
-    /// Mirrors `de::Deserializer::complex_array_payload`, minus the borrowed
-    /// case: a reader has nothing to lend. A reader also cannot rewind, which is
-    /// why the element-wise hand-off carries the parsed header instead of
-    /// backing the cursor up to it.
+    /// Takes the same three routes as `de::Deserializer::complex_array_payload`
+    /// and by the same rule ([`complex_array_plan`]), minus the borrowed case: a
+    /// reader has nothing to lend. Where that decoder rewinds to hand a shape it
+    /// declines back to `deserialize_any`, this one cannot, so a decision it
+    /// makes from the parsed header it must also carry out from there.
     fn complex_array_payload(
         &mut self,
         class: u8,
         byte_code: u8,
         scalar_size: usize,
-    ) -> Result<Option<ComplexArrayPayload<'static>>> {
+    ) -> Result<Option<StreamingComplexPayload>> {
         let header = self.peek_byte()?;
         if parse_type(header) != TYPE_EXTENSION || parse_extension_id(header) != EXT_COMPLEX {
             return Ok(None);
@@ -169,51 +186,42 @@ impl<R: Read> StreamingDeserializer<R> {
         let ch = self.read_byte()?; // complex header byte
         let is_array = (ch & 0x01) != 0;
         let src_class = (ch >> 3) & 0x03;
-        let src_bc = (ch >> 5) & 0x07;
+        let src_byte_code = (ch >> 5) & 0x07;
         if !is_array {
-            // A single complex value. The header is already consumed, so hand
-            // the pair to the element-wise access rather than trying to rewind;
-            // it presents the same 2-element sequence `deserialize_any` would.
-            return Ok(Some(ComplexArrayPayload::ElementWise {
-                len: 1,
+            // A single complex value, not an array. The slice decoder rewinds to
+            // the header and lets `deserialize_any` present the 2-element scalar
+            // pair; the header is already consumed here, so name the same pair
+            // access `deserialize_any` would have reached. Presenting it as a
+            // 1-element *array* instead would make this decoder accept bytes
+            // every other path rejects.
+            return Ok(Some(StreamingComplexPayload::Scalar {
                 class: src_class,
-                byte_code: src_bc,
+                byte_code: src_byte_code,
             }));
         }
         let len = self.read_size()? as usize;
 
-        if src_class == class && src_bc == byte_code {
-            let payload = len
-                .checked_mul(2)
-                .and_then(|n| n.checked_mul(scalar_size))
-                .ok_or(Error::InvalidSize)?;
-            return Ok(Some(ComplexArrayPayload::Owned(
-                self.read_exact_vec(payload)?,
-            )));
-        }
-
-        let src_width = complex_component_bytes(src_class, src_bc)
-            .ok_or(Error::Unsupported("unsupported complex component width"))?;
-        let payload_len = len
-            .checked_mul(2)
-            .and_then(|n| n.checked_mul(src_width))
-            .ok_or(Error::InvalidSize)?;
-
-        // Unlike the slice decoder this must decide before reading, since the
+        // Unlike the slice decoder this decides before reading, since the
         // element-wise access reads the payload itself.
-        if complex_widening_supported(src_class, src_bc, class, byte_code) {
-            let raw = self.read_exact_vec(payload_len)?;
-            let widened = widen_complex_components(&raw, src_class, src_bc, class, byte_code)
-                .ok_or(Error::Unsupported(
-                    "complex widening predicate and converter disagree",
-                ))?;
-            return Ok(Some(ComplexArrayPayload::Owned(widened)));
+        match complex_array_plan(src_class, src_byte_code, len, class, byte_code, scalar_size)? {
+            ComplexArrayPlan::AsIs { payload_len } => Ok(Some(StreamingComplexPayload::Owned(
+                self.read_exact_vec(payload_len)?,
+            ))),
+            ComplexArrayPlan::Widen { payload_len } => {
+                let raw = self.read_exact_vec(payload_len)?;
+                let widened =
+                    widen_complex_components(&raw, src_class, src_byte_code, class, byte_code)
+                        .ok_or(Error::Unsupported(
+                            "complex widening plan and converter disagree",
+                        ))?;
+                Ok(Some(StreamingComplexPayload::Owned(widened)))
+            }
+            ComplexArrayPlan::ElementWise => Ok(Some(StreamingComplexPayload::ElementWise {
+                len,
+                src_class,
+                src_byte_code,
+            })),
         }
-        Ok(Some(ComplexArrayPayload::ElementWise {
-            len,
-            class: src_class,
-            byte_code: src_bc,
-        }))
     }
 
     // -- parse helpers --
@@ -584,21 +592,24 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
                 }
                 if let Some((class, byte_code, scalar_size)) = crate::ext::complex_array_tag(name) {
                     return match self.complex_array_payload(class, byte_code, scalar_size)? {
-                        Some(ComplexArrayPayload::Owned(v)) => visitor.visit_byte_buf(v),
-                        Some(ComplexArrayPayload::ElementWise {
+                        Some(StreamingComplexPayload::Owned(v)) => visitor.visit_byte_buf(v),
+                        Some(StreamingComplexPayload::ElementWise {
                             len,
-                            class,
-                            byte_code,
+                            src_class,
+                            src_byte_code,
                         }) => visitor.visit_seq(SeqAccessComplexStreaming {
                             de: self,
                             remaining: len,
-                            class,
-                            byte_code,
+                            class: src_class,
+                            byte_code: src_byte_code,
                         }),
-                        // A reader has nothing to lend.
-                        Some(ComplexArrayPayload::Borrowed(_)) => {
-                            unreachable!("streaming complex payloads are always owned")
-                        }
+                        Some(StreamingComplexPayload::Scalar { class, byte_code }) => visitor
+                            .visit_seq(ComplexPairStreaming {
+                                de: self,
+                                class,
+                                byte_code,
+                                state: 0,
+                            }),
                         None => self.deserialize_any(visitor),
                     };
                 }

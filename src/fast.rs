@@ -519,6 +519,15 @@ pub fn complex_slice_size<T: BeveTypedSlice>(slice: &[Complex<T>]) -> u64 {
 /// returns only the decoded `Vec`, so it does not report how many bytes were
 /// consumed.
 ///
+/// The class check is deliberately strict, and stricter than the serde paths: a
+/// complex `i16` array read into a `Vec<Complex<f32>>` field converts there
+/// (both with and without a `#[serde(with = "beve::complex_array::f32")]`
+/// annotation), where here it is a [`Error::Mismatch`]. Naming `T` is this
+/// function's entire interface — there is no schema and no `Deserialize` impl
+/// behind it to state one — so the type you name is taken as the assertion, and
+/// converting instead would leave nothing that could ever fail. Decode through
+/// serde if you want the conversion.
+///
 /// # Example
 ///
 /// ```rust

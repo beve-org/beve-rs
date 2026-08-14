@@ -373,3 +373,70 @@ fn a_truncated_widening_payload_errors_without_panicking() {
         );
     }
 }
+
+/// A *single* complex value is not a complex array of one. Every path without
+/// the attribute rejects those bytes into a `Vec`, so every path with it must
+/// too -- the same "no semantic difference" contract, in the direction where the
+/// attribute would be *accepting* what the plain field refuses.
+///
+/// The streaming decoder is the one that has to work for it: it has consumed the
+/// header by the time it learns the value is not an array and cannot rewind, and
+/// the shortest way out from there is to present the pair as a one-element
+/// array. That would make it the only path in the crate that reads these bytes.
+#[test]
+fn a_lone_complex_value_is_not_a_one_element_array() {
+    macro_rules! check_lone {
+        ($src:ty, $dst:ty, $with:literal, $value:expr) => {{
+            #[derive(Serialize)]
+            struct Src {
+                iq: Complex<$src>,
+            }
+            #[derive(Deserialize)]
+            struct Bulk {
+                #[serde(with = $with)]
+                #[allow(dead_code)]
+                iq: Vec<Complex<$dst>>,
+            }
+            #[derive(Deserialize)]
+            struct Plain {
+                #[allow(dead_code)]
+                iq: Vec<Complex<$dst>>,
+            }
+
+            let bytes = beve::to_vec(&Src { iq: $value }).unwrap();
+            let case = concat!(stringify!($src), " -> ", stringify!($dst));
+
+            assert!(
+                beve::from_slice::<Plain>(&bytes).is_err(),
+                "premise: unannotated buffered accepts a lone value ({case})"
+            );
+            assert!(
+                beve::from_reader_streaming::<_, Plain>(Cursor::new(&bytes)).is_err(),
+                "premise: unannotated streaming accepts a lone value ({case})"
+            );
+            assert!(
+                beve::from_slice::<Bulk>(&bytes).is_err(),
+                "annotated buffered ({case})"
+            );
+            assert!(
+                beve::from_reader_streaming::<_, Bulk>(Cursor::new(&bytes)).is_err(),
+                "annotated streaming ({case})"
+            );
+        }};
+    }
+
+    // The class the field wants, and a class it would have widened had this been
+    // an array: neither may reach the array routes at all.
+    check_lone!(
+        f32,
+        f32,
+        "beve::complex_array::f32",
+        Complex { re: 1.0, im: -2.0 }
+    );
+    check_lone!(
+        i16,
+        f32,
+        "beve::complex_array::f32",
+        Complex { re: 1, im: -2 }
+    );
+}

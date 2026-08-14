@@ -137,6 +137,8 @@ portable element-wise form, so a field using them still round-trips
 through JSON as long as the element type itself has a portable serde
 representation (`num_complex::Complex` does).
 
+**A component class other than the field's still decodes.** A complex `i16` array read into a `Vec<Complex<f32>>` field is converted in one pass over the payload; a pair the bulk path cannot convert correctly (an integer destination, where every component has to be range-checked) falls back to decoding element by element. Either way the annotated field decodes to exactly what the same field without the annotation decodes to — the helpers buy throughput and never change a value or a verdict. If you were relying on the annotation to reject a differing class as a schema check, it no longer does; check the class yourself, or — for a whole-body array — use `read_complex_slice` (above), whose element-type check stays strict.
+
 [`bytemuck::AnyBitPattern`]: https://docs.rs/bytemuck/latest/bytemuck/trait.AnyBitPattern.html
 
 #### Encode-only helpers (legacy)

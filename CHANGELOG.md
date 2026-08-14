@@ -12,7 +12,9 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
   This is a behavior change: those pairs now decode where they returned `Error::Mismatch`. The annotated field was disagreeing with the unannotated one, which already accepted the same bytes and converted them, so `#[serde(with = ...)]` — documented as a throughput change — was quietly a semantic one too. Anything relying on the old strictness as a schema check now needs its own check. Nothing relying on decoded *values* changes: the element-wise path is the oracle the bulk path is now tested against, class by class and length by length.
 
-  Integer destinations keep their range checking. The element-wise path refuses a float component into an integer and rejects an out-of-range one, so the bulk path routes those to it rather than truncating or wrapping. Both decoders are covered, the streaming one included; it cannot rewind, so it decides from the parsed header whether to bulk-read at all, and a unit test pins that predicate to the converter over every encodable class pair.
+  Integer destinations keep their range checking. The element-wise path refuses a float component into an integer and rejects an out-of-range one, so the bulk path routes those to it rather than truncating or wrapping. Both decoders are covered, the streaming one included; it cannot rewind, so it decides from the parsed header whether to bulk-read at all, and a unit test pins that predicate to the converter over every encodable class pair. A lone complex *value* is still not a complex array of one, through either decoder.
+
+  `beve::read_complex_slice` is unchanged and still rejects a class other than the `T` you name: naming `T` is that function's whole interface, so it is taken as an assertion. Decode through serde if you want the conversion.
 
   Measured on a 125 MiB capture: a complex `i16` payload into `Vec<Complex<f32>>` goes from 35 ns/sample to 1.0 ns/sample (34x), and the same-class `f32` case from 9.5 to 0.6 (14x). Both land within about 25% of a plain `memcpy` of the same bytes, so what is left is memory bandwidth.
 

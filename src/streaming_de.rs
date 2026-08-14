@@ -73,9 +73,7 @@ impl<R: Read> StreamingDeserializer<R> {
     /// and the buffer grows in chunks as data actually arrives from the reader.
     fn read_exact_vec(&mut self, n: usize) -> Result<Vec<u8>> {
         // Cap initial allocation to avoid OOM on bogus size fields.
-        // 8 MB is large enough for typical payloads while limiting exposure.
-        const INITIAL_CAP: usize = 8 * 1024 * 1024;
-        let initial = n.min(INITIAL_CAP);
+        let initial = n.min(crate::de::MAX_PREALLOC_BYTES);
         let mut buf = vec![0u8; initial];
         self.read_exact_into(&mut buf)?;
         // If more bytes are needed, grow and read in chunks.

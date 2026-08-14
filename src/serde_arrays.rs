@@ -102,6 +102,21 @@ fn bytes_to_vec<E: AnyBitPattern>(payload: &[u8], scalar_size: usize) -> Vec<E> 
     out
 }
 
+/// How much of a sequence's `size_hint` to reserve up front when filling
+/// element by element.
+///
+/// The hint is a length field off the wire, so it is untrusted: a two-byte edit
+/// turns a 27-byte input into a claim of 2^55 elements, and `Vec::with_capacity`
+/// answers an impossible request by aborting the process, which no decoder gets
+/// to turn into an `Err`. The fill grows to whatever elements actually arrive,
+/// so clamping the reserve costs a few reallocations on a genuinely huge array
+/// and bounds a malformed one. Same ceiling, for the same reason, as the raw
+/// payload read in `StreamingDeserializer::read_exact_vec`.
+fn reserve_from_hint<E>(hint: Option<usize>) -> usize {
+    let elem = core::mem::size_of::<E>().max(1);
+    hint.unwrap_or(0).min(crate::de::MAX_PREALLOC_BYTES / elem)
+}
+
 // ---------------------------------------------------------------------------
 // Visitors
 // ---------------------------------------------------------------------------
@@ -129,7 +144,7 @@ where
         Ok(bytes_to_vec::<S>(&v, S::ELEM_SIZE))
     }
     fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-        let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        let mut out = Vec::with_capacity(reserve_from_hint::<S>(seq.size_hint()));
         while let Some(x) = seq.next_element::<S>()? {
             out.push(x);
         }
@@ -165,7 +180,7 @@ where
         Ok(bytes_to_vec::<T>(&v, S::ELEM_SIZE))
     }
     fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-        let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        let mut out = Vec::with_capacity(reserve_from_hint::<T>(seq.size_hint()));
         while let Some(x) = seq.next_element::<T>()? {
             out.push(x);
         }

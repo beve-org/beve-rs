@@ -16,6 +16,10 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
   Measured on a 125 MiB capture: a complex `i16` payload into `Vec<Complex<f32>>` goes from 35 ns/sample to 1.0 ns/sample (34x), and the same-class `f32` case from 9.5 to 0.6 (14x). Both land within about 25% of a plain `memcpy` of the same bytes, so what is left is memory bandwidth.
 
+### Fixed
+
+- **An element count on the wire can no longer abort the process.** The `beve::typed::*` and `beve::complex_array::*` visitors sized their result `Vec` from a sequence's `size_hint`, which is a length field off untrusted input: a 27-byte message claiming 2^55 elements reached `Vec::with_capacity`, which aborts rather than returning an error. The reserve is now capped — the same 8 MiB ceiling the streaming reader already put on a raw payload read — and the fill grows as elements actually arrive. Reachable in 7.2.0 through `from_reader_streaming` with a `beve::typed::*` field whose class differs from the wire's; the element-wise fallback above would have opened the same door for `beve::complex_array::*` and for `from_slice`.
+
 ## 7.2.0 - 2026-08-13
 
 A minor: the new `From` conversions are additive API, and everything else is a speedup, a fix, or internal. `ComplexSlice` writes a complex array in one bulk copy, 85x faster to encode with byte-identical output. Three pre-existing bugs are fixed, all of them the same mis-sizing of a `Complex<bf16>` payload — which is why a `bf16` complex could not be written by the streaming serializer, read back by the streaming deserializer, or skipped past by `from_field`.

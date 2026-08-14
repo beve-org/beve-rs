@@ -47,6 +47,17 @@ impl HalfKind {
     }
 }
 
+/// Ceiling on an allocation sized from a length on the wire that no bytes have
+/// vouched for yet.
+///
+/// Such a length is untrusted input, and `Vec` answers an impossible request by
+/// aborting the process rather than returning an error -- which no decoder can
+/// turn back into an `Err`, and no caller can catch. Every buffer bounded by
+/// this still grows to whatever data actually arrives; only the reserve taken up
+/// front is capped. 8 MiB is past the size where taking it up front still
+/// matters.
+pub(crate) const MAX_PREALLOC_BYTES: usize = 8 * 1024 * 1024;
+
 /// What a bulk complex-array decode marker found on the wire.
 ///
 /// The two decoders parse the same header and differ only in whether they can

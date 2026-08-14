@@ -47,6 +47,205 @@ impl HalfKind {
     }
 }
 
+/// Ceiling on an allocation sized from a length on the wire that no bytes have
+/// vouched for yet.
+///
+/// Such a length is untrusted input, and `Vec` answers an impossible request by
+/// aborting the process rather than returning an error -- which no decoder can
+/// turn back into an `Err`, and no caller can catch. Every buffer bounded by
+/// this still grows to whatever data actually arrives; only the reserve taken up
+/// front is capped. 8 MiB is past the size where taking it up front still
+/// matters.
+pub(crate) const MAX_PREALLOC_BYTES: usize = 8 * 1024 * 1024;
+
+/// What the slice decoder's bulk complex-array marker found on the wire.
+enum ComplexArrayPayload<'de> {
+    /// The array's class already matches the destination: its payload, borrowed.
+    Borrowed(&'de [u8]),
+    /// A different class, converted into the destination width.
+    Owned(Vec<u8>),
+    /// Header consumed, and only the element-wise path can convert this pair.
+    /// The caller drives the ordinary complex-array sequence access from here,
+    /// which is exactly the state that access expects to start in.
+    ElementWise {
+        len: usize,
+        src_class: u8,
+        src_byte_code: u8,
+    },
+}
+
+/// How a bulk complex-array marker should take a complex array off the wire,
+/// given the component class the header names and the one the field wants.
+///
+/// The two decoders read bytes differently -- one borrows out of a slice, the
+/// other pulls from a reader -- but they choose between these three routes by
+/// one rule, and this is the only place it is written down. While each carried
+/// its own copy of it they drifted, over what even counts as an array.
+pub(crate) enum ComplexArrayPlan {
+    /// The classes match: take `payload_len` bytes of payload as they are.
+    AsIs { payload_len: usize },
+    /// The classes differ but the pair converts in bulk: take `payload_len`
+    /// bytes -- sized by the *source* width -- and hand them to
+    /// [`widen_complex_components`].
+    Widen { payload_len: usize },
+    /// Only the element-wise path converts this pair. The payload stays unread
+    /// so that path can walk it component by component, range-checking as it
+    /// goes.
+    ElementWise,
+}
+
+/// Plan the decode of a complex array of `len` `[re, im]` values whose
+/// components are `(src_class, src_byte_code)` into a field wanting
+/// `(dst_class, dst_byte_code)` components of `dst_scalar_size` bytes.
+///
+/// Sizes nothing from the destination width unless the classes match: a source
+/// component is as wide as its own class says, which for a half float is not the
+/// generic `1 << byte_code` (see [`complex_component_bytes`]).
+pub(crate) fn complex_array_plan(
+    src_class: u8,
+    src_byte_code: u8,
+    len: usize,
+    dst_class: u8,
+    dst_byte_code: u8,
+    dst_scalar_size: usize,
+) -> Result<ComplexArrayPlan> {
+    if src_class == dst_class && src_byte_code == dst_byte_code {
+        return Ok(ComplexArrayPlan::AsIs {
+            payload_len: complex_payload_len(len, dst_scalar_size)?,
+        });
+    }
+    if !complex_widening_supported(src_class, src_byte_code, dst_class, dst_byte_code) {
+        return Ok(ComplexArrayPlan::ElementWise);
+    }
+    let src_width = complex_component_bytes(src_class, src_byte_code)
+        .ok_or(Error::Unsupported("unsupported complex component width"))?;
+    Ok(ComplexArrayPlan::Widen {
+        payload_len: complex_payload_len(len, src_width)?,
+    })
+}
+
+/// Bytes a complex array of `len` values occupies at `component_bytes` per
+/// component: two components (re, im) per value.
+fn complex_payload_len(len: usize, component_bytes: usize) -> Result<usize> {
+    len.checked_mul(2)
+        .and_then(|n| n.checked_mul(component_bytes))
+        .ok_or(Error::InvalidSize)
+}
+
+/// Whether [`widen_complex_components`] converts this class pair.
+///
+/// [`complex_array_plan`] picks a route before either decoder has read the
+/// payload, and the streaming one cannot rewind if that choice was wrong, so the
+/// answer has to be available up front. Stated as a rule rather than a second
+/// copy of the pair list below; `widening_predicate_matches_the_converter` pins
+/// the two together over every possible pair.
+pub(crate) fn complex_widening_supported(
+    src_class: u8,
+    src_bc: u8,
+    dst_class: u8,
+    dst_bc: u8,
+) -> bool {
+    if dst_class != NUM_FLOAT || !matches!(dst_bc, 2 | 3) {
+        return false;
+    }
+    if src_class == dst_class && src_bc == dst_bc {
+        return false; // same class: the caller takes the payload as-is
+    }
+    match src_class {
+        NUM_SIGNED | NUM_UNSIGNED => src_bc <= 4,
+        NUM_FLOAT => src_bc <= 3,
+        _ => false,
+    }
+}
+
+/// Convert a little-endian complex payload of `(src_class, src_bc)` components
+/// into little-endian components of the float width `dst_bc` names.
+///
+/// Mirrors `NumDe::deserialize_f32`/`deserialize_f64`, which accept every
+/// numeric class, so a bulk decode and an element-wise decode of the same bytes
+/// produce the same values. That equality is the whole contract of the
+/// `#[serde(with = ...)]` markers: they are a throughput change, never a
+/// semantic one.
+///
+/// Only float destinations convert. The element-wise path range-checks every
+/// component on the way into an integer and rejects floats outright; a bulk loop
+/// that wrapped or saturated instead would disagree with it, so those callers
+/// get `None` and fall back to the element-wise path rather than a fast wrong
+/// answer.
+pub(crate) fn widen_complex_components(
+    src: &[u8],
+    src_class: u8,
+    src_bc: u8,
+    dst_class: u8,
+    dst_bc: u8,
+) -> Option<Vec<u8>> {
+    // Not merely an early-out: `dst_bc` 2 means f32 under NUM_FLOAT but i32/u32
+    // under the integer classes, so without this the match below would happily
+    // write floats into an integer destination.
+    if dst_class != NUM_FLOAT {
+        return None;
+    }
+    // Read each component at the source width, convert, write it back at the
+    // destination width. Pairing is irrelevant: a complex payload is just `2n`
+    // contiguous components, and re/im convert identically.
+    macro_rules! convert {
+        ($src_ty:ty, $dst_ty:ty, $f:expr) => {{
+            const SW: usize = core::mem::size_of::<$src_ty>();
+            const DW: usize = core::mem::size_of::<$dst_ty>();
+            // The source width is stated twice: here by the arm's own type, and
+            // by `complex_component_bytes` where the caller sizes the read. They
+            // agree today; if an arm ever pairs a class with the wrong type,
+            // refuse the payload rather than dropping the trailing partial
+            // component and returning a silently short `Vec`.
+            debug_assert_eq!(Some(SW), complex_component_bytes(src_class, src_bc));
+            if !src.len().is_multiple_of(SW) {
+                return None;
+            }
+            let mut out = vec![0u8; src.len() / SW * DW];
+            for (o, i) in out.chunks_exact_mut(DW).zip(src.chunks_exact(SW)) {
+                let v = <$src_ty>::from_le_bytes(i.try_into().expect("component width"));
+                let d: $dst_ty = $f(v);
+                o.copy_from_slice(&d.to_le_bytes());
+            }
+            out
+        }};
+    }
+
+    // `dst_bc` is a NUM_FLOAT byte code: 2 is f32, 3 is f64. The same-class case
+    // never arrives here; the caller borrows that payload instead of copying it.
+    Some(match (dst_bc, src_class, src_bc) {
+        (2, NUM_SIGNED, 0) => convert!(i8, f32, |v| v as f32),
+        (2, NUM_SIGNED, 1) => convert!(i16, f32, |v| v as f32),
+        (2, NUM_SIGNED, 2) => convert!(i32, f32, |v| v as f32),
+        (2, NUM_SIGNED, 3) => convert!(i64, f32, |v| v as f32),
+        (2, NUM_SIGNED, 4) => convert!(i128, f32, |v| v as f32),
+        (2, NUM_UNSIGNED, 0) => convert!(u8, f32, |v| v as f32),
+        (2, NUM_UNSIGNED, 1) => convert!(u16, f32, |v| v as f32),
+        (2, NUM_UNSIGNED, 2) => convert!(u32, f32, |v| v as f32),
+        (2, NUM_UNSIGNED, 3) => convert!(u64, f32, |v| v as f32),
+        (2, NUM_UNSIGNED, 4) => convert!(u128, f32, |v| v as f32),
+        (2, NUM_FLOAT, 0) => convert!(u16, f32, |b| HalfKind::Bf16.to_f32(b)),
+        (2, NUM_FLOAT, 1) => convert!(u16, f32, |b| HalfKind::F16.to_f32(b)),
+        (2, NUM_FLOAT, 3) => convert!(f64, f32, |v| v as f32),
+
+        (3, NUM_SIGNED, 0) => convert!(i8, f64, |v| v as f64),
+        (3, NUM_SIGNED, 1) => convert!(i16, f64, |v| v as f64),
+        (3, NUM_SIGNED, 2) => convert!(i32, f64, |v| v as f64),
+        (3, NUM_SIGNED, 3) => convert!(i64, f64, |v| v as f64),
+        (3, NUM_SIGNED, 4) => convert!(i128, f64, |v| v as f64),
+        (3, NUM_UNSIGNED, 0) => convert!(u8, f64, |v| v as f64),
+        (3, NUM_UNSIGNED, 1) => convert!(u16, f64, |v| v as f64),
+        (3, NUM_UNSIGNED, 2) => convert!(u32, f64, |v| v as f64),
+        (3, NUM_UNSIGNED, 3) => convert!(u64, f64, |v| v as f64),
+        (3, NUM_UNSIGNED, 4) => convert!(u128, f64, |v| v as f64),
+        (3, NUM_FLOAT, 0) => convert!(u16, f64, |b| HalfKind::Bf16.to_f64(b)),
+        (3, NUM_FLOAT, 1) => convert!(u16, f64, |b| HalfKind::F16.to_f64(b)),
+        (3, NUM_FLOAT, 2) => convert!(f32, f64, |v| v as f64),
+
+        _ => return None,
+    })
+}
+
 #[inline]
 fn make_seq_unsigned<'de>(
     de: &mut Deserializer<'de>,
@@ -255,32 +454,78 @@ impl<'de> Deserializer<'de> {
 
     /// Complex-array twin of [`typed_array_payload`](Self::typed_array_payload):
     /// `scalar_size` is the per-scalar width (the payload is `len * 2 *
-    /// scalar_size` for `len` `[re, im]` values). Returns `None` only when the
-    /// value is not a complex extension at all (e.g. the generic empty array an
-    /// empty `Vec` encodes as); a complex array of a *different* element type is a
-    /// mismatch error.
+    /// scalar_size` for `len` `[re, im]` values).
+    ///
+    /// An array whose class already matches lends its payload out borrowed. A
+    /// *different* class is widened into the destination when the destination is
+    /// a float, because the element-wise path accepts every numeric class there
+    /// and the two must agree; see [`widen_complex_components`].
+    ///
+    /// `None` covers the two shapes this fast path declines, both with the
+    /// cursor left where it started so the caller can fall back to
+    /// `deserialize_any`: a value that is not a complex extension at all (the
+    /// generic empty array an empty `Vec` encodes as), and a *single* complex
+    /// value, which is a complex extension but not an array. `deserialize_any`
+    /// presents that one as a 2-element sequence of scalars, and rejecting it is
+    /// its job, not this one's.
     fn complex_array_payload(
         &mut self,
         class: u8,
         byte_code: u8,
         scalar_size: usize,
-    ) -> Result<Option<&'de [u8]>> {
+    ) -> Result<Option<ComplexArrayPayload<'de>>> {
         let header = self.peek_byte()?;
         if parse_type(header) != TYPE_EXTENSION || parse_extension_id(header) != EXT_COMPLEX {
             return Ok(None);
         }
+        let rewind = self.pos;
         self.read_byte()?; // extension header
         let ch = self.read_byte()?; // complex header byte
         let is_array = (ch & 0x01) != 0;
-        if !is_array || ((ch >> 3) & 0x03) != class || ((ch >> 5) & 0x07) != byte_code {
-            return Err(Error::Mismatch("complex array element type does not match"));
+        let src_class = (ch >> 3) & 0x03;
+        let src_byte_code = (ch >> 5) & 0x07;
+        if !is_array {
+            self.pos = rewind;
+            return Ok(None);
         }
         let len = read_size(self.input, &mut self.pos)? as usize;
-        let payload = len
-            .checked_mul(2)
-            .and_then(|n| n.checked_mul(scalar_size))
-            .ok_or(Error::InvalidSize)?;
-        Ok(Some(self.read_exact(payload)?))
+
+        match complex_array_plan(src_class, src_byte_code, len, class, byte_code, scalar_size)? {
+            ComplexArrayPlan::AsIs { payload_len } => Ok(Some(ComplexArrayPayload::Borrowed(
+                self.read_exact(payload_len)?,
+            ))),
+            ComplexArrayPlan::Widen { payload_len } => {
+                let widened = widen_complex_components(
+                    self.peek_exact(payload_len)?,
+                    src_class,
+                    src_byte_code,
+                    class,
+                    byte_code,
+                )
+                .ok_or(Error::Unsupported(
+                    "complex widening plan and converter disagree",
+                ))?;
+                self.pos += payload_len;
+                Ok(Some(ComplexArrayPayload::Owned(widened)))
+            }
+            // Leave the payload unread: the element-wise access reads it itself,
+            // component by component, and range-checks as it goes.
+            ComplexArrayPlan::ElementWise => Ok(Some(ComplexArrayPayload::ElementWise {
+                len,
+                src_class,
+                src_byte_code,
+            })),
+        }
+    }
+
+    /// Borrow the next `n` bytes without advancing. Lets a bulk decode inspect a
+    /// payload it may decide not to consume.
+    #[inline]
+    fn peek_exact(&self, n: usize) -> Result<&'de [u8]> {
+        if self.remaining() < n {
+            return Err(Error::Eof);
+        }
+        Ok(&self.input[self.pos..self.pos + n])
     }
 
     fn parse_bool(&mut self, header: u8) -> Result<bool> {
@@ -751,7 +996,22 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
                 }
                 if let Some((class, byte_code, scalar_size)) = crate::ext::complex_array_tag(name) {
                     return match self.complex_array_payload(class, byte_code, scalar_size)? {
-                        Some(bytes) => visitor.visit_borrowed_bytes(bytes),
+                        Some(ComplexArrayPayload::Borrowed(bytes)) => {
+                            visitor.visit_borrowed_bytes(bytes)
+                        }
+                        // A converted payload is owned, so it cannot be borrowed
+                        // for `'de`; the visitor copies out of it either way.
+                        Some(ComplexArrayPayload::Owned(bytes)) => visitor.visit_byte_buf(bytes),
+                        Some(ComplexArrayPayload::ElementWise {
+                            len,
+                            src_class,
+                            src_byte_code,
+                        }) => visitor.visit_seq(SeqAccessComplexArray {
+                            de: self,
+                            remaining: len,
+                            class: src_class,
+                            byte_code: src_byte_code,
+                        }),
                         None => self.deserialize_any(visitor),
                     };
                 }
@@ -1738,5 +1998,64 @@ impl<'de> de::Deserializer<'de> for HalfBitsDeserializer {
 
     fn is_human_readable(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `complex_array_plan` asks `complex_widening_supported` whether to bulk-read
+    /// a payload, and the decoder then calls `widen_complex_components` on what it
+    /// read. If those two ever disagree, a decode that should have gone
+    /// element-wise instead consumes the payload and errors out with no way back
+    /// (the streaming decoder cannot rewind). Nothing about the pair list forces
+    /// them to agree, so this walks every encodable combination.
+    #[test]
+    fn widening_predicate_matches_the_converter() {
+        for src_class in 0u8..4 {
+            for src_bc in 0u8..8 {
+                for dst_class in 0u8..4 {
+                    for dst_bc in 0u8..8 {
+                        let predicted =
+                            complex_widening_supported(src_class, src_bc, dst_class, dst_bc);
+                        let converts =
+                            widen_complex_components(&[], src_class, src_bc, dst_class, dst_bc)
+                                .is_some();
+                        assert_eq!(
+                            predicted, converts,
+                            "disagreement at src=({src_class},{src_bc}) dst=({dst_class},{dst_bc})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The converter writes the destination width for every component it reads,
+    /// so an output buffer is `len * 2 * size_of::<dst>()` however wide the
+    /// source was. A half-float source is the one that catches a generic
+    /// `1 << byte_code` width rule (see `header::complex_component_bytes`).
+    #[test]
+    fn widened_output_is_sized_by_the_destination_not_the_source() {
+        // Compared as bytes rather than decoded back, which also pins the output
+        // to little-endian: `bytes_to_vec` byte-swaps on a big-endian target on
+        // the assumption that every payload reaching it is LE, so a converter
+        // writing native order would be wrong only there.
+        let le = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|f| f.to_le_bytes()).collect() };
+
+        // Four i16 components (two complex values) -> four f32 components.
+        let src = [1i16, 2, 3, 4]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<u8>>();
+        let out = widen_complex_components(&src, NUM_SIGNED, 1, NUM_FLOAT, 2).expect("supported");
+        assert_eq!(out, le(&[1.0, 2.0, 3.0, 4.0]));
+
+        // bf16 components are 2 bytes at byte_code 0, where `1 << 0` would say 1.
+        let bits = half::bf16::from_f32(-1.5).to_bits();
+        let src: Vec<u8> = (0..4).flat_map(|_| bits.to_le_bytes()).collect();
+        let out = widen_complex_components(&src, NUM_FLOAT, 0, NUM_FLOAT, 2).expect("supported");
+        assert_eq!(out, le(&[-1.5; 4]));
     }
 }

@@ -1972,28 +1972,24 @@ mod tests {
     /// `1 << byte_code` width rule (see `header::complex_component_bytes`).
     #[test]
     fn widened_output_is_sized_by_the_destination_not_the_source() {
+        // Compared as bytes rather than decoded back, which also pins the output
+        // to little-endian: `bytes_to_vec` byte-swaps on a big-endian target on
+        // the assumption that every payload reaching it is LE, so a converter
+        // writing native order would be wrong only there.
+        let le = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|f| f.to_le_bytes()).collect() };
+
         // Four i16 components (two complex values) -> four f32 components.
         let src = [1i16, 2, 3, 4]
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect::<Vec<u8>>();
         let out = widen_complex_components(&src, NUM_SIGNED, 1, NUM_FLOAT, 2).expect("supported");
-        assert_eq!(out.len(), 4 * size_of::<f32>());
-        let got: Vec<f32> = out
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        assert_eq!(got, vec![1.0f32, 2.0, 3.0, 4.0]);
+        assert_eq!(out, le(&[1.0, 2.0, 3.0, 4.0]));
 
         // bf16 components are 2 bytes at byte_code 0, where `1 << 0` would say 1.
         let bits = half::bf16::from_f32(-1.5).to_bits();
         let src: Vec<u8> = (0..4).flat_map(|_| bits.to_le_bytes()).collect();
         let out = widen_complex_components(&src, NUM_FLOAT, 0, NUM_FLOAT, 2).expect("supported");
-        assert_eq!(out.len(), 4 * size_of::<f32>());
-        let got: Vec<f32> = out
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        assert_eq!(got, vec![-1.5f32; 4]);
+        assert_eq!(out, le(&[-1.5; 4]));
     }
 }

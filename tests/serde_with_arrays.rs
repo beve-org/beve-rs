@@ -179,22 +179,63 @@ struct OneComplex {
 }
 
 #[test]
-fn mismatched_element_type_errors() {
-    // Encode a Complex<f32> array, then try to decode it as a Complex<f64> array:
-    // the decoder validates the wire element class/width and must reject it, not
-    // silently misread.
+fn a_different_element_type_converts_exactly_as_the_unannotated_field_does() {
+    // A Complex<f32> array read as Complex<f64>. The point is not that this
+    // succeeds but that it agrees with the *unannotated* field on the same
+    // bytes: `#[serde(with = ...)]` is a throughput change, so it must never
+    // turn a decode that works into one that fails. This pair used to be
+    // rejected outright, which is what kept a mixed-width reader off the bulk
+    // path entirely.
     #[derive(Deserialize)]
-    struct WrongWidth {
+    struct WiderBulk {
         #[serde(with = "beve::complex_array::f64")]
-        #[allow(dead_code)]
+        iq: Vec<Complex<f64>>,
+    }
+    #[derive(Deserialize)]
+    struct WiderPlain {
         iq: Vec<Complex<f64>>,
     }
     let bytes = beve::to_vec(&OneComplex {
         iq: vec![Complex { re: 1.0, im: 2.0 }; 16],
     })
     .unwrap();
-    assert!(beve::from_slice::<WrongWidth>(&bytes).is_err());
-    assert!(beve::from_reader_streaming::<_, WrongWidth>(Cursor::new(&bytes)).is_err());
+
+    let expected = beve::from_slice::<WiderPlain>(&bytes)
+        .expect("element-wise")
+        .iq;
+    assert_eq!(beve::from_slice::<WiderBulk>(&bytes).unwrap().iq, expected);
+    assert_eq!(
+        beve::from_reader_streaming::<_, WiderBulk>(Cursor::new(&bytes))
+            .unwrap()
+            .iq,
+        expected
+    );
+}
+
+#[test]
+fn an_unconvertible_element_type_still_errors() {
+    // Strictness that is real, and that the widening must not have loosened:
+    // the element-wise path refuses a float component into an integer, so the
+    // bulk marker has to refuse it too rather than truncate.
+    #[derive(Deserialize)]
+    struct IntBulk {
+        #[serde(with = "beve::complex_array::i32")]
+        #[allow(dead_code)]
+        iq: Vec<Complex<i32>>,
+    }
+    #[derive(Deserialize)]
+    struct IntPlain {
+        #[allow(dead_code)]
+        iq: Vec<Complex<i32>>,
+    }
+    let bytes = beve::to_vec(&OneComplex {
+        iq: vec![Complex { re: 1.5, im: 2.5 }; 16],
+    })
+    .unwrap();
+
+    assert!(beve::from_slice::<IntPlain>(&bytes).is_err(), "premise");
+    assert!(beve::from_slice::<IntBulk>(&bytes).is_err());
+    assert!(beve::from_reader_streaming::<_, IntBulk>(Cursor::new(&bytes)).is_err());
 }
 
 #[test]

@@ -40,6 +40,13 @@
 //! bit pattern is a valid value) and layout-compatible with `Complex<scalar>`.
 //! `beve::Complex` qualifies, as does `num_complex::Complex` with its `bytemuck`
 //! feature enabled.
+//!
+//! **A different component class on the wire still decodes.** A complex `i16`
+//! array read into a `Vec<Complex<f32>>` field converts in one pass rather than
+//! one element at a time; read into an integer field of another width, it falls
+//! back to the element-wise path, which range-checks each component. Either way
+//! the field decodes to exactly what it would without the annotation: these
+//! helpers are a throughput change and never a semantic one.
 
 use bytemuck::AnyBitPattern;
 use serde::de::{self, Visitor};

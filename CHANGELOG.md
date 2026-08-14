@@ -4,6 +4,18 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Changed
+
+- **`beve::complex_array::*` decodes a complex array whose component class differs from the field's**, instead of rejecting it. A complex `i16` array read into a `Vec<Complex<f32>>` field is converted in one pass over the payload; class pairs the bulk path cannot convert correctly fall back to the element-wise path rather than erroring.
+
+  This is a behavior change: those pairs now decode where they returned `Error::Mismatch`. The annotated field was disagreeing with the unannotated one, which already accepted the same bytes and converted them, so `#[serde(with = ...)]` — documented as a throughput change — was quietly a semantic one too. Anything relying on the old strictness as a schema check now needs its own check. Nothing relying on decoded *values* changes: the element-wise path is the oracle the bulk path is now tested against, class by class and length by length.
+
+  Integer destinations keep their range checking. The element-wise path refuses a float component into an integer and rejects an out-of-range one, so the bulk path routes those to it rather than truncating or wrapping. Both decoders are covered, the streaming one included; it cannot rewind, so it decides from the parsed header whether to bulk-read at all, and a unit test pins that predicate to the converter over every encodable class pair.
+
+  Measured on a 125 MiB capture: a complex `i16` payload into `Vec<Complex<f32>>` goes from 35 ns/sample to 1.0 ns/sample (34x), and the same-class `f32` case from 9.5 to 0.6 (14x). Both land within about 25% of a plain `memcpy` of the same bytes, so what is left is memory bandwidth.
+
 ## 7.2.0 - 2026-08-13
 
 A minor: the new `From` conversions are additive API, and everything else is a speedup, a fix, or internal. `ComplexSlice` writes a complex array in one bulk copy, 85x faster to encode with byte-identical output. Three pre-existing bugs are fixed, all of them the same mis-sizing of a `Complex<bf16>` payload — which is why a `bf16` complex could not be written by the streaming serializer, read back by the streaming deserializer, or skipped past by `from_field`.

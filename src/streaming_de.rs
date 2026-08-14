@@ -8,8 +8,9 @@ use serde::de::{self, DeserializeOwned, Visitor};
 use serde::forward_to_deserialize_any;
 
 use crate::de::{
-    EnumIndexAccess, HalfBitsDeserializer, HalfKind, NumDe, VariantAccessNoValue,
-    byte_count_to_bytes, le_signed,
+    ComplexArrayPayload, EnumIndexAccess, HalfBitsDeserializer, HalfKind, NumDe,
+    VariantAccessNoValue, byte_count_to_bytes, complex_widening_supported, le_signed,
+    widen_complex_components,
 };
 use crate::error::{Error, Result};
 use crate::header::*;
@@ -151,12 +152,17 @@ impl<R: Read> StreamingDeserializer<R> {
     }
 
     /// Complex-array twin of [`typed_array_payload`](Self::typed_array_payload).
+    ///
+    /// Mirrors `de::Deserializer::complex_array_payload`, minus the borrowed
+    /// case: a reader has nothing to lend. A reader also cannot rewind, which is
+    /// why the element-wise hand-off carries the parsed header instead of
+    /// backing the cursor up to it.
     fn complex_array_payload(
         &mut self,
         class: u8,
         byte_code: u8,
         scalar_size: usize,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<ComplexArrayPayload<'static>>> {
         let header = self.peek_byte()?;
         if parse_type(header) != TYPE_EXTENSION || parse_extension_id(header) != EXT_COMPLEX {
             return Ok(None);
@@ -164,15 +170,52 @@ impl<R: Read> StreamingDeserializer<R> {
         self.read_byte()?; // extension header
         let ch = self.read_byte()?; // complex header byte
         let is_array = (ch & 0x01) != 0;
-        if !is_array || ((ch >> 3) & 0x03) != class || ((ch >> 5) & 0x07) != byte_code {
-            return Err(Error::Mismatch("complex array element type does not match"));
+        let src_class = (ch >> 3) & 0x03;
+        let src_bc = (ch >> 5) & 0x07;
+        if !is_array {
+            // A single complex value. The header is already consumed, so hand
+            // the pair to the element-wise access rather than trying to rewind;
+            // it presents the same 2-element sequence `deserialize_any` would.
+            return Ok(Some(ComplexArrayPayload::ElementWise {
+                len: 1,
+                class: src_class,
+                byte_code: src_bc,
+            }));
         }
         let len = self.read_size()? as usize;
-        let payload = len
+
+        if src_class == class && src_bc == byte_code {
+            let payload = len
+                .checked_mul(2)
+                .and_then(|n| n.checked_mul(scalar_size))
+                .ok_or(Error::InvalidSize)?;
+            return Ok(Some(ComplexArrayPayload::Owned(
+                self.read_exact_vec(payload)?,
+            )));
+        }
+
+        let src_width = complex_component_bytes(src_class, src_bc)
+            .ok_or(Error::Unsupported("unsupported complex component width"))?;
+        let payload_len = len
             .checked_mul(2)
-            .and_then(|n| n.checked_mul(scalar_size))
+            .and_then(|n| n.checked_mul(src_width))
             .ok_or(Error::InvalidSize)?;
-        Ok(Some(self.read_exact_vec(payload)?))
+
+        // Unlike the slice decoder this must decide before reading, since the
+        // element-wise access reads the payload itself.
+        if complex_widening_supported(src_class, src_bc, class, byte_code) {
+            let raw = self.read_exact_vec(payload_len)?;
+            let widened = widen_complex_components(&raw, src_class, src_bc, class, byte_code)
+                .ok_or(Error::Unsupported(
+                    "complex widening predicate and converter disagree",
+                ))?;
+            return Ok(Some(ComplexArrayPayload::Owned(widened)));
+        }
+        Ok(Some(ComplexArrayPayload::ElementWise {
+            len,
+            class: src_class,
+            byte_code: src_bc,
+        }))
     }
 
     // -- parse helpers --
@@ -543,7 +586,21 @@ impl<'de, R: Read> serde::Deserializer<'de> for &mut StreamingDeserializer<R> {
                 }
                 if let Some((class, byte_code, scalar_size)) = crate::ext::complex_array_tag(name) {
                     return match self.complex_array_payload(class, byte_code, scalar_size)? {
-                        Some(v) => visitor.visit_byte_buf(v),
+                        Some(ComplexArrayPayload::Owned(v)) => visitor.visit_byte_buf(v),
+                        Some(ComplexArrayPayload::ElementWise {
+                            len,
+                            class,
+                            byte_code,
+                        }) => visitor.visit_seq(SeqAccessComplexStreaming {
+                            de: self,
+                            remaining: len,
+                            class,
+                            byte_code,
+                        }),
+                        // A reader has nothing to lend.
+                        Some(ComplexArrayPayload::Borrowed(_)) => {
+                            unreachable!("streaming complex payloads are always owned")
+                        }
                         None => self.deserialize_any(visitor),
                     };
                 }

@@ -6,7 +6,30 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 ## Unreleased
 
+A major, for one reason: the bulk complex-array helpers took an unconstrained `T` and checked it with `size_of` and `align_of` at run time, which cannot express what reading a type as raw bytes actually requires. They now take `ComplexElement`, an unsafe trait carrying that promise, and name the component class in the bound.
+
+### Added
+
+- **`beve::ComplexElement`**, an unsafe trait declaring that a type is exactly two contiguous `Component` scalars, real part first, with no padding and every byte initialized. Implemented for `beve::Complex<T>` at every scalar BEVE encodes.
+
+- **The `num-complex` feature**, adding `ComplexElement` for `num_complex::Complex<T>` at each of the twelve scalars with a bulk helper. The orphan rule means these impls can only ship from this crate, so a caller cannot supply them; for the same reason the feature turns on `num-complex/bytemuck` (the `AnyBitPattern` the bulk decode requires) and `num-complex/serde` (the `Serialize`/`Deserialize` the `complex_array::*` modules take on top of `ComplexElement`). Without those, the feature would compile and then fail at every use site.
+
+  The dependency is `num-complex = "0.4.1"`, not `"0.4"`: the `bytemuck` feature did not exist in 0.4.0, so a consumer locked there — or any `-Z minimal-versions` job — would fail at resolve time with no way forward.
+
 ### Changed
+
+- **Breaking: `beve::complex::*_array` and `beve::complex_array::*` require `T: ComplexElement<Component = <scalar>>`.** Both families reinterpret a caller's `&[T]` as `&[Complex<scalar>]` and read `size_of_val` bytes out of it. The old guard was `size_of` plus `align_of`, and neither can see padding, field order, or whether a byte is initialized at all.
+
+  Two things that used to compile now do not, and both were bugs:
+
+  - **A padded type was undefined behavior.** `#[repr(C)] struct { re: i16, tag: u8 }` is size 4, align 2 — identical to `Complex<i16>` — so it passed both asserts, and the encoder read its uninitialized padding byte and wrote it into the output. That is UB plus an uninitialized-memory disclosure into a file or over a socket. The same hole let a pointer-bearing `T` write ASLR'd addresses, wherever its width and alignment happened to match the component class in use.
+  - **A same-width class crossed silently.** `complex::f32_array` accepted pairs of `i32`, since the two have the same size and alignment, and produced a file whose readers saw `1.4e-45`. `Component` is now part of the bound, so this is a type error.
+
+  Migration: `beve::Complex<T>` and, with the new feature, `num_complex::Complex<T>` work unchanged. For your own complex type, add `unsafe impl beve::ComplexElement for MyIq { type Component = f32; }` — the `unsafe` is the point, since the layout promise is yours to make. No other trait is required; `ComplexElement` has no supertrait, so a non-`Copy` element compiles as before. A genuinely complex-shaped type keeps working once that impl is added; a padded or wrong-class one was already broken.
+
+  Size and **alignment** remain as run-time backstops against a wrong `unsafe impl`. Alignment is not implied by the rest of the contract: `#[repr(C, packed)] struct { re: f64, im: f64 }` has no padding, puts the real part first and initializes every byte, yet drops to align 1 where the `&[Complex<f64>]` these helpers build needs align 8. The safety contract now states the alignment requirement, and the assert covers empty slices too — the reference is built before any emptiness check and must be aligned at length zero.
+
+  No wire, format, or behavior change. `ComplexSlice` and `read_complex_slice` are untouched — they were never generic over a caller's type and so never had the hole.
 
 - The declared **MSRV moves to 1.96.1** (was 1.89). Both the default and `--all-features` builds check clean on that toolchain; the CI MSRV job pins it.
 

@@ -107,5 +107,8 @@ jobs:
       - name: Install cross
         run: cargo install cross --locked --version 0.2.5
 
+      # `num-complex` explicitly: the bulk complex codec is the byte-order
+      # sensitive path this job exists for, and its tests are behind that
+      # feature. `mat` stays off; hdf5-pure has its own big-endian job.
       - name: cargo test on s390x (big-endian)
-        run: cross test --locked --target s390x-unknown-linux-gnu
+        run: cross test --locked --target s390x-unknown-linux-gnu --features num-complex

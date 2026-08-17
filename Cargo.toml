@@ -1,6 +1,6 @@
 [package]
 name = "beve"
-version = "7.3.0"
+version = "8.0.0"
 edition = "2024"
 rust-version = "1.96.1"
 description = "Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specification with serde support"
@@ -21,13 +21,17 @@ readme = "README.md"
 # and warns every downstream build that lacks a C++23 compiler.
 exclude = ["dev/", "tests/cpp/"]
 
-# `mat` is off by default, and docs.rs builds a crate with its default features
-# unless told otherwise — which rendered the whole `mat` module invisible there
-# through 7.0.0. Build the docs with every feature on so the MATLAB export API
-# is documented. Safe to turn on: `mat`'s only dependency is `hdf5-pure`, which
-# is pure Rust and needs no system libraries.
+# Both `mat` and `num-complex` are off by default, and docs.rs builds a crate
+# with its default features unless told otherwise — which rendered the whole
+# `mat` module invisible there through 7.0.0. Build the docs with every feature
+# on so the MATLAB export API and the `num_complex` impls are documented. Safe
+# to turn on: neither dependency needs system libraries.
+#
+# `--cfg docsrs` goes with it, so feature-gated items carry an "Available on
+# crate feature" badge instead of looking unconditional.
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # Lean core by default. The `mat` feature (MATLAB v7.3 / HDF5 file interop) is
@@ -35,6 +39,13 @@ all-features = true
 # (flate2/miniz_oxide/crc32fast), which the core BEVE ser/de does not need.
 default = []
 mat = ["dep:hdf5-pure", "hdf5-pure/serde"]
+# `ComplexElement` impls for `num_complex::Complex<T>`, so the bulk complex-array
+# helpers take those slices directly; the orphan rule puts them here rather than
+# in a caller. The two upstream features come along because the helpers' bounds
+# demand them and a caller cannot add either impl either: `bytemuck` for the
+# decode's `AnyBitPattern`, `serde` for the `Serialize`/`Deserialize` the
+# `complex_array::*` modules require.
+num-complex = ["dep:num-complex", "num-complex/bytemuck", "num-complex/serde"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -44,6 +55,9 @@ half = { version = "2.4", features = ["serde"] }
 bytemuck = "1"
 simdutf8 = "0.1"
 hdf5-pure = { version = "0.39", optional = true }
+# 0.4.1, not 0.4: the `bytemuck` feature turned on above did not exist in 0.4.0,
+# so a consumer locked there fails at resolve time.
+num-complex = { version = "0.4.1", optional = true, default-features = false }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

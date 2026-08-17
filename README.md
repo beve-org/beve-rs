@@ -5,7 +5,7 @@ Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specificat
 Grab the crate from [crates.io](https://crates.io/crates/beve) and add it to your project with `cargo add beve` or by editing `Cargo.toml`:
 ```toml
 [dependencies]
-beve = "7"
+beve = "8"
 ```
 By default the crate is lean: it depends only on `serde`, `half`, and `simdutf8`, and requires Rust 1.96.1 or newer. Half-precision floats via `half::f16` are supported alongside the standard numeric types. The MATLAB/HDF5 export path is gated behind the opt-in [`mat` feature](#matlab--mat-export), so the HDF5 dependency stack is never pulled into a default build.
 
@@ -210,7 +210,7 @@ struct Capture {
 }
 ```
 
-`beve::typed::*` covers the numeric scalars (`i8`–`i128`, `u8`–`u128`, `f32`, `f64`); `beve::complex_array::*` covers complex arrays whose element is layout-compatible with `Complex<scalar>` (including `num_complex::Complex` with its `bytemuck` feature). The on-wire bytes are identical to the unannotated `Vec<T>`, so an annotated and a plain field interoperate. See [Complex Numbers and Matrices](#complex-numbers-and-matrices) for the foreign-type details.
+`beve::typed::*` covers the numeric scalars (`i8`–`i128`, `u8`–`u128`, `f32`, `f64`); `beve::complex_array::*` covers complex arrays whose element implements `beve::ComplexElement` (including `num_complex::Complex` under this crate's `num-complex` feature). The on-wire bytes are identical to the unannotated `Vec<T>`, so an annotated and a plain field interoperate. See [Complex Numbers and Matrices](#complex-numbers-and-matrices) for the foreign-type details.
 
 ### Integer Map Keys
 Maps with integer keys serialize deterministically and read back into ordered maps:
@@ -270,7 +270,7 @@ fn encode_science() -> beve::Result<()> {
     Ok(())
 }
 ```
-For foreign complex types (e.g. `num_complex::Complex`), annotate the field with `#[serde(with = "beve::complex_array::f32")]` (and the per-scalar siblings): this gives a compact BEVE complex array on the wire **and** bulk (memcpy) decode straight into the field. The element type must be `bytemuck::AnyBitPattern` and layout-compatible with `Complex<scalar>` — for `num_complex`, enable its `bytemuck` feature. (The older `#[serde(serialize_with = "beve::complex::f32_array")]` helpers encode only.) See the [complex docs](docs/complex-and-matrices.md) for details.
+For foreign complex types (e.g. `num_complex::Complex`), annotate the field with `#[serde(with = "beve::complex_array::f32")]` (and the per-scalar siblings): this gives a compact BEVE complex array on the wire **and** bulk (memcpy) decode straight into the field. The element type must carry an `unsafe impl beve::ComplexElement` naming the scalar as its `Component`, and be `bytemuck::AnyBitPattern` for the decode half — for `num_complex`, turn on beve's `num-complex` feature, which ships both. (The older `#[serde(serialize_with = "beve::complex::f32_array")]` helpers encode only, and need just the `ComplexElement` impl.) See the [complex docs](docs/complex-and-matrices.md) for details.
 
 `Matrix` and `MatrixOwned<T>` use the BEVE matrix extension for supported element types (`bool`, numeric scalars, and `Complex<T>`). For unsupported element types, serialization falls back to a `{ layout, extents, value }` map.
 
@@ -278,7 +278,7 @@ For foreign complex types (e.g. `num_complex::Complex`), annotate the field with
 The `mat` feature is **off by default** (it pulls in `hdf5-pure` and its compression stack, which the core ser/de does not need). Enable it to convert BEVE payloads directly into MATLAB v7.3 MAT files:
 ```toml
 [dependencies]
-beve = { version = "7", features = ["mat"] }
+beve = { version = "8", features = ["mat"] }
 ```
 
 The MAT feature uses a pure-Rust HDF5 writer (`hdf5-pure`) and requires no system libraries. The CLI's `to-mat` command is likewise only present when the binary is built with `--features mat`.

@@ -121,15 +121,38 @@ struct Signal {
 Available modules: `complex_array::{f32, f64, i8, i16, i32, i64, i128,
 u8, u16, u32, u64, u128}`.
 
-The element type must be layout-compatible with `beve::Complex<T>`
-(two contiguous `T` fields: re then im) **and** implement
-[`bytemuck::AnyBitPattern`] — the bound that makes the bulk byte
-reinterpret sound. `num_complex::Complex<T>` satisfies both once you
-enable its `bytemuck` feature:
+The element type must carry an `unsafe impl` of [`beve::ComplexElement`]
+naming the scalar as its `Component` — the promise that it is two
+contiguous components, real first, with no padding — **and** implement
+[`bytemuck::AnyBitPattern`], which is what makes the bulk byte
+reinterpret sound in the decode direction.
+
+`beve::Complex<T>` satisfies both for every scalar. For
+`num_complex::Complex<T>`, enable this crate's `num-complex` feature; the
+orphan rule means those impls can only ship from beve, so a caller cannot
+add them itself:
 
 ```toml
-num-complex = { version = "0.4", features = ["bytemuck"] }
+beve = { version = "8", features = ["num-complex"] }
 ```
+
+For your own type, state the promise yourself:
+
+```rust,ignore
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[repr(C)]
+struct Iq { re: f32, im: f32 }
+
+// SAFETY: `#[repr(C)]` over two `f32`, real first — no padding, and every
+// bit pattern is initialized data.
+unsafe impl beve::ComplexElement for Iq {
+    type Component = f32;
+}
+```
+
+Naming `Component` is what keeps a same-width class from crossing:
+`complex_array::f32` accepts only pairs of `f32`, so handing it pairs of
+`i32` is a compile error rather than a file whose readers see `1.4e-45`.
 
 These helpers are beve-specific on the binary wire, but
 **format-agnostic**: a human-readable serializer (JSON, ...) gets the
@@ -140,6 +163,7 @@ representation (`num_complex::Complex` does).
 **A component class other than the field's still decodes.** A complex `i16` array read into a `Vec<Complex<f32>>` field is converted in one pass over the payload; a pair the bulk path cannot convert correctly (an integer destination, where every component has to be range-checked) falls back to decoding element by element. Either way the annotated field decodes to exactly what the same field without the annotation decodes to — the helpers buy throughput and never change a value or a verdict. If you were relying on the annotation to reject a differing class as a schema check, it no longer does; check the class yourself, or — for a whole-body array — use `read_complex_slice` (above), whose element-type check stays strict.
 
 [`bytemuck::AnyBitPattern`]: https://docs.rs/bytemuck/latest/bytemuck/trait.AnyBitPattern.html
+[`beve::ComplexElement`]: https://docs.rs/beve/latest/beve/trait.ComplexElement.html
 
 #### Encode-only helpers (legacy)
 
@@ -148,6 +172,9 @@ helpers (`f32_array`, `f64_array`, `i8_array`, …, `u128_array`) encode a
 field as a BEVE complex array but do **not** accelerate decode. Prefer
 the `complex_array::*` `with` modules above for new code; the
 `serialize_with` form remains for encode-only use.
+
+They take the same [`beve::ComplexElement`] bound, and only that one —
+being encode-only, they need no `AnyBitPattern`.
 
 ### Wire Format
 

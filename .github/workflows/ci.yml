@@ -63,7 +63,7 @@ jobs:
         run: cargo test --locked
 
   msrv:
-    name: MSRV (Rust 1.89.0)
+    name: MSRV (Rust 1.96.1)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
@@ -74,8 +74,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y g++
 
-      - name: Install Rust 1.89.0
-        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Install Rust 1.96.1
+        uses: dtolnay/rust-toolchain@1.96.1
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2

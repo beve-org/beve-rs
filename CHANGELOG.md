@@ -4,7 +4,7 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
-## Unreleased
+## 8.0.0 - 2026-08-17
 
 A major, for one reason: the bulk complex-array helpers took an unconstrained `T` and checked it with `size_of` and `align_of` at run time, which cannot express what reading a type as raw bytes actually requires. They now take `ComplexElement`, an unsafe trait carrying that promise, and name the component class in the bound.
 

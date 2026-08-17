@@ -286,7 +286,7 @@ The MAT feature uses a pure-Rust HDF5 writer (`hdf5-pure`) and requires no syste
 ### Versioning of the `hdf5-pure` dependency
 `beve::mat` re-exports hdf5-pure's option enums (`Compression`, `NullPolicy`, ...), so moving to a new hdf5-pure release ships as a beve **minor** version rather than a major one — hdf5-pure is pre-1.0, and every release of it is a new `0.x`.
 
-This only matters if you depend on hdf5-pure directly as well: match the version named in the [changelog](CHANGELOG.md) and move in step with it, or pin `beve = "~7.3"` to take that move deliberately. Everything else follows ordinary semver.
+This only matters if you depend on hdf5-pure directly as well: match the version named in the [changelog](CHANGELOG.md) and move in step with it, or pin `beve = "~8.0"` to take that move deliberately. Everything else follows ordinary semver.
 
 Use `RootBinding::NamedVariable` when one BEVE value should become one MATLAB variable, or `RootBinding::WorkspaceObject` when a string-keyed BEVE object should expand into multiple top-level workspace variables:
 ```rust

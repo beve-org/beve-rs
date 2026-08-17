@@ -4,6 +4,12 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Changed
+
+- The declared **MSRV moves to 1.96.1** (was 1.89). Both the default and `--all-features` builds check clean on that toolchain; the CI MSRV job pins it.
+
 ## 7.3.0 - 2026-08-17
 
 A minor: no signature in the public API changes. A `beve::complex_array::*` field now decodes a complex array whose component class differs from its own, where it returned `Error::Mismatch` — a loosening that brings the annotated field in line with the unannotated one, and 34x faster than the element-wise path it replaces. An element count on the wire can no longer abort the process through a `beve::typed::*` or `beve::complex_array::*` field. And the `mat` feature moves to hdf5-pure 0.39, a minor under the exemption above, which makes a complex `.mat` write about 1.8x faster and leaves the bytes it writes unchanged.

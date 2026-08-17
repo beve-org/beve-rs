@@ -7,7 +7,7 @@ Grab the crate from [crates.io](https://crates.io/crates/beve) and add it to you
 [dependencies]
 beve = "7"
 ```
-By default the crate is lean: it depends only on `serde`, `half`, and `simdutf8`, and requires Rust 1.89 or newer. Half-precision floats via `half::f16` are supported alongside the standard numeric types. The MATLAB/HDF5 export path is gated behind the opt-in [`mat` feature](#matlab--mat-export), so the HDF5 dependency stack is never pulled into a default build.
+By default the crate is lean: it depends only on `serde`, `half`, and `simdutf8`, and requires Rust 1.96.1 or newer. Half-precision floats via `half::f16` are supported alongside the standard numeric types. The MATLAB/HDF5 export path is gated behind the opt-in [`mat` feature](#matlab--mat-export), so the HDF5 dependency stack is never pulled into a default build.
 
 ## Encode & Decode with Serde
 Use `beve::to_vec` and `beve::from_slice` for idiomatic serde round-trips:

@@ -8,6 +8,14 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 ### Changed
 
+- The `mat` feature moves to **hdf5-pure 0.39** (was 0.35; 0.37 was never published). No beve API change, and — unlike the last two moves — no change to the bytes written: every payload shape checked is byte-identical to 7.2.0, numeric and complex arrays, strings, structs, cell arrays, matrices, empty values, `null`, workspace-object roots, and the compressed (chunked) writes among them, with the same shapes, datatypes and attributes reading back.
+
+  What you gain is speed. A complex `.mat` write is about 1.8x faster end to end, since beve writes through `MatBuilder`'s complex writers and 0.36 rewrote them: one million `Complex<f64>` convert in 1.8 ms where they took 3.3 ms, and one million `Complex<i16>` in 0.9 ms where they took 1.6 ms. A real array is unchanged at 1.3 ms, as expected. 0.38 also cut what a write allocates — a deflated write by about thirty-five fold — which the `mat` path inherits without naming it.
+
+  Upstream's breaking changes do not reach beve. It converts hdf5-pure errors through `Display` rather than matching on them, so the removed variants (`FormatError::NoDataAllocated` in 0.39, four more in 0.38) are outside its surface; `CompoundTypeBuilder::build` returning a `Result`, `FormatError::ShapeDataMismatch`'s narrowed field, and the removed `parallel` feature are all names beve never uses. The option enums it re-exports (`Compression`, `NullPolicy`, `LibVer`, ...) are unchanged, and the declared MSRV stays 1.89. The bulk of 0.39 is chunked-write, scale-offset and fill-value correctness against the reference C library, which matters for files other tools wrote rather than for what this crate emits — `MatV73Options::libver` still pins `LibVer::V18`, so MATLAB still loads what beve writes.
+
+  If you depend on hdf5-pure directly as well, move to 0.39 in step with this release — beve's public API is typed by the re-exported enums, so the versions must agree.
+
 - **`beve::complex_array::*` decodes a complex array whose component class differs from the field's**, instead of rejecting it. A complex `i16` array read into a `Vec<Complex<f32>>` field is converted in one pass over the payload; class pairs the bulk path cannot convert correctly fall back to the element-wise path rather than erroring.
 
   This is a behavior change: those pairs now decode where they returned `Error::Mismatch`. The annotated field was disagreeing with the unannotated one, which already accepted the same bytes and converted them, so `#[serde(with = ...)]` — documented as a throughput change — was quietly a semantic one too. Anything relying on the old strictness as a schema check now needs its own check. Nothing relying on decoded *values* changes: the element-wise path is the oracle the bulk path is now tested against, class by class and length by length.

@@ -51,6 +51,151 @@ pub struct Complex<T> {
 unsafe impl<T: bytemuck::Zeroable> bytemuck::Zeroable for Complex<T> {}
 unsafe impl<T: bytemuck::Pod> bytemuck::Pod for Complex<T> {}
 
+/// A type the bulk complex-array helpers may read as raw bytes: two contiguous
+/// [`Self::Component`] scalars, real part first.
+///
+/// Implementing this is how a foreign complex type — `num_complex::Complex<T>`,
+/// or your own `#[repr(C)]` pair — reaches [`crate::complex`]'s
+/// `serialize_with` helpers and [`crate::complex_array`]'s `serde(with)`
+/// modules. [`Complex`] implements it for every scalar BEVE encodes, and the
+/// `num-complex` feature adds `num_complex::Complex<T>`.
+///
+/// `Component` is an associated type so the helpers can name it in their
+/// bounds: `complex::f32_array` requires `Component = f32`, so a same-width
+/// class cannot cross.
+///
+/// # Safety
+///
+/// `Self` must have the layout `#[repr(C)] struct { re: Component, im: Component }`:
+/// two `Component` values, real first, no padding, every byte initialized. The
+/// helpers read `size_of_val(slice)` bytes out of a `&[Self]`, so padding leaks
+/// uninitialized memory into the output and a pointer field writes its address.
+///
+/// `Self` must also share `Component`'s alignment. A plain `#[repr(C)]` pair
+/// does; `#[repr(packed)]` satisfies everything above but drops to align 1, and
+/// the helpers build a `&[Complex<Component>]` over your slice.
+///
+/// Size and alignment are checked at run time. Padding and field order cannot
+/// be checked and are the implementor's promise.
+///
+/// # A padded type needs no impl, and gets none
+///
+/// `#[repr(C)] struct { re: i16, tag: u8 }` is size 4, align 2 — identical to
+/// `Complex<i16>` — so no run-time check can reject it. Absent an `unsafe impl`
+/// it does not compile:
+///
+/// ```compile_fail
+/// #[derive(Clone, Copy)]
+/// #[repr(C)]
+/// struct Padded {
+///     re: i16,
+///     tag: u8,
+/// }
+///
+/// fn encode<S: serde::Serializer>(data: &[Padded], s: S) {
+///     let _ = beve::complex::i16_array(data, s);
+/// }
+/// ```
+///
+/// # A same-width class is refused
+///
+/// Pairs of `i32` cannot reach the `f32` helper, which would otherwise emit the
+/// payload unchanged under an `f32` class tag:
+///
+/// ```compile_fail
+/// #[derive(Clone, Copy)]
+/// #[repr(C)]
+/// struct IntPair {
+///     re: i32,
+///     im: i32,
+/// }
+///
+/// // SAFETY: `#[repr(C)]` over two `i32`, real first.
+/// unsafe impl beve::ComplexElement for IntPair {
+///     type Component = i32;
+/// }
+///
+/// fn encode<S: serde::Serializer>(data: &[IntPair], s: S) {
+///     let _ = beve::complex::f32_array(data, s);
+/// }
+/// ```
+///
+/// The same type reaches its own class's helper:
+///
+/// ```
+/// #[derive(Clone, Copy)]
+/// #[repr(C)]
+/// struct IntPair {
+///     re: i32,
+///     im: i32,
+/// }
+///
+/// // SAFETY: `#[repr(C)]` over two `i32`, real first.
+/// unsafe impl beve::ComplexElement for IntPair {
+///     type Component = i32;
+/// }
+///
+/// fn encode<S: serde::Serializer>(data: &[IntPair], s: S) {
+///     let _ = beve::complex::i32_array(data, s);
+/// }
+/// ```
+pub unsafe trait ComplexElement {
+    /// The scalar type of the real and imaginary parts.
+    type Component;
+}
+
+/// One `ComplexElement` impl per scalar with a bulk complex-array helper, for
+/// [`Complex`] and (under `num-complex`) `num_complex::Complex`.
+///
+/// Enumerated, not blanket over `T: BeveTypedSlice`: that trait is public and
+/// safe, so a blanket impl would extend this crate's unsafe promise to any
+/// downstream type implementing it, padding and all. `f16`/`bf16` are absent
+/// because no `complex::f16_array` helper exists to reach.
+macro_rules! impl_complex_element {
+    ($($scalar:ty),* $(,)?) => {
+        $(
+            // SAFETY: `#[repr(C)]` over two `$scalar`, real first. Equal-width
+            // scalars leave no padding, every bit pattern of a fixed-width
+            // scalar is initialized, and the pair's alignment is the scalar's.
+            unsafe impl ComplexElement for Complex<$scalar> {
+                type Component = $scalar;
+            }
+
+            // SAFETY: `num_complex::Complex<T>` is `#[repr(C)]`, `re` then `im`
+            // — the same shape and alignment as this crate's `Complex<T>`.
+            #[cfg(feature = "num-complex")]
+            #[cfg_attr(docsrs, doc(cfg(feature = "num-complex")))]
+            unsafe impl ComplexElement for num_complex::Complex<$scalar> {
+                type Component = $scalar;
+            }
+
+            // The run-time asserts only catch a wrong `Component` where the
+            // widths differ. Pin the layout of both impls here instead.
+            const _: () = {
+                assert!(
+                    core::mem::size_of::<Complex<$scalar>>() == 2 * core::mem::size_of::<$scalar>()
+                );
+                assert!(
+                    core::mem::align_of::<Complex<$scalar>>() == core::mem::align_of::<$scalar>()
+                );
+            };
+            #[cfg(feature = "num-complex")]
+            const _: () = {
+                assert!(
+                    core::mem::size_of::<num_complex::Complex<$scalar>>()
+                        == 2 * core::mem::size_of::<$scalar>()
+                );
+                assert!(
+                    core::mem::align_of::<num_complex::Complex<$scalar>>()
+                        == core::mem::align_of::<$scalar>()
+                );
+            };
+        )*
+    };
+}
+
+impl_complex_element!(f32, f64, i8, i16, i32, i64, i128, u8, u16, u32, u64, u128);
+
 /// Generates `Serialize` for `Complex<$scalar>` using a single `NT_COMPLEX` newtype.
 /// Payload layout: `[class: u8, byte_code: u8, re_le_bytes..., im_le_bytes...]`
 macro_rules! impl_complex_serialize {
@@ -403,13 +548,20 @@ impl_typed_slice_serialize! {
 }
 
 /// Serde `serialize_with` helpers for foreign complex types (e.g. `num_complex::Complex`)
-/// that are layout-compatible with `beve::Complex<T>` (two contiguous `T` fields: re then im).
+/// that implement [`ComplexElement`] (two contiguous `Component` fields: re then im).
 ///
 /// These are only needed for foreign types. `beve::Complex<T>` serializes correctly
 /// without any annotation.
 ///
 /// Available helpers: `f32_array`, `f64_array`, `i8_array`, `i16_array`, `i32_array`,
 /// `i64_array`, `i128_array`, `u8_array`, `u16_array`, `u32_array`, `u64_array`, `u128_array`.
+///
+/// Each takes a [`ComplexElement`] whose `Component` is the named scalar. A
+/// foreign type needs an `unsafe impl` of that trait, which the `num-complex`
+/// feature provides for `num_complex::Complex<T>`.
+///
+/// Encode only. To bulk-*decode* the same field as well, annotate it with
+/// [`crate::complex_array`]'s `serde(with)` module instead of this one.
 ///
 /// # Example
 /// ```ignore
@@ -421,20 +573,35 @@ pub mod complex {
 
     macro_rules! complex_array_fn {
         ($name:ident, $scalar:ty) => {
-            /// Serialize a slice of layout-compatible complex values as a BEVE complex array.
+            #[doc = concat!(
+                                        "Serialize a slice of complex `", stringify!($scalar),
+                                        "` as one BEVE complex array."
+                                    )]
             ///
-            /// # Safety contract
-            /// The caller's type `T` must have the same layout as `beve::Complex<$scalar>`
-            /// (two contiguous `$scalar` fields in re, im order). Size and alignment are
-            /// checked at runtime; field order is the caller's responsibility.
+            /// Takes any [`ComplexElement`] whose `Component` is this scalar —
+            /// [`Complex`], `num_complex::Complex` under the `num-complex`
+            /// feature, or your own type. The component is part of the bound,
+            /// so a same-width class cannot slip through.
             pub fn $name<S: serde::Serializer, T>(
                 data: &[T],
                 serializer: S,
-            ) -> core::result::Result<S::Ok, S::Error> {
+            ) -> core::result::Result<S::Ok, S::Error>
+            where
+                T: ComplexElement<Component = $scalar>,
+            {
+                // Backstops against a wrong `unsafe impl`. Alignment matters
+                // because `#[repr(packed)]` meets the rest of the contract yet
+                // drops to align 1, and the reference below must be aligned
+                // even when `data` is empty (`as_ptr` is then a dangling
+                // pointer aligned only for `T`).
                 assert_eq!(
                     core::mem::size_of::<T>(),
                     core::mem::size_of::<Complex<$scalar>>(),
-                    concat!("beve::complex::", stringify!($name), ": type size mismatch")
+                    concat!(
+                        "beve::complex::",
+                        stringify!($name),
+                        ": ComplexElement impl has the wrong element size",
+                    )
                 );
                 assert_eq!(
                     core::mem::align_of::<T>(),
@@ -442,9 +609,13 @@ pub mod complex {
                     concat!(
                         "beve::complex::",
                         stringify!($name),
-                        ": type alignment mismatch"
+                        ": ComplexElement impl has the wrong element alignment",
                     )
                 );
+                // SAFETY: `T: ComplexElement<Component = $scalar>` promises `T`
+                // is two initialized `$scalar`, real first — the layout of
+                // `Complex<$scalar>`, whose width and alignment the asserts
+                // above confirm. The lifetime is the caller's `data`.
                 let slice: &[Complex<$scalar>] = unsafe {
                     core::slice::from_raw_parts(
                         data.as_ptr() as *const Complex<$scalar>,

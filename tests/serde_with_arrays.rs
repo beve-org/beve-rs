@@ -105,6 +105,11 @@ struct Iq {
 // SAFETY: `#[repr(C)]` over two `f32` (all bits valid, no padding).
 unsafe impl bytemuck::Zeroable for Iq {}
 unsafe impl bytemuck::Pod for Iq {}
+// SAFETY: the same layout promise, stated to beve. `Component = f32` is what
+// admits this type to the `f32` helpers and to no others.
+unsafe impl beve::ComplexElement for Iq {
+    type Component = f32;
+}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct ForeignFrame {

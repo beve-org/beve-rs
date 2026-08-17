@@ -17,7 +17,7 @@
 //!     #[serde(with = "beve::typed::f64")]
 //!     samples: Vec<f64>,
 //!     #[serde(with = "beve::complex_array::f32")]
-//!     iq: Vec<beve::Complex<f32>>,   // or any layout-compatible complex type
+//!     iq: Vec<beve::Complex<f32>>,   // or any `ComplexElement` of `f32`
 //! }
 //! ```
 //!
@@ -35,11 +35,16 @@
 //! beve-specific). Non-beve *binary* formats are not special-cased and will
 //! mis-read the bulk form.
 //!
-//! `complex_array::*` decodes the bulk (beve) form by reinterpreting wire bytes as
-//! the element type, so the element `T` must be [`bytemuck::AnyBitPattern`] (every
-//! bit pattern is a valid value) and layout-compatible with `Complex<scalar>`.
-//! `beve::Complex` qualifies, as does `num_complex::Complex` with its `bytemuck`
-//! feature enabled.
+//! `complex_array::*` reinterprets wire bytes as the element type in both
+//! directions, so the element `T` must be [`bytemuck::AnyBitPattern`] (every bit
+//! pattern is a valid value) and must carry an `unsafe impl` of
+//! [`crate::ComplexElement`] naming the scalar as its `Component`. That
+//! associated type appears in each module's bound, so `complex_array::f32`
+//! accepts only pairs of `f32` — a same-width class such as `i32` is a compile
+//! error rather than a silent misread. `beve::Complex` qualifies for every
+//! scalar; `num_complex::Complex` does under this crate's `num-complex`
+//! feature, which also needs `num-complex`'s own `bytemuck` feature for the
+//! decode half.
 //!
 //! **A different component class on the wire still decodes.** A complex `i16`
 //! array read into a `Vec<Complex<f32>>` field converts in one pass rather than
@@ -52,7 +57,7 @@ use bytemuck::AnyBitPattern;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::ext::{Complex, ComplexSlice, serialize_typed_slice};
+use crate::ext::{Complex, ComplexElement, ComplexSlice, serialize_typed_slice};
 use crate::fast::BeveTypedSlice;
 
 // ---------------------------------------------------------------------------
@@ -191,18 +196,20 @@ where
     }
 }
 
-/// Assert `T` is layout-compatible with `Complex<S>` (same size and alignment),
-/// the safety contract the bulk copy relies on. Field order is the caller's.
+/// Backstops against a wrong `unsafe impl ComplexElement`. Alignment matters
+/// because `#[repr(packed)]` meets the rest of the contract yet drops to align
+/// 1, and the serialize half builds a `&[Complex<S>]` over the caller's slice,
+/// which must be aligned even when empty.
 fn assert_complex_layout<S, T>() {
-    assert_eq!(
-        core::mem::size_of::<T>(),
-        core::mem::size_of::<Complex<S>>(),
-        "beve complex array: element type size mismatch"
-    );
     assert_eq!(
         core::mem::align_of::<T>(),
         core::mem::align_of::<Complex<S>>(),
-        "beve complex array: element type alignment mismatch"
+        "beve complex array: ComplexElement impl has the wrong element alignment"
+    );
+    assert_eq!(
+        core::mem::size_of::<T>(),
+        core::mem::size_of::<Complex<S>>(),
+        "beve complex array: ComplexElement impl has the wrong element size"
     );
 }
 
@@ -254,9 +261,63 @@ pub mod typed {
     typed_with!(f64, f64, crate::ext::NT_TYPED_ARRAY_F64);
 }
 
-/// `#[serde(with = "beve::complex_array::<scalar>")]` for a `Vec<T>` field where
-/// `T` is layout-compatible with `Complex<scalar>`: bulk encode and bulk (memcpy)
+/// `#[serde(with = "beve::complex_array::<scalar>")]` for a `Vec<T>` field whose
+/// `T` is a [`ComplexElement`] of that scalar: bulk encode and bulk (memcpy)
 /// decode of a complex array.
+///
+/// The component class is part of the bound in both directions, so a same-width
+/// class cannot cross: pairs of `i32` into the `f32` module would otherwise
+/// encode the payload unchanged under an `f32` class tag.
+///
+/// ```compile_fail
+/// use serde::{Serialize, Deserialize};
+///
+/// #[derive(Clone, Copy, Serialize, Deserialize)]
+/// #[repr(C)]
+/// struct IntPair {
+///     re: i32,
+///     im: i32,
+/// }
+///
+/// // SAFETY: `#[repr(C)]` over two `i32`, real first.
+/// unsafe impl beve::ComplexElement for IntPair {
+///     type Component = i32;
+/// }
+/// unsafe impl bytemuck::Zeroable for IntPair {}
+/// unsafe impl bytemuck::Pod for IntPair {}
+///
+/// #[derive(Serialize, Deserialize)]
+/// struct Frame {
+///     #[serde(with = "beve::complex_array::f32")]
+///     iq: Vec<IntPair>,
+/// }
+/// ```
+///
+/// The same field compiles against its own class:
+///
+/// ```
+/// use serde::{Serialize, Deserialize};
+///
+/// #[derive(Clone, Copy, Serialize, Deserialize)]
+/// #[repr(C)]
+/// struct IntPair {
+///     re: i32,
+///     im: i32,
+/// }
+///
+/// // SAFETY: `#[repr(C)]` over two `i32`, real first.
+/// unsafe impl beve::ComplexElement for IntPair {
+///     type Component = i32;
+/// }
+/// unsafe impl bytemuck::Zeroable for IntPair {}
+/// unsafe impl bytemuck::Pod for IntPair {}
+///
+/// #[derive(Serialize, Deserialize)]
+/// struct Frame {
+///     #[serde(with = "beve::complex_array::i32")]
+///     iq: Vec<IntPair>,
+/// }
+/// ```
 pub mod complex_array {
     use super::*;
 
@@ -269,7 +330,7 @@ pub mod complex_array {
                 pub fn serialize<S, T>(value: &[T], serializer: S) -> Result<S::Ok, S::Error>
                 where
                     S: Serializer,
-                    T: Serialize,
+                    T: ComplexElement<Component = $scalar> + Serialize,
                 {
                     // Human-readable formats get the portable element-wise form
                     // (each `T` via its own `Serialize`), so the field round-trips
@@ -283,8 +344,10 @@ pub mod complex_array {
                         return seq.end();
                     }
                     assert_complex_layout::<$scalar, T>();
-                    // SAFETY: `T` is layout-compatible with `Complex<$scalar>`
-                    // (asserted above), so a `&[T]` is a valid `&[Complex<$scalar>]`.
+                    // SAFETY: `T: ComplexElement<Component = $scalar>` promises
+                    // `T` is two initialized `$scalar`, real first — the layout
+                    // of `Complex<$scalar>`, whose width and alignment the
+                    // assert above confirms.
                     let slice: &[Complex<$scalar>] = unsafe {
                         core::slice::from_raw_parts(
                             value.as_ptr() as *const Complex<$scalar>,
@@ -297,7 +360,7 @@ pub mod complex_array {
                 pub fn deserialize<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
                 where
                     D: Deserializer<'de>,
-                    T: AnyBitPattern + Deserialize<'de>,
+                    T: ComplexElement<Component = $scalar> + AnyBitPattern + Deserialize<'de>,
                 {
                     assert_complex_layout::<$scalar, T>();
                     deserializer.deserialize_newtype_struct(
@@ -321,4 +384,114 @@ pub mod complex_array {
     complex_with!(u32, u32, crate::ext::NT_COMPLEX_ARRAY_U32);
     complex_with!(u64, u64, crate::ext::NT_COMPLEX_ARRAY_U64);
     complex_with!(u128, u128, crate::ext::NT_COMPLEX_ARRAY_U128);
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+    use core::cell::Cell;
+    use core::fmt;
+
+    /// A `Deserializer` that records the newtype-struct name it is asked for,
+    /// then refuses.
+    ///
+    /// A wrong marker is invisible to a round-trip test: beve falls through to
+    /// the element-wise path and returns identical values, just slowly. Only
+    /// watching the name catches it.
+    struct NameSpy<'a>(&'a Cell<&'static str>);
+
+    #[derive(Debug)]
+    struct Stop;
+
+    impl fmt::Display for Stop {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("stop")
+        }
+    }
+    impl std::error::Error for Stop {}
+    impl de::Error for Stop {
+        fn custom<T: fmt::Display>(_: T) -> Self {
+            Stop
+        }
+    }
+
+    impl<'de> Deserializer<'de> for NameSpy<'_> {
+        type Error = Stop;
+
+        fn deserialize_newtype_struct<V: Visitor<'de>>(
+            self,
+            name: &'static str,
+            _visitor: V,
+        ) -> Result<V::Value, Stop> {
+            self.0.set(name);
+            Err(Stop)
+        }
+
+        fn deserialize_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Stop> {
+            Err(Stop)
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct seq tuple tuple_struct map
+            struct enum identifier ignored_any
+        }
+    }
+
+    /// Every `complex_array::*` module must ask for its OWN marker. A typo, or a
+    /// decode that skips the visitor entirely, leaves the name unset or wrong.
+    #[test]
+    fn each_complex_array_module_asks_for_its_own_marker() {
+        macro_rules! check {
+            ($module:ident, $scalar:ty, $nt:expr) => {{
+                let seen = Cell::new("");
+                let _ = complex_array::$module::deserialize::<_, Complex<$scalar>>(NameSpy(&seen));
+                assert_eq!(
+                    seen.get(),
+                    $nt,
+                    concat!(
+                        "complex_array::",
+                        stringify!($module),
+                        " must request its own marker"
+                    )
+                );
+            }};
+        }
+
+        check!(f32, f32, crate::ext::NT_COMPLEX_ARRAY_F32);
+        check!(f64, f64, crate::ext::NT_COMPLEX_ARRAY_F64);
+        check!(i8, i8, crate::ext::NT_COMPLEX_ARRAY_I8);
+        check!(i16, i16, crate::ext::NT_COMPLEX_ARRAY_I16);
+        check!(i32, i32, crate::ext::NT_COMPLEX_ARRAY_I32);
+        check!(i64, i64, crate::ext::NT_COMPLEX_ARRAY_I64);
+        check!(i128, i128, crate::ext::NT_COMPLEX_ARRAY_I128);
+        check!(u8, u8, crate::ext::NT_COMPLEX_ARRAY_U8);
+        check!(u16, u16, crate::ext::NT_COMPLEX_ARRAY_U16);
+        check!(u32, u32, crate::ext::NT_COMPLEX_ARRAY_U32);
+        check!(u64, u64, crate::ext::NT_COMPLEX_ARRAY_U64);
+        check!(u128, u128, crate::ext::NT_COMPLEX_ARRAY_U128);
+    }
+
+    /// The twelve markers must be distinct, or two classes share a decode path.
+    #[test]
+    fn complex_array_markers_are_all_distinct() {
+        let names = [
+            crate::ext::NT_COMPLEX_ARRAY_F32,
+            crate::ext::NT_COMPLEX_ARRAY_F64,
+            crate::ext::NT_COMPLEX_ARRAY_I8,
+            crate::ext::NT_COMPLEX_ARRAY_I16,
+            crate::ext::NT_COMPLEX_ARRAY_I32,
+            crate::ext::NT_COMPLEX_ARRAY_I64,
+            crate::ext::NT_COMPLEX_ARRAY_I128,
+            crate::ext::NT_COMPLEX_ARRAY_U8,
+            crate::ext::NT_COMPLEX_ARRAY_U16,
+            crate::ext::NT_COMPLEX_ARRAY_U32,
+            crate::ext::NT_COMPLEX_ARRAY_U64,
+            crate::ext::NT_COMPLEX_ARRAY_U128,
+        ];
+        let mut sorted = names.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "markers must be distinct");
+    }
 }

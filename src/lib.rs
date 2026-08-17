@@ -1,3 +1,7 @@
+// Feature badges on docs.rs, which builds with `--cfg docsrs` (set in
+// Cargo.toml). Stable toolchains ignore the cfg, so this costs nothing locally.
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! BEVE - Binary Efficient Versatile Encoding
 //!
 //! High-performance, tagged binary format designed for scientific computing.
@@ -63,8 +67,8 @@ pub use crate::aligned::{
 pub use crate::de::{Deserializer, from_slice, validate_slice};
 pub use crate::error::{Error, Result};
 pub use crate::ext::{
-    Complex, ComplexSlice, DecodedMatrix, Matrix, MatrixDecodeMode, MatrixLayout, MatrixOwned,
-    RawMatrix, TypedSlice, complex, decode_matrix_slice,
+    Complex, ComplexElement, ComplexSlice, DecodedMatrix, Matrix, MatrixDecodeMode, MatrixLayout,
+    MatrixOwned, RawMatrix, TypedSlice, complex, decode_matrix_slice,
 };
 pub use crate::fast::{
     BeveTypedSlice, complex_slice_size, read_complex_slice, read_complex_slice_from_reader,

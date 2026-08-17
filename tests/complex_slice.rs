@@ -263,6 +263,11 @@ struct ForeignIq {
     re: i16,
     im: i16,
 }
+// SAFETY: `#[repr(C)]` over two `i16`, real first — no padding, every bit
+// pattern initialized.
+unsafe impl beve::ComplexElement for ForeignIq {
+    type Component = i16;
+}
 
 #[derive(Serialize)]
 struct ForeignFrame {

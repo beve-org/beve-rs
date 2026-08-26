@@ -18,7 +18,7 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 - **Security: the `mat` walker had no recursion limit either, so nested input aborted the process there too.** Same class as the decoder bug above, and reachable the same way — through `beve_slice_to_mat_v73_bytes`, `_writer`, `_file`, `beve_file_to_mat_v73_file`, and `beve-cli to-mat`, all of which take untrusted BEVE. It cost roughly ten times the decoder's stack per level, since each level also holds an hdf5-pure `struct_`/`cell` closure frame, so it aborted on a few kilobytes of input rather than a few tens of kilobytes.
 
-  The walk is now bounded on the same `MAX_RECURSION_DEPTH`, and refuses over-nested input before it begins: below the root, every error crosses an hdf5-pure closure boundary that flattens it to a string, which would have left this the one entry point reporting the ceiling without `Error::RecursionLimitExceeded`. Only the depth verdict is taken from that pre-pass, so malformed input still gets the walker's path-annotated diagnostics.
+  The walk is now bounded on the same `MAX_RECURSION_DEPTH` and refuses over-nested input with the same `Error::RecursionLimitExceeded`. Getting that variant out took one extra step: below the root the walk runs inside hdf5-pure's `struct_`/`cell` closures, and `MatError::Custom(String)` is the only carrier hdf5-pure offers a foreign error, so every beve error raised down there arrives back with its `Display` text intact and its variant gone.
 
 ### Breaking
 

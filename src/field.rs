@@ -401,6 +401,20 @@ fn find_unsigned_key(
 /// assert_eq!(pos, second_start);
 /// ```
 pub fn skip_value(input: &[u8], pos: &mut usize) -> Result<()> {
+    skip_value_at_depth(input, pos, 0)
+}
+
+/// [`skip_value`] carrying the nesting depth it has descended through.
+///
+/// Skipping a value walks it, so it recurses exactly as decoding does and
+/// overflows the stack on the same input — with the same unrecoverable ending,
+/// since a Rust stack overflow aborts rather than unwinding. The public entry
+/// point keeps its signature and starts the count at zero; the recursion carries
+/// it. See [`MAX_RECURSION_DEPTH`](crate::MAX_RECURSION_DEPTH).
+fn skip_value_at_depth(input: &[u8], pos: &mut usize, depth: usize) -> Result<()> {
+    if depth >= crate::MAX_RECURSION_DEPTH {
+        return Err(Error::RecursionLimitExceeded);
+    }
     let header = read_byte(input, pos)?;
     let ty = parse_type(header);
 
@@ -427,14 +441,14 @@ pub fn skip_value(input: &[u8], pos: &mut usize) -> Result<()> {
                     for _ in 0..count {
                         let key_len = read_size(input, pos)? as usize;
                         advance(input, pos, key_len)?; // skip key bytes
-                        skip_value(input, pos)?; // skip value
+                        skip_value_at_depth(input, pos, depth + 1)?; // skip value
                     }
                 }
                 KEY_SIGNED | KEY_UNSIGNED => {
                     let key_size = byte_count_to_bytes(bc)?;
                     for _ in 0..count {
                         advance(input, pos, key_size)?; // skip key
-                        skip_value(input, pos)?; // skip value
+                        skip_value_at_depth(input, pos, depth + 1)?; // skip value
                     }
                 }
                 _ => return Err(Error::InvalidHeader(header)),
@@ -466,7 +480,7 @@ pub fn skip_value(input: &[u8], pos: &mut usize) -> Result<()> {
         TYPE_GENERIC_ARRAY => {
             let len = read_size(input, pos)? as usize;
             for _ in 0..len {
-                skip_value(input, pos)?;
+                skip_value_at_depth(input, pos, depth + 1)?;
             }
         }
         TYPE_EXTENSION => {
@@ -474,14 +488,14 @@ pub fn skip_value(input: &[u8], pos: &mut usize) -> Result<()> {
             match ext {
                 EXT_TYPE_TAG => {
                     // tag (number or string) + value
-                    skip_value(input, pos)?; // tag
-                    skip_value(input, pos)?; // value
+                    skip_value_at_depth(input, pos, depth + 1)?; // tag
+                    skip_value_at_depth(input, pos, depth + 1)?; // value
                 }
                 EXT_DELIMITER => { /* nothing to skip */ }
                 EXT_MATRICES => {
                     advance(input, pos, 1)?; // layout byte
-                    skip_value(input, pos)?; // extents
-                    skip_value(input, pos)?; // data
+                    skip_value_at_depth(input, pos, depth + 1)?; // extents
+                    skip_value_at_depth(input, pos, depth + 1)?; // data
                 }
                 EXT_COMPLEX => {
                     let ch = read_byte(input, pos)?;

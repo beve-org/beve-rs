@@ -27,6 +27,9 @@ use crate::size::{read_size_from_reader, read_size_from_reader_with_first_byte};
 pub struct StreamingDeserializer<R: Read> {
     reader: R,
     peeked: Option<u8>,
+    /// How many nested values are currently open. See
+    /// [`MAX_RECURSION_DEPTH`](crate::MAX_RECURSION_DEPTH).
+    depth: usize,
 }
 
 /// What this decoder's bulk complex-array marker found on the wire. The slice
@@ -52,7 +55,27 @@ impl<R: Read> StreamingDeserializer<R> {
         Self {
             reader,
             peeked: None,
+            // The value about to be decoded is itself the first level.
+            depth: 1,
         }
+    }
+
+    /// Run `f` one nesting level deeper, refusing input that would recurse past
+    /// [`MAX_RECURSION_DEPTH`](crate::MAX_RECURSION_DEPTH).
+    ///
+    /// The streaming twin of [`crate::de::Deserializer::recurse`], and it needs
+    /// the guard more: a reader need not hold the whole document, so the input
+    /// bound that incidentally caps nesting for an in-memory slice does not
+    /// exist here at all.
+    #[inline]
+    fn recurse<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.depth >= crate::MAX_RECURSION_DEPTH {
+            return Err(Error::RecursionLimitExceeded);
+        }
+        self.depth += 1;
+        let decoded = f(self);
+        self.depth -= 1;
+        decoded
     }
 
     /// Consume the deserializer and return the underlying reader.
@@ -919,7 +942,7 @@ impl<'de, 'a, R: Read> de::SeqAccess<'de> for SeqAccessGenericStreaming<'a, R> {
             return Ok(None);
         }
         self.remaining -= 1;
-        seed.deserialize(&mut *self.de).map(Some)
+        self.de.recurse(|de| seed.deserialize(de)).map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
         Some(self.remaining)
@@ -946,7 +969,7 @@ impl<'de, 'a, R: Read> de::MapAccess<'de> for MapAccessStringStreaming<'a, R> {
     }
     fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
         self.remaining -= 1;
-        seed.deserialize(&mut *self.de)
+        self.de.recurse(|de| seed.deserialize(de))
     }
 }
 
@@ -966,7 +989,7 @@ impl<'de, 'a, R: Read> de::MapAccess<'de> for MapAccessSignedStreaming<'a, R> {
     }
     fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
         self.remaining -= 1;
-        seed.deserialize(&mut *self.de)
+        self.de.recurse(|de| seed.deserialize(de))
     }
 }
 
@@ -986,7 +1009,7 @@ impl<'de, 'a, R: Read> de::MapAccess<'de> for MapAccessUnsignedStreaming<'a, R> 
     }
     fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
         self.remaining -= 1;
-        seed.deserialize(&mut *self.de)
+        self.de.recurse(|de| seed.deserialize(de))
     }
 }
 
@@ -1034,21 +1057,24 @@ impl<'de, 'a, R: Read> de::VariantAccess<'de> for VariantAccessStreaming<'a, R> 
         // exactly one and let a bad payload surface. Skipping it would read the
         // payload as the next sibling, which is how the two readers used to
         // disagree.
-        serde::Deserializer::deserialize_ignored_any(self.de, de::IgnoredAny)?;
+        self.de
+            .recurse(|de| serde::Deserializer::deserialize_ignored_any(de, de::IgnoredAny))?;
         Ok(())
     }
     fn newtype_variant_seed<T: de::DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value> {
-        seed.deserialize(self.de)
+        self.de.recurse(|de| seed.deserialize(de))
     }
     fn tuple_variant<V: Visitor<'de>>(self, _len: usize, visitor: V) -> Result<V::Value> {
-        serde::Deserializer::deserialize_any(self.de, visitor)
+        self.de
+            .recurse(|d| serde::Deserializer::deserialize_any(d, visitor))
     }
     fn struct_variant<V: Visitor<'de>>(
         self,
         _fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
-        serde::Deserializer::deserialize_any(self.de, visitor)
+        self.de
+            .recurse(|d| serde::Deserializer::deserialize_any(d, visitor))
     }
 }
 
@@ -1220,7 +1246,7 @@ impl<'de, 'a, R: Read> de::MapAccess<'de> for MatrixAccessStreaming<'a, R> {
                     _ => Err(Error::InvalidHeader(h)),
                 }
             }
-            2 => seed.deserialize(&mut *self.de),
+            2 => self.de.recurse(|de| seed.deserialize(de)),
             _ => unreachable!(),
         }
     }

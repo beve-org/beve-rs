@@ -4,6 +4,20 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Fixed
+
+- **Security: the decoders had no recursion limit, so nested input aborted the process.** Nesting is declared by the input, not by the destination type, so a decoder without a ceiling recursed as far as an attacker asked. This is not an ordinary parse failure: a Rust stack overflow **aborts** rather than unwinding, so no `Result` carries it, `catch_unwind` cannot contain it, and a server decoding an untrusted body loses every other connection it was serving along with the request that caused it.
+
+  Reproduced at 40 KB — `[0x05, 0x04]` repeated 20,000 times, i.e. nested empty generic arrays — against a REPE gateway, where one unauthenticated request killed the process and the server co-hosted with it. On a 2 MiB stack the threshold was about 8 KB of input, so no body-size limit a caller would plausibly set could have helped.
+
+  Input nesting past `beve::MAX_RECURSION_DEPTH` (128, matching `serde_json`) is now refused with the new `Error::RecursionLimitExceeded`. Every path that walks a value is bounded on the same counter: `from_slice`, `validate_slice`, `from_reader_streaming`, `from_field`, `skip_value`, and the JSON converters.
+
+### Changed
+
+- **`beve_slice_to_json` and `json_slice_to_beve` now bound nesting at 128 rather than 256.** They already had a private ceiling, but at a different value from the one the decoders now enforce, which left the crate giving two answers to "how deep may input nest" — a document one path accepted and another refused. The limit is now stated once, as a property of the document: at most `MAX_RECURSION_DEPTH` nested values, counting the outermost. Documents nested 129–256 deep that previously converted are now refused.
+
 ## 8.0.0 - 2026-08-17
 
 A major, for one reason: the bulk complex-array helpers took an unconstrained `T` and checked it with `size_of` and `align_of` at run time, which cannot express what reading a type as raw bytes actually requires. They now take `ComplexElement`, an unsafe trait carrying that promise, and name the component class in the bound.

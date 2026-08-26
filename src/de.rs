@@ -58,6 +58,28 @@ impl HalfKind {
 /// matters.
 pub(crate) const MAX_PREALLOC_BYTES: usize = 8 * 1024 * 1024;
 
+/// Ceiling on how deeply a decoded value may nest.
+///
+/// Decoding a nested value recurses one native stack frame per level. Nesting is
+/// declared by the input, not by the destination type, so without a ceiling a
+/// few kilobytes of nested array headers exhaust the stack -- and a Rust stack
+/// overflow *aborts the process* rather than unwinding, so a caller cannot
+/// catch it, and a server decoding untrusted input cannot contain it to the
+/// request that caused it. Past this depth the decoders return
+/// [`Error::RecursionLimitExceeded`] instead.
+///
+/// Stated as a bound on the whole document: a value may contain at most this many
+/// nested values counting itself, and every entry point that walks a value --
+/// [`from_slice`], [`validate_slice`], [`from_reader_streaming`](crate::from_reader_streaming),
+/// [`skip_value`](crate::skip_value), and the JSON converters -- agrees on it.
+/// A depth one path accepted and another refused would be worse than either
+/// answer alone.
+///
+/// 128 matches `serde_json`'s limit. Real data does not approach it; input that
+/// does is hostile or generated, and either way is better refused than
+/// half-decoded.
+pub const MAX_RECURSION_DEPTH: usize = 128;
+
 /// What the slice decoder's bulk complex-array marker found on the wire.
 enum ComplexArrayPayload<'de> {
     /// The array's class already matches the destination: its payload, borrowed.
@@ -321,6 +343,8 @@ fn make_seq_float64<'de>(de: &mut Deserializer<'de>, len: usize) -> Result<SeqAc
 pub struct Deserializer<'de> {
     input: &'de [u8],
     pos: usize,
+    /// How many nested values are currently open. See [`MAX_RECURSION_DEPTH`].
+    depth: usize,
 }
 
 impl<'de> Deserializer<'de> {
@@ -328,7 +352,31 @@ impl<'de> Deserializer<'de> {
     /// within `input`. Used by `from_field` to deserialize at an arbitrary
     /// position after JSON-Pointer navigation.
     pub(crate) fn from_slice_at(input: &'de [u8], pos: usize) -> Self {
-        Self { input, pos }
+        Self {
+            input,
+            pos,
+            depth: 1,
+        }
+    }
+
+    /// Run `f` one nesting level deeper, refusing input that would recurse past
+    /// [`MAX_RECURSION_DEPTH`].
+    ///
+    /// Wraps every site that hands `&mut Deserializer` back to `deserialize`,
+    /// which is where nesting turns into stack frames. `depth` counts the value
+    /// currently being decoded, so it starts at 1 and the guard admits a
+    /// document of at most [`MAX_RECURSION_DEPTH`] nested values. The depth is restored on
+    /// the way out including on error, so a caller that recovers from a decode
+    /// failure and reuses the deserializer does not inherit a phantom level.
+    #[inline]
+    fn recurse<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.depth >= MAX_RECURSION_DEPTH {
+            return Err(Error::RecursionLimitExceeded);
+        }
+        self.depth += 1;
+        let decoded = f(self);
+        self.depth -= 1;
+        decoded
     }
 }
 
@@ -354,6 +402,8 @@ pub fn from_slice<'de, T: Deserialize<'de>>(bytes: &'de [u8]) -> Result<T> {
     let mut de = Deserializer {
         input: bytes,
         pos: 0,
+        // The value about to be decoded is itself the first level.
+        depth: 1,
     };
     de.skip_delimiters();
     let t = T::deserialize(&mut de)?;
@@ -378,6 +428,8 @@ pub fn validate_slice(bytes: &[u8]) -> Result<()> {
     let mut de = Deserializer {
         input: bytes,
         pos: 0,
+        // The value about to be decoded is itself the first level.
+        depth: 1,
     };
     let _ = <de::IgnoredAny as serde::Deserialize>::deserialize(&mut de)?;
     if de.pos != de.input.len() {
@@ -1151,7 +1203,7 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessGeneric<'a, 'de> {
             return Ok(None);
         }
         self.remaining -= 1;
-        let val = seed.deserialize(&mut *self.de)?;
+        let val = self.de.recurse(|de| seed.deserialize(de))?;
         Ok(Some(val))
     }
     fn size_hint(&self) -> Option<usize> {
@@ -1418,7 +1470,7 @@ impl<'de, 'a> de::MapAccess<'de> for MapAccessString<'a, 'de> {
     }
     fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
         self.remaining -= 1;
-        seed.deserialize(&mut *self.de)
+        self.de.recurse(|de| seed.deserialize(de))
     }
 }
 
@@ -1595,7 +1647,7 @@ impl<'de, 'a> de::MapAccess<'de> for MatrixAccess<'a, 'de> {
             }
             2 => {
                 // value: just delegate to underlying deserializer at current position
-                seed.deserialize(&mut *self.de)
+                self.de.recurse(|de| seed.deserialize(de))
             }
             _ => unreachable!(),
         }
@@ -1652,7 +1704,7 @@ impl<'de, 'a> de::MapAccess<'de> for MapAccessSigned<'a, 'de> {
     }
     fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
         self.remaining -= 1;
-        seed.deserialize(&mut *self.de)
+        self.de.recurse(|de| seed.deserialize(de))
     }
 }
 
@@ -1672,7 +1724,7 @@ impl<'de, 'a> de::MapAccess<'de> for MapAccessUnsigned<'a, 'de> {
     }
     fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
         self.remaining -= 1;
-        seed.deserialize(&mut *self.de)
+        self.de.recurse(|de| seed.deserialize(de))
     }
 }
 
@@ -1731,21 +1783,24 @@ impl<'de, 'a> de::VariantAccess<'de> for VariantAccess<'a, 'de> {
         // exactly one and let a truncated or malformed payload surface:
         // swallowing the error would leave the cursor mid-value and corrupt
         // every later read.
-        serde::de::Deserializer::deserialize_ignored_any(self.de, de::IgnoredAny)?;
+        self.de
+            .recurse(|de| serde::de::Deserializer::deserialize_ignored_any(de, de::IgnoredAny))?;
         Ok(())
     }
     fn newtype_variant_seed<T: de::DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value> {
-        seed.deserialize(self.de)
+        self.de.recurse(|de| seed.deserialize(de))
     }
     fn tuple_variant<V: Visitor<'de>>(self, _len: usize, visitor: V) -> Result<V::Value> {
-        de::Deserializer::deserialize_any(self.de, visitor)
+        self.de
+            .recurse(|d| de::Deserializer::deserialize_any(d, visitor))
     }
     fn struct_variant<V: Visitor<'de>>(
         self,
         _fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value> {
-        de::Deserializer::deserialize_any(self.de, visitor)
+        self.de
+            .recurse(|d| de::Deserializer::deserialize_any(d, visitor))
     }
 }
 

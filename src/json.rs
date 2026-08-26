@@ -1,11 +1,10 @@
+use crate::de::MAX_RECURSION_DEPTH;
 use crate::error::{Error, Result};
 use crate::header::*;
 use crate::size::{encode_size_to_array, read_size, write_size};
 use half::{bf16, f16};
 use std::char;
 use std::str;
-
-const MAX_RECURSION_DEPTH: usize = 256;
 
 /// Convert JSON bytes into BEVE bytes without building an intermediate DOM.
 pub fn json_slice_to_beve(json: &[u8]) -> Result<Vec<u8>> {

@@ -68,12 +68,20 @@ pub(crate) const MAX_PREALLOC_BYTES: usize = 8 * 1024 * 1024;
 /// request that caused it. Past this depth the decoders return
 /// [`Error::RecursionLimitExceeded`] instead.
 ///
-/// Stated as a bound on the whole document: a value may contain at most this many
-/// nested values counting itself, and every entry point that walks a value --
+/// Stated as a bound on each value the decoder walks: that value may contain at
+/// most this many nested values counting itself, and every entry point --
 /// [`from_slice`], [`validate_slice`], [`from_reader_streaming`](crate::from_reader_streaming),
 /// [`skip_value`](crate::skip_value), and the JSON converters -- agrees on it.
 /// A depth one path accepted and another refused would be worse than either
 /// answer alone.
+///
+/// [`from_field`](crate::from_field) is the one place where that is not also a
+/// bound on the whole document: navigating a JSON Pointer is a loop, not
+/// recursion, so it costs no stack, and the decode that follows is bounded from
+/// the pointer's target rather than from the document root. A deeply nested
+/// document can therefore be navigated past this depth and its shallow subtree
+/// decoded. That is safe -- nothing recurses further than the ceiling -- but it
+/// is a per-value bound, not a per-document one.
 ///
 /// 128 matches `serde_json`'s limit. Real data does not approach it; input that
 /// does is hostile or generated, and either way is better refused than

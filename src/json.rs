@@ -244,7 +244,7 @@ impl<'a> JsonParser<'a> {
 
     fn parse_value(&mut self, builder: &mut BeveBuilder, depth: usize) -> Result<()> {
         if depth >= MAX_RECURSION_DEPTH {
-            return Err(Error::Unsupported("json recursion depth exceeded"));
+            return Err(Error::RecursionLimitExceeded);
         }
         self.skip_ws();
         let ch = self.peek().ok_or(Error::Eof)?;
@@ -518,7 +518,7 @@ enum ParsedNumber {
 
 fn write_value(reader: &mut BeveReader<'_>, out: &mut Vec<u8>, depth: usize) -> Result<()> {
     if depth >= MAX_RECURSION_DEPTH {
-        return Err(Error::Unsupported("beve recursion depth exceeded"));
+        return Err(Error::RecursionLimitExceeded);
     }
     let header = reader.read_byte()?;
     let ty = parse_type(header);
@@ -1023,7 +1023,7 @@ fn write_matrix_extension(
 
 fn skip_value(reader: &mut BeveReader<'_>, depth: usize) -> Result<()> {
     if depth >= MAX_RECURSION_DEPTH {
-        return Err(Error::Unsupported("beve recursion depth exceeded"));
+        return Err(Error::RecursionLimitExceeded);
     }
     let header = reader.read_byte()?;
     let ty = parse_type(header);

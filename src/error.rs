@@ -2,7 +2,11 @@ use core::fmt;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// Marked `#[non_exhaustive]` so that naming a new failure mode is not itself a
+/// breaking change: adding `RecursionLimitExceeded` broke every downstream
+/// exhaustive `match`, and a decoder will keep learning to refuse things.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     Message(&'static str),
     MessageOwned(String),

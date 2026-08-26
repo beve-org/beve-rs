@@ -39,6 +39,15 @@ fn nested_objects(values: usize) -> Vec<u8> {
     bytes
 }
 
+/// The same shape as [`nested_arrays`], as JSON text: `values` nested arrays,
+/// innermost empty.
+fn nested_json_arrays(values: usize) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values * 2);
+    bytes.extend(std::iter::repeat_n(b'[', values));
+    bytes.extend(std::iter::repeat_n(b']', values));
+    bytes
+}
+
 fn is_too_deep(err: &Error) -> bool {
     matches!(err, Error::RecursionLimitExceeded)
 }
@@ -169,11 +178,19 @@ fn json_conversion_is_bounded_on_the_same_constant() {
     // which meant one crate gave two answers to "how deep may input nest".
     let err =
         beve::beve_slice_to_json(&nested_arrays(20_000)).expect_err("conversion must be bounded");
-    assert!(
-        err.to_string().contains("recursion depth"),
-        "unexpected error: {err}"
-    );
+    assert!(is_too_deep(&err), "{err}");
     assert!(beve::beve_slice_to_json(&nested_arrays(MAX_RECURSION_DEPTH)).is_ok());
+}
+
+#[test]
+fn json_input_is_bounded_on_the_same_constant() {
+    // The other direction, which is the one that could hand `from_slice` a
+    // document it would then have aborted on: the JSON parser accepted 256
+    // levels while the decoders now stop at 128.
+    let err = beve::json_slice_to_beve(&nested_json_arrays(20_000))
+        .expect_err("conversion must be bounded");
+    assert!(is_too_deep(&err), "{err}");
+    assert!(beve::json_slice_to_beve(&nested_json_arrays(MAX_RECURSION_DEPTH)).is_ok());
 }
 
 #[test]

@@ -411,6 +411,12 @@ pub fn skip_value(input: &[u8], pos: &mut usize) -> Result<()> {
 /// since a Rust stack overflow aborts rather than unwinding. The public entry
 /// point keeps its signature and starts the count at zero; the recursion carries
 /// it. See [`MAX_RECURSION_DEPTH`](crate::MAX_RECURSION_DEPTH).
+///
+/// The count starts at zero here and at one in the deserializers, which land on
+/// the same ceiling rather than one off from each other: this checks on entry to
+/// a value, while [`Deserializer::recurse`](crate::Deserializer) checks before
+/// descending into one. Both admit `MAX_RECURSION_DEPTH` nested values and
+/// refuse the next.
 fn skip_value_at_depth(input: &[u8], pos: &mut usize, depth: usize) -> Result<()> {
     if depth >= crate::MAX_RECURSION_DEPTH {
         return Err(Error::RecursionLimitExceeded);

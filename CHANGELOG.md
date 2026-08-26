@@ -12,11 +12,15 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
   Reproduced at 40 KB — `[0x05, 0x04]` repeated 20,000 times, i.e. nested empty generic arrays — against a REPE gateway, where one unauthenticated request killed the process and the server co-hosted with it. On a 2 MiB stack the threshold was about 8 KB of input, so no body-size limit a caller would plausibly set could have helped.
 
-  Input nesting past `beve::MAX_RECURSION_DEPTH` (128, matching `serde_json`) is now refused with the new `Error::RecursionLimitExceeded`. Every path that walks a value is bounded on the same counter: `from_slice`, `validate_slice`, `from_reader_streaming`, `from_field`, `skip_value`, and the JSON converters.
+  Input nesting past `beve::MAX_RECURSION_DEPTH` (128, matching `serde_json`) is now refused with the new `Error::RecursionLimitExceeded`. Every path that walks a value is bounded on the same counter: `from_slice`, `validate_slice`, `from_reader_streaming`, `from_field`, `skip_value`, and both JSON converters, and all of them report the refusal as that one variant.
 
-### Changed
+  `from_field` is the one place the ceiling is not also a bound on the whole document: navigating a JSON Pointer is a loop rather than recursion, so it costs no stack, and the decode that follows is bounded from the pointer's target. A document nested past the ceiling can still be navigated, and a shallow subtree of it decoded.
 
-- **`beve_slice_to_json` and `json_slice_to_beve` now bound nesting at 128 rather than 256.** They already had a private ceiling, but at a different value from the one the decoders now enforce, which left the crate giving two answers to "how deep may input nest" — a document one path accepted and another refused. The limit is now stated once, as a property of the document: at most `MAX_RECURSION_DEPTH` nested values, counting the outermost. Documents nested 129–256 deep that previously converted are now refused.
+### Breaking
+
+- **`Error` has a new variant, `RecursionLimitExceeded`, and is now `#[non_exhaustive]`.** An exhaustive `match` on `Error` no longer compiles; add a wildcard arm. The variant is what makes the fix above actionable — a caller that could not distinguish "nested too deep" from any other decode failure could not answer the request with a 400 rather than a 500. `#[non_exhaustive]` lands in the same release so that the next variant costs downstream nothing.
+
+- **`beve_slice_to_json` and `json_slice_to_beve` now bound nesting at 128 rather than 256.** They already had a private ceiling, but at a different value from the one the decoders now enforce, which left the crate giving two answers to "how deep may input nest" — a document one path accepted and another refused. Worse in one direction: `json_slice_to_beve` would emit a 200-deep document that `from_slice` then aborted the process on. Documents nested 129–256 deep that previously converted are now refused.
 
 ## 8.0.0 - 2026-08-17
 

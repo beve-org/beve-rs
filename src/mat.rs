@@ -187,6 +187,31 @@ fn build_mat_v73(
     root: RootBinding<'_>,
     options: &MatV73Options,
 ) -> Result<MatBuilder> {
+    // Refuse over-nested input before the walk starts, not during it. The walk
+    // runs inside hdf5-pure's `struct_`/`cell` closures, whose error type is
+    // `MatError`, so every beve error raised below the root round-trips through
+    // `MatError::Custom(String)` and comes back as an untyped message -- which
+    // would leave this the one entry point that reports the depth ceiling
+    // without `Error::RecursionLimitExceeded`, the exact split the shared
+    // constant exists to prevent.
+    //
+    // `skip_value` is the crate's own bounded walker and charges a level
+    // everywhere this one recurses, plus a few places it does not (tag and
+    // matrix payloads), so it refuses everything the walk could not survive.
+    // The walker keeps its own check regardless: the stack guarantee should not
+    // rest on two walkers agreeing.
+    //
+    // Only the depth verdict is taken from the pre-pass. Every other malformed
+    // input is left to the walk, whose errors name the path at which they were
+    // found -- `unsupported complex element class at $.a[3]` is worth more than
+    // the bare header byte a skipper can report.
+    if matches!(
+        crate::skip_value(beve, &mut 0),
+        Err(Error::RecursionLimitExceeded)
+    ) {
+        return Err(Error::RecursionLimitExceeded);
+    }
+
     let mut mb = MatBuilder::new(options.to_pure());
     let mut reader = Reader::new(beve);
     walk_root(&mut reader, &mut mb, options, root)?;
@@ -396,7 +421,7 @@ fn walk_root(
     let mut path = String::with_capacity(64);
     path.push('$');
     match root {
-        RootBinding::NamedVariable(name) => walk_value(reader, mb, options, name, &mut path),
+        RootBinding::NamedVariable(name) => walk_value(reader, mb, options, name, &mut path, 0),
         RootBinding::WorkspaceObject => {
             let header = reader.read_header()?;
             let object = reader.read_object_header(header)?;
@@ -410,7 +435,9 @@ fn walk_root(
                 let prefix_len = path.len();
                 path.push('.');
                 path.push_str(&key);
-                walk_value(reader, mb, options, &key, &mut path)?;
+                // The root object this branch just read is itself the first
+                // level, so its entries start one deeper.
+                walk_value(reader, mb, options, &key, &mut path, 1)?;
                 path.truncate(prefix_len);
             }
             Ok(())
@@ -425,9 +452,10 @@ fn walk_value(
     options: &MatV73Options,
     name: &str,
     path: &mut String,
+    depth: usize,
 ) -> Result<()> {
     let header = reader.read_header()?;
-    walk_value_with_header(reader, mb, options, name, header, path)
+    walk_value_with_header(reader, mb, options, name, header, path, depth)
 }
 
 fn walk_value_with_header(
@@ -437,7 +465,15 @@ fn walk_value_with_header(
     name: &str,
     header: u8,
     path: &mut String,
+    depth: usize,
 ) -> Result<()> {
+    // The single funnel for every nested value: `walk_value` and
+    // `walk_value_at_cell_element` both route through here, so one check bounds
+    // the whole walk. Counted on entry from zero, matching `skip_value`, which
+    // admits `MAX_RECURSION_DEPTH` nested values and refuses the next.
+    if depth >= crate::MAX_RECURSION_DEPTH {
+        return Err(Error::RecursionLimitExceeded);
+    }
     match parse_type(header) {
         TYPE_NULL_BOOL => {
             if header == 0 {
@@ -455,9 +491,9 @@ fn walk_value_with_header(
                 .map_err(map_mat_error)?;
             Ok(())
         }
-        TYPE_OBJECT => walk_object(reader, mb, options, name, header, path),
+        TYPE_OBJECT => walk_object(reader, mb, options, name, header, path, depth),
         TYPE_TYPED_ARRAY => walk_typed_array(reader, mb, options, name, header, path),
-        TYPE_GENERIC_ARRAY => walk_generic_array(reader, mb, options, name, path),
+        TYPE_GENERIC_ARRAY => walk_generic_array(reader, mb, options, name, path, depth),
         TYPE_EXTENSION => walk_extension(reader, mb, options, name, header, path),
         _ => Err(Error::InvalidHeader(header)),
     }
@@ -597,6 +633,7 @@ fn walk_object(
     name: &str,
     header: u8,
     path: &mut String,
+    depth: usize,
 ) -> Result<()> {
     let ObjectHeader {
         key_type,
@@ -625,7 +662,7 @@ fn walk_object(
             let prefix_len = path.len();
             path.push('.');
             path.push_str(&key);
-            walk_value(reader, inner_mb, options, &key, path).map_err(map_beve_error)?;
+            walk_value(reader, inner_mb, options, &key, path, depth + 1).map_err(map_beve_error)?;
             path.truncate(prefix_len);
         }
         Ok(())
@@ -682,6 +719,7 @@ fn walk_generic_array(
     options: &MatV73Options,
     name: &str,
     path: &mut String,
+    depth: usize,
 ) -> Result<()> {
     let len = reader.read_size()?;
     let dims = mb.vector_dims(len);
@@ -695,7 +733,8 @@ fn walk_generic_array(
             let prefix_len = path.len();
             // String's std::fmt::Write impl is infallible.
             let _ = write!(path, "[{idx}]");
-            walk_value_at_cell_element(reader, cw, options, path).map_err(map_beve_error)?;
+            walk_value_at_cell_element(reader, cw, options, path, depth + 1)
+                .map_err(map_beve_error)?;
             path.truncate(prefix_len);
         }
         Ok(())
@@ -860,6 +899,7 @@ fn walk_value_at_cell_element(
     cw: &mut CellWriter<'_>,
     options: &MatV73Options,
     path: &mut String,
+    depth: usize,
 ) -> Result<()> {
     let header = reader.read_header()?;
 
@@ -882,7 +922,7 @@ fn walk_value_at_cell_element(
         // MatBuilder call routes to `#refs#/ref_NNNN`. After that first call
         // the arm is consumed and any deeper writes (e.g. inside a struct or
         // cell that was just opened) target the right scope automatically.
-        walk_value_with_header(reader, mb, options, "", header, path).map_err(map_beve_error)
+        walk_value_with_header(reader, mb, options, "", header, path, depth).map_err(map_beve_error)
     })
     .map_err(map_mat_error)?;
     Ok(())

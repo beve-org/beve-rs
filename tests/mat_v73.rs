@@ -1498,3 +1498,98 @@ fn streamed_writer_reports_walk_errors() {
     .unwrap_err();
     assert!(!err.to_string().is_empty());
 }
+
+// The MAT walker recurses per nested value just as the decoders do, and until
+// it was bounded a few kilobytes of nested array headers aborted the process
+// through any of the conversion entry points. It costs roughly ten times the
+// decoder's stack per level, since each level also holds an hdf5-pure
+// `struct_`/`cell` closure frame, so it reached the ceiling on less input.
+
+/// A document of exactly `values` nested generic arrays, innermost empty.
+fn nested_arrays(values: usize) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values * 2);
+    for _ in 0..values - 1 {
+        bytes.extend_from_slice(&[0x05, 0x04]);
+    }
+    bytes.extend_from_slice(&[0x05, 0x00]);
+    bytes
+}
+
+/// The same, as nested objects, each with the single one-byte key `"a"`.
+fn nested_objects(values: usize) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values * 4);
+    for _ in 0..values - 1 {
+        bytes.extend_from_slice(&[0x03, 0x04, 0x04, b'a']);
+    }
+    bytes.extend_from_slice(&[0x03, 0x00]);
+    bytes
+}
+
+fn convert(bytes: &[u8]) -> beve::Result<Vec<u8>> {
+    beve::beve_slice_to_mat_v73_bytes(
+        bytes,
+        RootBinding::NamedVariable("deep"),
+        &MatV73Options::default(),
+    )
+}
+
+#[test]
+fn mat_conversion_is_bounded_rather_than_aborting_the_process() {
+    // Before the bound this did not fail the test — it killed the test binary.
+    let err = convert(&nested_arrays(20_000)).expect_err("a 20,000-deep array must be refused");
+    assert!(matches!(err, beve::Error::RecursionLimitExceeded), "{err}");
+
+    let err = convert(&nested_objects(20_000)).expect_err("a 20,000-deep object must be refused");
+    assert!(matches!(err, beve::Error::RecursionLimitExceeded), "{err}");
+}
+
+#[test]
+fn mat_conversion_draws_the_line_where_the_decoders_do() {
+    // The whole point of a shared constant: one answer to "how deep may input
+    // nest", whether the document is being decoded or converted.
+    assert!(convert(&nested_arrays(beve::MAX_RECURSION_DEPTH)).is_ok());
+    assert!(matches!(
+        convert(&nested_arrays(beve::MAX_RECURSION_DEPTH + 1)),
+        Err(beve::Error::RecursionLimitExceeded)
+    ));
+
+    assert!(convert(&nested_objects(beve::MAX_RECURSION_DEPTH)).is_ok());
+    assert!(matches!(
+        convert(&nested_objects(beve::MAX_RECURSION_DEPTH + 1)),
+        Err(beve::Error::RecursionLimitExceeded)
+    ));
+}
+
+#[test]
+fn a_workspace_root_object_counts_as_a_level() {
+    // The root object this binding reads is itself the first nested value, so
+    // its entries start one deeper — otherwise the workspace form would admit
+    // one level more than the named-variable form from the same constant.
+    let deepest_that_fits = {
+        let mut bytes = vec![0x03, 0x04, 0x04, b'a'];
+        bytes.extend_from_slice(&nested_arrays(beve::MAX_RECURSION_DEPTH - 1));
+        bytes
+    };
+    assert!(
+        beve::beve_slice_to_mat_v73_bytes(
+            &deepest_that_fits,
+            RootBinding::WorkspaceObject,
+            &MatV73Options::default(),
+        )
+        .is_ok()
+    );
+
+    let one_too_deep = {
+        let mut bytes = vec![0x03, 0x04, 0x04, b'a'];
+        bytes.extend_from_slice(&nested_arrays(beve::MAX_RECURSION_DEPTH));
+        bytes
+    };
+    assert!(matches!(
+        beve::beve_slice_to_mat_v73_bytes(
+            &one_too_deep,
+            RootBinding::WorkspaceObject,
+            &MatV73Options::default(),
+        ),
+        Err(beve::Error::RecursionLimitExceeded)
+    ));
+}

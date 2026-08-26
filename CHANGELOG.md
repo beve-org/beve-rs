@@ -16,6 +16,10 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
   `from_field` is the one place the ceiling is not also a bound on the whole document: navigating a JSON Pointer is a loop rather than recursion, so it costs no stack, and the decode that follows is bounded from the pointer's target. A document nested past the ceiling can still be navigated, and a shallow subtree of it decoded.
 
+- **Security: the `mat` walker had no recursion limit either, so nested input aborted the process there too.** Same class as the decoder bug above, and reachable the same way — through `beve_slice_to_mat_v73_bytes`, `_writer`, `_file`, `beve_file_to_mat_v73_file`, and `beve-cli to-mat`, all of which take untrusted BEVE. It cost roughly ten times the decoder's stack per level, since each level also holds an hdf5-pure `struct_`/`cell` closure frame, so it aborted on a few kilobytes of input rather than a few tens of kilobytes.
+
+  The walk is now bounded on the same `MAX_RECURSION_DEPTH`, and refuses over-nested input before it begins: below the root, every error crosses an hdf5-pure closure boundary that flattens it to a string, which would have left this the one entry point reporting the ceiling without `Error::RecursionLimitExceeded`. Only the depth verdict is taken from that pre-pass, so malformed input still gets the walker's path-annotated diagnostics.
+
 ### Breaking
 
 - **`Error` has a new variant, `RecursionLimitExceeded`, and is now `#[non_exhaustive]`.** An exhaustive `match` on `Error` no longer compiles; add a wildcard arm. The variant is what makes the fix above actionable — a caller that could not distinguish "nested too deep" from any other decode failure could not answer the request with a 400 rather than a 500. `#[non_exhaustive]` lands in the same release so that the next variant costs downstream nothing.

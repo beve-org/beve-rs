@@ -6,6 +6,16 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 ## Unreleased
 
+### Changed
+
+- The `mat` feature moves to **hdf5-pure 0.40** (was 0.39). No beve API change and no change to the bytes written: twenty-one payload shapes were converted under both versions and compared byte for byte — scalars, numeric and complex arrays, bools, strings and string arrays, empty typed and generic arrays, `null`, a row-major matrix, a struct, a nested object, a mixed cell array, a workspace-object root, and the deflate/`V110` chunked writes among them. All twenty-one are identical.
+
+  Upstream's breaking changes do not reach beve. Its many new refusals and its `AttrValue` widening are read-side; beve only writes. It converts hdf5-pure errors through `Display` rather than matching on them, so `MatError`'s new `Source` variant and the new `Error::NotAGroup`/`NotANamedDatatype` are outside its surface. The option enums it re-exports (`Compression`, `NullPolicy`, `LibVer`, ...) are unchanged, the transitive dependency set is unchanged, and the declared MSRV stays 1.96.1. The bulk of 0.40 is write-gathering, free-space reuse and read-write-session correctness, which the `mat` path — a single-pass build and `finish` — does not go through; `MatV73Options::libver` still pins `LibVer::V18`, so MATLAB still loads what beve writes.
+
+  One test moved with it: `Superblock::base_address` is now a `BaseAddress` newtype whose accessors are crate-private, so the userblock test asserts the HDF5 signature at offset 512 in the written bytes rather than reading that field back.
+
+  If you depend on hdf5-pure directly as well, move to 0.40 in step with this release — beve's public API is typed by the re-exported enums, so the versions must agree.
+
 ### Fixed
 
 - **Security: the decoders had no recursion limit, so nested input aborted the process.** Nesting is declared by the input, not by the destination type, so a decoder without a ceiling recursed as far as an attacker asked. This is not an ordinary parse failure: a Rust stack overflow **aborts** rather than unwinding, so no `Result` carries it, `catch_unwind` cannot contain it, and a server decoding an untrusted body loses every other connection it was serving along with the request that caused it.

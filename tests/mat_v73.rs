@@ -239,10 +239,13 @@ fn mat_v73_scalar_string_and_userblock() {
     let raw = std::fs::read(&path).unwrap();
     assert!(raw.starts_with(b"MATLAB 7.3 MAT-file"));
     assert_eq!(&raw[126..128], b"IM");
+    // The 512-byte MAT header is written as an HDF5 userblock, so the superblock
+    // — and with it the file's base address — starts at 512. Asserted against
+    // the bytes rather than `superblock().base_address`, whose `BaseAddress`
+    // newtype is not part of hdf5-pure's public API and yields no integer here.
+    assert_eq!(&raw[512..520], b"\x89HDF\r\n\x1a\n");
 
     let file = File::open(&path).unwrap();
-    // The userblock size equals base_address (the superblock starts after the userblock).
-    assert_eq!(file.superblock().base_address, 512);
 
     let ds = file.dataset("greeting").unwrap();
     assert_eq!(ds.shape().unwrap(), vec![1, 6]);

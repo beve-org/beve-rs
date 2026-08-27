@@ -1366,12 +1366,35 @@ fn validate_matrix_extents(extents: &[usize], path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Convert an hdf5-pure MAT error into a beve error.
+///
+/// A `MatError::Source` carrying this crate's own [`Error`] is one
+/// [`map_beve_error`] put there on the way *into* a `MatBuilder` closure, so it
+/// is handed back whole rather than reduced to its `Display` text. The builder's
+/// closures take `Result<(), MatError>`, so a walk that fails inside one has to
+/// cross that boundary and back; the caller should not pay for a round trip that
+/// never leaves this crate by losing the variant it could have matched on.
+///
+/// Everything else — upstream's own failures, and a `Source` from anywhere but
+/// here — carries only its message, as before.
 fn map_mat_error(e: hdf5_pure::mat::MatError) -> Error {
-    Error::msg(e.to_string())
+    match e {
+        hdf5_pure::mat::MatError::Source(source) => match source.downcast::<Error>() {
+            Ok(original) => *original,
+            Err(source) => Error::msg(source.to_string()),
+        },
+        other => Error::msg(other.to_string()),
+    }
 }
 
+/// Carry a beve error into a `MatBuilder` closure, whose signature admits only a
+/// `MatError`.
+///
+/// `MatError::Source` keeps the error itself where `MatError::Custom` kept only
+/// its text, so [`map_mat_error`] recovers it on the way back out. The `Display`
+/// text is the same either way: both variants print the inner error bare.
 fn map_beve_error(e: Error) -> hdf5_pure::mat::MatError {
-    hdf5_pure::mat::MatError::Custom(e.to_string())
+    hdf5_pure::mat::MatError::from_source(e)
 }
 
 // ---------------------------------------------------------------------------

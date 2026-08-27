@@ -1501,3 +1501,31 @@ fn streamed_writer_reports_walk_errors() {
     .unwrap_err();
     assert!(!err.to_string().is_empty());
 }
+
+#[test]
+fn a_walk_error_inside_a_builder_closure_keeps_its_variant() {
+    // A BEVE object becomes a MATLAB struct, and the walk of its fields runs
+    // inside a `MatBuilder` closure whose signature admits only hdf5-pure's
+    // `MatError`. A beve error raised there therefore crosses into hdf5-pure and
+    // back; it must arrive as the variant it left as, not as the `MessageOwned`
+    // that a `Display` round trip through `MatError::Custom` used to produce.
+    let mut obj = HashMap::new();
+    obj.insert("field", "hello");
+    let mut bytes = beve::to_vec(&obj).unwrap();
+    bytes.truncate(bytes.len() - 1);
+
+    let err = beve::beve_slice_to_mat_v73_bytes(
+        &bytes,
+        RootBinding::NamedVariable("s"),
+        &MatV73Options::default(),
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, beve::Error::Eof),
+        "expected Error::Eof, got {err:?}"
+    );
+    // And the message a caller already relied on is unchanged: both MatError
+    // variants print the inner error bare.
+    assert_eq!(err.to_string(), "unexpected end of input");
+}

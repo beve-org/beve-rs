@@ -54,7 +54,7 @@ half = { version = "2.4", features = ["serde"] }
 # pattern is a valid value (`AnyBitPattern`) may be memcpy'd from wire bytes.
 bytemuck = "1"
 simdutf8 = "0.1"
-hdf5-pure = { version = "0.40", optional = true }
+hdf5-pure = { version = "0.41", optional = true }
 # 0.4.1, not 0.4: the `bytemuck` feature turned on above did not exist in 0.4.0,
 # so a consumer locked there fails at resolve time.
 num-complex = { version = "0.4.1", optional = true, default-features = false }

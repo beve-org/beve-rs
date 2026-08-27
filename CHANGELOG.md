@@ -4,7 +4,11 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
-## Unreleased
+## 9.0.0 - 2026-08-27
+
+A major for a security fix. The decoders had no recursion limit, so nested input aborted the process — a Rust stack overflow **aborts** rather than unwinding, so no `Result` carries it and `catch_unwind` cannot contain it. Input nested past `beve::MAX_RECURSION_DEPTH` (128) is now refused with the new `Error::RecursionLimitExceeded`, and `Error` is `#[non_exhaustive]`; that is what makes the release major, since an exhaustive `match` on it no longer compiles.
+
+The `mat` feature also moves to hdf5-pure 0.41, with no change to the bytes it writes.
 
 ### Changed
 

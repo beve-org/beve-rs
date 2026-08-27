@@ -133,7 +133,7 @@ orphan rule means those impls can only ship from beve, so a caller cannot
 add them itself:
 
 ```toml
-beve = { version = "8", features = ["num-complex"] }
+beve = { version = "9", features = ["num-complex"] }
 ```
 
 For your own type, state the promise yourself:

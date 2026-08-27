@@ -1498,3 +1498,127 @@ fn streamed_writer_reports_walk_errors() {
     .unwrap_err();
     assert!(!err.to_string().is_empty());
 }
+
+// The MAT walker recurses per nested value just as the decoders do, and until
+// it was bounded a few kilobytes of nested array headers aborted the process
+// through any of the conversion entry points. It costs roughly ten times the
+// decoder's stack per level, since each level also holds an hdf5-pure
+// `struct_`/`cell` closure frame, so it reached the ceiling on less input.
+//
+// These tests are written to fail if the walker's own depth check is removed.
+// That is not automatic: an earlier version of this fix also gated on
+// `beve::skip_value` before the walk began, and every test here passed with the
+// walker's own check deleted outright — the gate answered first every time.
+
+/// A document of exactly `values` nested generic arrays, innermost empty.
+fn nested_arrays(values: usize) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values * 2);
+    for _ in 1..values {
+        bytes.extend_from_slice(&[0x05, 0x04]);
+    }
+    bytes.extend_from_slice(&[0x05, 0x00]);
+    bytes
+}
+
+/// The same, as nested objects, each with the single one-byte key `"a"`.
+fn nested_objects(values: usize) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values * 4);
+    for _ in 1..values {
+        bytes.extend_from_slice(&[0x03, 0x04, 0x04, b'a']);
+    }
+    bytes.extend_from_slice(&[0x03, 0x00]);
+    bytes
+}
+
+fn convert(bytes: &[u8]) -> beve::Result<Vec<u8>> {
+    beve::beve_slice_to_mat_v73_bytes(
+        bytes,
+        RootBinding::NamedVariable("deep"),
+        &MatV73Options::default(),
+    )
+}
+
+#[test]
+fn mat_conversion_is_bounded_rather_than_aborting_the_process() {
+    // Before the bound this did not fail the test — it killed the test binary,
+    // and it still will if the check regresses: a stack overflow aborts the
+    // process, so there is no thread to isolate it onto. Reaching the assertion
+    // at all is the point.
+    let err = convert(&nested_arrays(20_000)).expect_err("a 20,000-deep array must be refused");
+    assert!(matches!(err, beve::Error::RecursionLimitExceeded), "{err}");
+
+    let err = convert(&nested_objects(20_000)).expect_err("a 20,000-deep object must be refused");
+    assert!(matches!(err, beve::Error::RecursionLimitExceeded), "{err}");
+}
+
+#[test]
+fn mat_conversion_draws_the_line_where_the_decoders_do() {
+    // The whole point of a shared constant: one answer to "how deep may input
+    // nest", whether the document is being decoded or converted.
+    assert!(convert(&nested_arrays(beve::MAX_RECURSION_DEPTH)).is_ok());
+    assert!(matches!(
+        convert(&nested_arrays(beve::MAX_RECURSION_DEPTH + 1)),
+        Err(beve::Error::RecursionLimitExceeded)
+    ));
+
+    assert!(convert(&nested_objects(beve::MAX_RECURSION_DEPTH)).is_ok());
+    assert!(matches!(
+        convert(&nested_objects(beve::MAX_RECURSION_DEPTH + 1)),
+        Err(beve::Error::RecursionLimitExceeded)
+    ));
+}
+
+#[test]
+fn the_ceiling_counts_what_the_walker_recurses_through() {
+    // A matrix extension is one value to this walker, which reads its extents
+    // and payload without recursing. `skip_value` charges a level for each of
+    // them, so gating the conversion on that walker instead of this one refused
+    // this document — 128 values, one short of the ceiling — while the walk
+    // itself handles it. The bound has to be the walker's own.
+    let matrix = to_vec_matrix_f64(MatrixLayoutFast::Right, &[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+
+    let wrap = |levels: usize| {
+        let mut bytes = Vec::new();
+        for _ in 0..levels {
+            bytes.extend_from_slice(&[0x05, 0x04]);
+        }
+        bytes.extend_from_slice(&matrix);
+        bytes
+    };
+
+    // 127 wrappers + the matrix = 128 values.
+    assert!(
+        convert(&wrap(beve::MAX_RECURSION_DEPTH - 1)).is_ok(),
+        "a document at the ceiling must convert"
+    );
+    assert!(matches!(
+        convert(&wrap(beve::MAX_RECURSION_DEPTH)),
+        Err(beve::Error::RecursionLimitExceeded)
+    ));
+}
+
+#[test]
+fn a_workspace_root_object_counts_as_a_level() {
+    // The root object this binding reads is itself the first nested value, so
+    // its entries start one deeper — otherwise the workspace form would admit
+    // one level more than the named-variable form from the same constant.
+    let workspace = |values: usize| {
+        let mut bytes = vec![0x03, 0x04, 0x04, b'a'];
+        bytes.extend_from_slice(&nested_arrays(values));
+        bytes
+    };
+    let convert_workspace = |bytes: &[u8]| {
+        beve::beve_slice_to_mat_v73_bytes(
+            bytes,
+            RootBinding::WorkspaceObject,
+            &MatV73Options::default(),
+        )
+    };
+
+    // Root object + 127 nested arrays = 128 values, the deepest that fits.
+    assert!(convert_workspace(&workspace(beve::MAX_RECURSION_DEPTH - 1)).is_ok());
+    assert!(matches!(
+        convert_workspace(&workspace(beve::MAX_RECURSION_DEPTH)),
+        Err(beve::Error::RecursionLimitExceeded)
+    ));
+}

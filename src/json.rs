@@ -1,11 +1,10 @@
+use crate::de::MAX_RECURSION_DEPTH;
 use crate::error::{Error, Result};
 use crate::header::*;
 use crate::size::{encode_size_to_array, read_size, write_size};
 use half::{bf16, f16};
 use std::char;
 use std::str;
-
-const MAX_RECURSION_DEPTH: usize = 256;
 
 /// Convert JSON bytes into BEVE bytes without building an intermediate DOM.
 pub fn json_slice_to_beve(json: &[u8]) -> Result<Vec<u8>> {
@@ -245,7 +244,7 @@ impl<'a> JsonParser<'a> {
 
     fn parse_value(&mut self, builder: &mut BeveBuilder, depth: usize) -> Result<()> {
         if depth >= MAX_RECURSION_DEPTH {
-            return Err(Error::Unsupported("json recursion depth exceeded"));
+            return Err(Error::RecursionLimitExceeded);
         }
         self.skip_ws();
         let ch = self.peek().ok_or(Error::Eof)?;
@@ -519,7 +518,7 @@ enum ParsedNumber {
 
 fn write_value(reader: &mut BeveReader<'_>, out: &mut Vec<u8>, depth: usize) -> Result<()> {
     if depth >= MAX_RECURSION_DEPTH {
-        return Err(Error::Unsupported("beve recursion depth exceeded"));
+        return Err(Error::RecursionLimitExceeded);
     }
     let header = reader.read_byte()?;
     let ty = parse_type(header);
@@ -1024,7 +1023,7 @@ fn write_matrix_extension(
 
 fn skip_value(reader: &mut BeveReader<'_>, depth: usize) -> Result<()> {
     if depth >= MAX_RECURSION_DEPTH {
-        return Err(Error::Unsupported("beve recursion depth exceeded"));
+        return Err(Error::RecursionLimitExceeded);
     }
     let header = reader.read_byte()?;
     let ty = parse_type(header);

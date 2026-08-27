@@ -2,7 +2,11 @@ use core::fmt;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// Marked `#[non_exhaustive]` so that naming a new failure mode is not itself a
+/// breaking change: adding `RecursionLimitExceeded` broke every downstream
+/// exhaustive `match`, and a decoder will keep learning to refuse things.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     Message(&'static str),
     MessageOwned(String),
@@ -12,6 +16,12 @@ pub enum Error {
     InvalidSize,
     Unsupported(&'static str),
     Mismatch(&'static str),
+    /// Input nested deeper than [`MAX_RECURSION_DEPTH`](crate::MAX_RECURSION_DEPTH).
+    ///
+    /// Decoding a nested value recurses one native stack frame per level, and a
+    /// Rust stack overflow aborts the process instead of unwinding, so no caller
+    /// can catch it. Refusing the input is the only outcome a caller can act on.
+    RecursionLimitExceeded,
 }
 
 impl Error {
@@ -31,6 +41,11 @@ impl fmt::Display for Error {
             Error::InvalidSize => write!(f, "invalid size"),
             Error::Unsupported(s) => write!(f, "unsupported: {s}"),
             Error::Mismatch(s) => write!(f, "type mismatch: {s}"),
+            Error::RecursionLimitExceeded => write!(
+                f,
+                "input nests deeper than the maximum of {} levels",
+                crate::MAX_RECURSION_DEPTH
+            ),
         }
     }
 }

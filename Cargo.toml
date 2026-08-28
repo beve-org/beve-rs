@@ -97,3 +97,17 @@ harness = false
 [[bench]]
 name = "serde_with_decode"
 harness = false
+
+# Keep `target/` small during development: the incremental cache and debuginfo
+# dominate a dev build here, and macOS charges debuginfo once per test binary.
+# `line-tables-only` keeps file and line in panics and backtraces, dropping what
+# only an attached debugger reads; `RUSTFLAGS="-C debuginfo=2"` restores it for a
+# run. `release` and `bench` already skip incremental.
+[profile.dev]
+incremental = false
+debug = "line-tables-only"
+
+# Dependency debuginfo, useful only when stepping into serde or criterion.
+# beve's own frames keep their line numbers; this key covers dependencies only.
+[profile.dev.package."*"]
+debug = 0

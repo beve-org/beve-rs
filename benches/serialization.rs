@@ -137,6 +137,15 @@ fn mixed_frames(count: usize) -> Vec<MixedFrame> {
         .collect()
 }
 
+// A group's rows are measured against each other and the ratio column is
+// relative to its first case, so membership is a claim that the cases are
+// alternatives for the same job. Encode and decode alternatives therefore live
+// in separate `.../encode` and `.../decode` groups; a ratio across that line
+// would compare a decode against an encode and mean nothing.
+//
+// The roundtrip groups (`struct_roundtrip`, `matrix_payloads`, `mixed_structs`)
+// are deliberately not split: they hold exactly one encode and one decode, and
+// the ratio between those two *is* what the benchmark exists to report.
 fn bench_struct_roundtrip(bench: &mut Bench) {
     let records = sample_records(512);
     let encoded = beve::to_vec(&records).expect("serialize records");
@@ -165,7 +174,7 @@ fn bench_numeric_arrays(bench: &mut Bench) {
     let slice = values.as_slice();
     let typed_bytes = beve::to_vec_typed_slice(slice);
 
-    let mut group = bench.group("numeric_arrays_f64");
+    let mut group = bench.group("numeric_arrays_f64/encode");
     group.bench("serde_to_vec", |b| {
         b.iter(|| {
             let bytes = beve::to_vec(black_box(&values)).expect("serialize f64 slice");
@@ -178,8 +187,11 @@ fn bench_numeric_arrays(bench: &mut Bench) {
             black_box(bytes);
         });
     });
+    group.finish();
+
     // Decode: generic serde (per-element visitor) vs the bulk reader (one bounds
     // check + one contiguous copy). Same input bytes.
+    let mut group = bench.group("numeric_arrays_f64/decode");
     group.bench("from_slice", |b| {
         b.iter(|| {
             let decoded: Vec<f64> =
@@ -207,7 +219,7 @@ fn bench_complex_arrays(bench: &mut Bench) {
     let slice = values.as_slice();
     let complex_bytes = beve::to_vec_complex_slice(slice);
 
-    let mut group = bench.group("complex_arrays_f64");
+    let mut group = bench.group("complex_arrays_f64/encode");
     // Encode: a plain `Vec<Complex<f64>>` walks elements one at a time, while
     // `ComplexSlice` hands the whole payload over for one copy. Same bytes out;
     // the mirror of `numeric_arrays_f64`'s serde_to_vec / typed_to_vec pair.
@@ -224,8 +236,11 @@ fn bench_complex_arrays(bench: &mut Bench) {
             black_box(bytes);
         });
     });
+    group.finish();
+
     // Decode: generic serde (nested per-element visitors) vs the bulk reader
     // (one bounds check + one contiguous copy). Same input bytes.
+    let mut group = bench.group("complex_arrays_f64/decode");
     group.bench("serde_from_slice", |b| {
         b.iter(|| {
             let decoded: Vec<Complex<f64>> =
@@ -248,7 +263,7 @@ fn bench_bool_arrays(bench: &mut Bench) {
     let slice = flags.as_slice();
     let typed_bytes = beve::to_vec_bool_slice(slice);
 
-    let mut group = bench.group("bool_arrays");
+    let mut group = bench.group("bool_arrays/encode");
     group.bench("serde_to_vec", |b| {
         b.iter(|| {
             let bytes = beve::to_vec(black_box(&flags)).expect("serialize bool vec");
@@ -261,6 +276,11 @@ fn bench_bool_arrays(bench: &mut Bench) {
             black_box(bytes);
         });
     });
+    group.finish();
+
+    // No bulk counterpart to compare against: the bit-packed payload has no
+    // `read_bool_slice`, so serde is the only way in and the group is one row.
+    let mut group = bench.group("bool_arrays/decode");
     group.bench("from_slice", |b| {
         b.iter(|| {
             let decoded: Vec<bool> =
@@ -280,7 +300,7 @@ fn bench_string_arrays(bench: &mut Bench) {
     let borrowed_slice = borrowed.as_slice();
     let typed_owned = beve::to_vec_string_slice(owned_slice);
 
-    let mut group = bench.group("string_arrays");
+    let mut group = bench.group("string_arrays/encode");
     group.bench("serde_to_vec", |b| {
         b.iter(|| {
             let bytes = beve::to_vec(black_box(&owned)).expect("serialize strings");
@@ -299,6 +319,10 @@ fn bench_string_arrays(bench: &mut Bench) {
             black_box(bytes);
         });
     });
+    group.finish();
+
+    // One row for the same reason as `bool_arrays/decode`: no bulk string reader.
+    let mut group = bench.group("string_arrays/decode");
     group.bench("from_slice", |b| {
         b.iter(|| {
             let decoded: Vec<String> =
@@ -387,20 +411,12 @@ fn bench_large_vecs(bench: &mut Bench) {
         let data = make_large_vecs(n);
         let encoded = beve::to_vec(&data).expect("serialize");
 
-        let mut group = bench.group(format!("large_vecs_{n}"));
+        let mut group = bench.group(format!("large_vecs_{n}/encode"));
 
         group.bench("serde_to_vec", |b| {
             b.iter(|| {
                 let bytes = beve::to_vec(black_box(&data)).expect("serialize");
                 black_box(bytes);
-            });
-        });
-
-        group.bench("serde_from_slice", |b| {
-            b.iter(|| {
-                let decoded: LargeVecs =
-                    beve::from_slice(black_box(&encoded)).expect("deserialize");
-                black_box(decoded);
             });
         });
 
@@ -431,6 +447,16 @@ fn bench_large_vecs(bench: &mut Bench) {
             });
         });
 
+        group.finish();
+
+        let mut group = bench.group(format!("large_vecs_{n}/decode"));
+        group.bench("serde_from_slice", |b| {
+            b.iter(|| {
+                let decoded: LargeVecs =
+                    beve::from_slice(black_box(&encoded)).expect("deserialize");
+                black_box(decoded);
+            });
+        });
         group.finish();
     }
 }

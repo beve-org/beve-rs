@@ -8,21 +8,28 @@
 
 use std::io::Cursor;
 
+use benchit::{Bench, Throughput};
 use beve::Complex;
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 
-fn bench_typed_f64(c: &mut Criterion) {
+fn main() {
+    let mut bench = Bench::from_args();
+
+    bench_typed_f64(&mut bench);
+    bench_complex_f32(&mut bench);
+}
+
+fn bench_typed_f64(bench: &mut Bench) {
     let v: Vec<f64> = (0..1_000_000).map(|i| i as f64 * 0.5).collect();
     let bytes = beve::to_vec_typed_slice(&v);
 
-    let mut g = c.benchmark_group("bulk_decode/vec_f64_1M");
+    let mut g = bench.group("bulk_decode/vec_f64_1M");
     g.throughput(Throughput::Bytes((v.len() * 8) as u64));
 
-    g.bench_function("read_typed_slice (in-mem bulk)", |b| {
+    g.bench("read_typed_slice (in-mem bulk)", |b| {
         b.iter(|| black_box(beve::read_typed_slice::<f64>(black_box(&bytes)).unwrap()))
     });
-    g.bench_function("read_typed_slice_from_reader (stream bulk)", |b| {
+    g.bench("read_typed_slice_from_reader (stream bulk)", |b| {
         b.iter(|| {
             black_box(
                 beve::read_typed_slice_from_reader::<f64, _>(Cursor::new(black_box(&bytes)))
@@ -30,13 +37,13 @@ fn bench_typed_f64(c: &mut Criterion) {
             )
         })
     });
-    g.bench_function("from_reader_streaming (serde stream)", |b| {
+    g.bench("from_reader_streaming (serde stream)", |b| {
         b.iter(|| {
             let d: Vec<f64> = beve::from_reader_streaming(Cursor::new(black_box(&bytes))).unwrap();
             black_box(d);
         })
     });
-    g.bench_function("from_slice (serde in-mem)", |b| {
+    g.bench("from_slice (serde in-mem)", |b| {
         b.iter(|| {
             let d: Vec<f64> = beve::from_slice(black_box(&bytes)).unwrap();
             black_box(d);
@@ -45,7 +52,7 @@ fn bench_typed_f64(c: &mut Criterion) {
     g.finish();
 }
 
-fn bench_complex_f32(c: &mut Criterion) {
+fn bench_complex_f32(bench: &mut Bench) {
     // IQ-style buffer: a large run of Complex<f32>.
     let v: Vec<Complex<f32>> = (0..1_000_000)
         .map(|i| Complex {
@@ -55,13 +62,13 @@ fn bench_complex_f32(c: &mut Criterion) {
         .collect();
     let bytes = beve::to_vec_complex_slice(&v);
 
-    let mut g = c.benchmark_group("bulk_decode/vec_complex_f32_1M");
+    let mut g = bench.group("bulk_decode/vec_complex_f32_1M");
     g.throughput(Throughput::Bytes((v.len() * 8) as u64)); // 2 * f32 per value
 
-    g.bench_function("read_complex_slice (in-mem bulk)", |b| {
+    g.bench("read_complex_slice (in-mem bulk)", |b| {
         b.iter(|| black_box(beve::read_complex_slice::<f32>(black_box(&bytes)).unwrap()))
     });
-    g.bench_function("read_complex_slice_from_reader (stream bulk)", |b| {
+    g.bench("read_complex_slice_from_reader (stream bulk)", |b| {
         b.iter(|| {
             black_box(
                 beve::read_complex_slice_from_reader::<f32, _>(Cursor::new(black_box(&bytes)))
@@ -71,6 +78,3 @@ fn bench_complex_f32(c: &mut Criterion) {
     });
     g.finish();
 }
-
-criterion_group!(benches, bench_typed_f64, bench_complex_f32);
-criterion_main!(benches);

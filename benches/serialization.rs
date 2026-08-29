@@ -1,8 +1,22 @@
 #![deny(warnings)]
 
+use benchit::Bench;
 use beve::{Complex, Matrix, MatrixLayout};
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use serde::{Deserialize, Serialize};
+use std::hint::black_box;
+
+fn main() {
+    let mut bench = Bench::from_args();
+
+    bench_struct_roundtrip(&mut bench);
+    bench_numeric_arrays(&mut bench);
+    bench_complex_arrays(&mut bench);
+    bench_bool_arrays(&mut bench);
+    bench_string_arrays(&mut bench);
+    bench_matrix_payloads(&mut bench);
+    bench_mixed_structs(&mut bench);
+    bench_large_vecs(&mut bench);
+}
 
 const WORDS: [&str; 6] = ["alpha", "beta", "gamma", "delta", "eta", "theta"];
 
@@ -123,22 +137,18 @@ fn mixed_frames(count: usize) -> Vec<MixedFrame> {
         .collect()
 }
 
-fn bench_struct_roundtrip(c: &mut Criterion) {
+fn bench_struct_roundtrip(bench: &mut Bench) {
     let records = sample_records(512);
     let encoded = beve::to_vec(&records).expect("serialize records");
 
-    let mut group = c.benchmark_group("struct_roundtrip");
-    group.bench_with_input(
-        BenchmarkId::new("to_vec", records.len()),
-        &records,
-        |b, data| {
-            b.iter(|| {
-                let bytes = beve::to_vec(black_box(data)).expect("serialize");
-                black_box(bytes);
-            });
-        },
-    );
-    group.bench_function(BenchmarkId::new("from_slice", records.len()), |b| {
+    let mut group = bench.group("struct_roundtrip");
+    group.bench(format!("to_vec/{}", records.len()), |b| {
+        b.iter(|| {
+            let bytes = beve::to_vec(black_box(&records)).expect("serialize");
+            black_box(bytes);
+        });
+    });
+    group.bench(format!("from_slice/{}", records.len()), |b| {
         b.iter(|| {
             let decoded: Vec<Record> =
                 beve::from_slice(black_box(&encoded)).expect("decode records");
@@ -148,21 +158,21 @@ fn bench_struct_roundtrip(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_numeric_arrays(c: &mut Criterion) {
+fn bench_numeric_arrays(bench: &mut Bench) {
     let values: Vec<f64> = (0..4096)
         .map(|i| ((i as f64 * 0.25).sin() + 1.0) * (i % 1024) as f64)
         .collect();
     let slice = values.as_slice();
     let typed_bytes = beve::to_vec_typed_slice(slice);
 
-    let mut group = c.benchmark_group("numeric_arrays_f64");
-    group.bench_function("serde_to_vec", |b| {
+    let mut group = bench.group("numeric_arrays_f64");
+    group.bench("serde_to_vec", |b| {
         b.iter(|| {
             let bytes = beve::to_vec(black_box(&values)).expect("serialize f64 slice");
             black_box(bytes);
         });
     });
-    group.bench_function("typed_to_vec", |b| {
+    group.bench("typed_to_vec", |b| {
         b.iter(|| {
             let bytes = beve::to_vec_typed_slice(black_box(slice));
             black_box(bytes);
@@ -170,14 +180,14 @@ fn bench_numeric_arrays(c: &mut Criterion) {
     });
     // Decode: generic serde (per-element visitor) vs the bulk reader (one bounds
     // check + one contiguous copy). Same input bytes.
-    group.bench_function("from_slice", |b| {
+    group.bench("from_slice", |b| {
         b.iter(|| {
             let decoded: Vec<f64> =
                 beve::from_slice(black_box(&typed_bytes)).expect("decode f64 slice");
             black_box(decoded);
         });
     });
-    group.bench_function("read_typed_slice", |b| {
+    group.bench("read_typed_slice", |b| {
         b.iter(|| {
             let decoded = beve::read_typed_slice::<f64>(black_box(&typed_bytes))
                 .expect("bulk decode f64 slice");
@@ -187,7 +197,7 @@ fn bench_numeric_arrays(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_complex_arrays(c: &mut Criterion) {
+fn bench_complex_arrays(bench: &mut Bench) {
     let values: Vec<Complex<f64>> = (0..4096)
         .map(|i| Complex {
             re: (i as f64 * 0.25).cos(),
@@ -197,17 +207,17 @@ fn bench_complex_arrays(c: &mut Criterion) {
     let slice = values.as_slice();
     let complex_bytes = beve::to_vec_complex_slice(slice);
 
-    let mut group = c.benchmark_group("complex_arrays_f64");
+    let mut group = bench.group("complex_arrays_f64");
     // Encode: a plain `Vec<Complex<f64>>` walks elements one at a time, while
     // `ComplexSlice` hands the whole payload over for one copy. Same bytes out;
     // the mirror of `numeric_arrays_f64`'s serde_to_vec / typed_to_vec pair.
-    group.bench_function("serde_to_vec", |b| {
+    group.bench("serde_to_vec", |b| {
         b.iter(|| {
             let bytes = beve::to_vec(black_box(&values)).expect("serialize complex slice");
             black_box(bytes);
         });
     });
-    group.bench_function("complex_slice_to_vec", |b| {
+    group.bench("complex_slice_to_vec", |b| {
         b.iter(|| {
             let bytes = beve::to_vec(black_box(&beve::ComplexSlice(slice)))
                 .expect("serialize complex slice");
@@ -216,14 +226,14 @@ fn bench_complex_arrays(c: &mut Criterion) {
     });
     // Decode: generic serde (nested per-element visitors) vs the bulk reader
     // (one bounds check + one contiguous copy). Same input bytes.
-    group.bench_function("serde_from_slice", |b| {
+    group.bench("serde_from_slice", |b| {
         b.iter(|| {
             let decoded: Vec<Complex<f64>> =
                 beve::from_slice(black_box(&complex_bytes)).expect("decode complex slice");
             black_box(decoded);
         });
     });
-    group.bench_function("read_complex_slice", |b| {
+    group.bench("read_complex_slice", |b| {
         b.iter(|| {
             let decoded = beve::read_complex_slice::<f64>(black_box(&complex_bytes))
                 .expect("bulk decode complex slice");
@@ -233,25 +243,25 @@ fn bench_complex_arrays(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_bool_arrays(c: &mut Criterion) {
+fn bench_bool_arrays(bench: &mut Bench) {
     let flags: Vec<bool> = (0..8192).map(|i| (i % 3 == 0) ^ (i % 5 == 0)).collect();
     let slice = flags.as_slice();
     let typed_bytes = beve::to_vec_bool_slice(slice);
 
-    let mut group = c.benchmark_group("bool_arrays");
-    group.bench_function("serde_to_vec", |b| {
+    let mut group = bench.group("bool_arrays");
+    group.bench("serde_to_vec", |b| {
         b.iter(|| {
             let bytes = beve::to_vec(black_box(&flags)).expect("serialize bool vec");
             black_box(bytes);
         });
     });
-    group.bench_function("typed_to_vec", |b| {
+    group.bench("typed_to_vec", |b| {
         b.iter(|| {
             let bytes = beve::to_vec_bool_slice(black_box(slice));
             black_box(bytes);
         });
     });
-    group.bench_function("from_slice", |b| {
+    group.bench("from_slice", |b| {
         b.iter(|| {
             let decoded: Vec<bool> =
                 beve::from_slice(black_box(&typed_bytes)).expect("decode bool vec");
@@ -261,7 +271,7 @@ fn bench_bool_arrays(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_string_arrays(c: &mut Criterion) {
+fn bench_string_arrays(bench: &mut Bench) {
     let owned: Vec<String> = (0..2048)
         .map(|i| format!("sensor-{i:04}-{}", WORDS[i % WORDS.len()]))
         .collect();
@@ -270,26 +280,26 @@ fn bench_string_arrays(c: &mut Criterion) {
     let borrowed_slice = borrowed.as_slice();
     let typed_owned = beve::to_vec_string_slice(owned_slice);
 
-    let mut group = c.benchmark_group("string_arrays");
-    group.bench_function("serde_to_vec", |b| {
+    let mut group = bench.group("string_arrays");
+    group.bench("serde_to_vec", |b| {
         b.iter(|| {
             let bytes = beve::to_vec(black_box(&owned)).expect("serialize strings");
             black_box(bytes);
         });
     });
-    group.bench_function("typed_to_vec_owned", |b| {
+    group.bench("typed_to_vec_owned", |b| {
         b.iter(|| {
             let bytes = beve::to_vec_string_slice(black_box(owned_slice));
             black_box(bytes);
         });
     });
-    group.bench_function("typed_to_vec_borrowed", |b| {
+    group.bench("typed_to_vec_borrowed", |b| {
         b.iter(|| {
             let bytes = beve::to_vec_str_slice(black_box(borrowed_slice));
             black_box(bytes);
         });
     });
-    group.bench_function("from_slice", |b| {
+    group.bench("from_slice", |b| {
         b.iter(|| {
             let decoded: Vec<String> =
                 beve::from_slice(black_box(&typed_owned)).expect("decode strings");
@@ -299,7 +309,7 @@ fn bench_string_arrays(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_matrix_payloads(c: &mut Criterion) {
+fn bench_matrix_payloads(bench: &mut Bench) {
     let (extents, data) = sample_matrix(64, 64);
     let matrix = Matrix {
         layout: MatrixLayout::Right,
@@ -308,23 +318,15 @@ fn bench_matrix_payloads(c: &mut Criterion) {
     };
     let encoded = beve::to_vec(&matrix).expect("serialize matrix");
 
-    let mut group = c.benchmark_group("matrix_payloads");
-    group.bench_function("to_vec", move |b| {
-        let extents = extents.clone();
-        let data = data.clone();
-        b.iter(move || {
-            let matrix = Matrix {
-                layout: MatrixLayout::Right,
-                extents: &extents,
-                data: &data,
-            };
+    let mut group = bench.group("matrix_payloads");
+    group.bench("to_vec", |b| {
+        b.iter(|| {
             let bytes = beve::to_vec(black_box(&matrix)).expect("matrix encode");
             black_box(bytes);
         });
     });
-    group.bench_function("from_slice", move |b| {
-        let encoded = encoded.clone();
-        b.iter(move || {
+    group.bench("from_slice", |b| {
+        b.iter(|| {
             let OwnedMatrix {
                 layout,
                 extents,
@@ -338,24 +340,19 @@ fn bench_matrix_payloads(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_mixed_structs(c: &mut Criterion) {
+fn bench_mixed_structs(bench: &mut Bench) {
     let frames = mixed_frames(256);
     let encoded = beve::to_vec(&frames).expect("serialize mixed frames");
 
-    let mut group = c.benchmark_group("mixed_structs");
-    group.bench_with_input(
-        BenchmarkId::new("to_vec", frames.len()),
-        &frames,
-        |b, data| {
-            b.iter(|| {
-                let bytes = beve::to_vec(black_box(data)).expect("serialize mixed");
-                black_box(bytes);
-            });
-        },
-    );
-    group.bench_function(BenchmarkId::new("from_slice", frames.len()), |b| {
-        let encoded = encoded.clone();
-        b.iter(move || {
+    let mut group = bench.group("mixed_structs");
+    group.bench(format!("to_vec/{}", frames.len()), |b| {
+        b.iter(|| {
+            let bytes = beve::to_vec(black_box(&frames)).expect("serialize mixed");
+            black_box(bytes);
+        });
+    });
+    group.bench(format!("from_slice/{}", frames.len()), |b| {
+        b.iter(|| {
             let decoded: Vec<MixedFrame> =
                 beve::from_slice(black_box(&encoded)).expect("decode mixed");
             black_box(decoded);
@@ -385,21 +382,21 @@ fn make_large_vecs(n: usize) -> LargeVecs {
     }
 }
 
-fn bench_large_vecs(c: &mut Criterion) {
+fn bench_large_vecs(bench: &mut Bench) {
     for &n in &[1_000, 10_000, 100_000] {
         let data = make_large_vecs(n);
         let encoded = beve::to_vec(&data).expect("serialize");
 
-        let mut group = c.benchmark_group(format!("large_vecs_{n}"));
+        let mut group = bench.group(format!("large_vecs_{n}"));
 
-        group.bench_function("serde_to_vec", |b| {
+        group.bench("serde_to_vec", |b| {
             b.iter(|| {
                 let bytes = beve::to_vec(black_box(&data)).expect("serialize");
                 black_box(bytes);
             });
         });
 
-        group.bench_function("serde_from_slice", |b| {
+        group.bench("serde_from_slice", |b| {
             b.iter(|| {
                 let decoded: LargeVecs =
                     beve::from_slice(black_box(&encoded)).expect("deserialize");
@@ -407,7 +404,7 @@ fn bench_large_vecs(c: &mut Criterion) {
             });
         });
 
-        group.bench_function("streaming_to_vec", |b| {
+        group.bench("streaming_to_vec", |b| {
             b.iter(|| {
                 let mut buf = Vec::new();
                 beve::to_writer_streaming(black_box(&mut buf), black_box(&data))
@@ -417,7 +414,7 @@ fn bench_large_vecs(c: &mut Criterion) {
         });
 
         let prealloc_size = encoded.len();
-        group.bench_function("serde_to_vec_prealloc", |b| {
+        group.bench("serde_to_vec_prealloc", |b| {
             b.iter(|| {
                 let mut ser = beve::Serializer::with_capacity(prealloc_size);
                 black_box(&data).serialize(&mut ser).expect("serialize");
@@ -425,7 +422,7 @@ fn bench_large_vecs(c: &mut Criterion) {
             });
         });
 
-        group.bench_function("streaming_to_vec_prealloc", |b| {
+        group.bench("streaming_to_vec_prealloc", |b| {
             b.iter(|| {
                 let mut buf = Vec::with_capacity(prealloc_size);
                 beve::to_writer_streaming(black_box(&mut buf), black_box(&data))
@@ -437,16 +434,3 @@ fn bench_large_vecs(c: &mut Criterion) {
         group.finish();
     }
 }
-
-criterion_group!(
-    benches,
-    bench_struct_roundtrip,
-    bench_numeric_arrays,
-    bench_complex_arrays,
-    bench_bool_arrays,
-    bench_string_arrays,
-    bench_matrix_payloads,
-    bench_mixed_structs,
-    bench_large_vecs
-);
-criterion_main!(benches);

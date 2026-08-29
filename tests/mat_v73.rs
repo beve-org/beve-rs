@@ -1401,7 +1401,9 @@ fn mat_v73_defaults_to_the_hdf5_1_8_format_matlab_can_load() {
     let bytes = beve::to_vec(&vec![1.0f64, 2.0, 3.0]).unwrap();
     let file = convert_named(&bytes, &path, "values", &MatV73Options::default());
 
-    assert_eq!(file.libver_bound(), LibVer::V18);
+    // Read back through hdf5-pure, so this is hdf5-pure's `LibVer`, not the
+    // beve-owned one asserted above.
+    assert_eq!(file.libver_bound(), hdf5_pure::LibVer::V18);
     assert_eq!(file.superblock().version, 2);
 
     std::fs::remove_file(&path).ok();
@@ -1455,7 +1457,7 @@ fn mat_v73_compression_works_when_libver_is_raised() {
     };
     let file = convert_named(&bytes, &path, "values", &options);
 
-    assert_eq!(file.libver_bound(), LibVer::V110);
+    assert_eq!(file.libver_bound(), hdf5_pure::LibVer::V110);
     let ds = file.dataset("values").unwrap();
     assert_eq!(ds.read_f64().unwrap(), vec![1.0f64; 512]);
 

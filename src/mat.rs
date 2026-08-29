@@ -1,11 +1,19 @@
 //! BEVE -> MATLAB v7.3 conversion.
 //!
 //! Requires the `mat` feature, which is off by default:
-//! `beve = { version = "8", features = ["mat"] }`.
+//! `beve = { version = "10", features = ["mat"] }`.
 //!
 //! Walks the BEVE wire format and emits MATLAB-equivalent values directly
-//! through `hdf5_pure::mat::MatBuilder`. No intermediate value tree is
-//! materialized: the BEVE reader and the MAT builder advance in lockstep.
+//! through a MAT builder. No intermediate value tree is materialized: the BEVE
+//! reader and the MAT builder advance in lockstep.
+//!
+//! The builder is `hdf5-pure`, but that is an implementation detail. Every type
+//! in this module's API is beve's own, including the policy enums
+//! ([`Compression`], [`NullPolicy`], [`LibVer`], ...), which were re-exports of
+//! hdf5-pure's equivalents through 9.x. Re-exporting them made another crate's
+//! types part of beve's public API: a consumer of both crates had to move to
+//! whichever version beve named, and every upstream `0.x` bump was a semver
+//! event here. beve's version of `hdf5-pure` is now beve's business.
 
 use std::ffi::OsString;
 use std::fmt::Write as FmtWrite;
@@ -28,12 +36,11 @@ use crate::raw::{ComplexHeader, ObjectHeader, Reader, TypedArrayClass};
 const ARRAY_FLOAT_BF16_CODE: u8 = 0;
 const ARRAY_FLOAT_F16_CODE: u8 = 1;
 
-// Re-export shared option enums from hdf5-pure so beve users keep using them
-// under the same names.
-pub use hdf5_pure::LibVer;
-pub use hdf5_pure::mat::{
-    Compression, EmptyMarkerEncoding, InvalidNamePolicy, NullPolicy, OneDimensionalMode,
-    RowMajorPolicy, StringClass, UnsupportedPolicy,
+mod options;
+
+pub use options::{
+    Compression, InvalidNamePolicy, LibVer, MatV73Options, NullPolicy, OneDimensionalMode,
+    RowMajorPolicy, UnsupportedPolicy,
 };
 
 /// Controls how the BEVE root value is bound into MATLAB workspace variables.
@@ -44,69 +51,6 @@ pub enum RootBinding<'a> {
     /// Require a string-keyed BEVE object and expand each top-level entry into a
     /// separate MATLAB workspace variable.
     WorkspaceObject,
-}
-
-/// Options for BEVE -> MATLAB v7.3 conversion.
-///
-/// Convenience wrapper over [`hdf5_pure::mat::Options`] that pins
-/// `string_class = String` (the BEVE historical default, and what real
-/// MATLAB's `save -v7.3` produces). The remaining policies mirror upstream.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MatV73Options {
-    pub compression: Compression,
-    pub invalid_name_policy: InvalidNamePolicy,
-    pub null_policy: NullPolicy,
-    pub unsupported_policy: UnsupportedPolicy,
-    pub one_dimensional_mode: OneDimensionalMode,
-    pub row_major_policy: RowMajorPolicy,
-    /// The newest HDF5 on-disk format the MAT file may use.
-    ///
-    /// Defaults to [`LibVer::V18`], the newest format every MATLAB release can
-    /// open: a version 3 superblock is an HDF5 1.10 addition, and MATLAB's MAT
-    /// v7.3 loader refuses one even on releases whose own libhdf5 reads it
-    /// without difficulty.
-    ///
-    /// [`LibVer::V110`] is what [`Compression`] needs, since compression
-    /// requires chunked storage and the chunk indices hdf5-pure writes arrived
-    /// in 1.10. Compression against a lower bound is refused rather than
-    /// resolved either way, so raise this deliberately and accept that MATLAB
-    /// will not `load` the result.
-    pub libver: LibVer,
-}
-
-impl Default for MatV73Options {
-    fn default() -> Self {
-        Self {
-            compression: Compression::None,
-            invalid_name_policy: InvalidNamePolicy::Error,
-            null_policy: NullPolicy::EmptyStructArray,
-            unsupported_policy: UnsupportedPolicy::Error,
-            one_dimensional_mode: OneDimensionalMode::ColumnVector,
-            row_major_policy: RowMajorPolicy::ReorderToColumnMajor,
-            libver: LibVer::V18,
-        }
-    }
-}
-
-impl MatV73Options {
-    /// Convert to the underlying hdf5-pure options. Always pins
-    /// `string_class = String`.
-    ///
-    /// `unit_variant_encoding` and `empty_sequence_policy` are deliberately not
-    /// mirrored: hdf5-pure consults them only from its serde writer, to recover
-    /// type information that serde withholds. BEVE carries that information in
-    /// the document, so this walker reads the answer rather than choosing it.
-    fn to_pure(&self) -> mat_pure::Options {
-        let mut opts = mat_pure::Options::with_modern_strings();
-        opts.compression = self.compression;
-        opts.invalid_name_policy = self.invalid_name_policy;
-        opts.null_policy = self.null_policy;
-        opts.unsupported_policy = self.unsupported_policy;
-        opts.one_dimensional_mode = self.one_dimensional_mode;
-        opts.row_major_policy = self.row_major_policy;
-        opts.libver = self.libver;
-        opts
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +418,6 @@ fn handle_null(mb: &mut MatBuilder, options: &MatV73Options, name: &str, path: &
         // what drops the field.
         NullPolicy::Omit => Ok(()),
         NullPolicy::Error => Err(Error::msg(format!("unsupported null value at {path}"))),
-        _ => Err(Error::Unsupported("unrecognized null policy")),
     }
 }
 
@@ -584,9 +527,11 @@ fn handle_128_bit(
             .write_string_object(name, &[value], &[1, 1])
             .map(|_| ())
             .map_err(map_mat_error),
-        _ => Err(Error::msg(format!(
-            "unsupported 128-bit integer scalar at {path}"
-        ))),
+        // Widening is about low-precision floats; there is no MATLAB numeric
+        // class wide enough for a 128-bit integer to widen into.
+        UnsupportedPolicy::Error | UnsupportedPolicy::LossyNumericWidening => Err(Error::msg(
+            format!("unsupported 128-bit integer scalar at {path}"),
+        )),
     }
 }
 
@@ -1285,7 +1230,9 @@ fn unpack_bools(packed: &[u8], len: usize) -> Vec<u8> {
 fn check_low_precision_float(options: &MatV73Options, label: &str, path: &str) -> Result<()> {
     match options.unsupported_policy {
         UnsupportedPolicy::LossyNumericWidening => Ok(()),
-        _ => Err(Error::msg(format!(
+        // `StringFallback` is not offered here: a float rendered as text stops
+        // being a number to MATLAB, where widening keeps its value.
+        UnsupportedPolicy::Error | UnsupportedPolicy::StringFallback => Err(Error::msg(format!(
             "unsupported {label} at {path}; enable LossyNumericWidening to map it to MATLAB single"
         ))),
     }
@@ -1307,7 +1254,6 @@ fn maybe_reorder<T: Clone>(
             RowMajorPolicy::Error => Err(Error::msg(format!(
                 "row-major matrix at {path} requires reordering to MATLAB column-major layout"
             ))),
-            _ => Err(Error::Unsupported("unrecognized row-major policy")),
         },
     }
 }

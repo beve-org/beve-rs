@@ -69,17 +69,3 @@ impl serde::de::Error for Error {
         Error::MessageOwned(msg.to_string())
     }
 }
-
-#[cfg(feature = "mat")]
-impl From<hdf5_pure::Error> for Error {
-    fn from(value: hdf5_pure::Error) -> Self {
-        Error::MessageOwned(value.to_string())
-    }
-}
-
-#[cfg(feature = "mat")]
-impl From<hdf5_pure::FormatError> for Error {
-    fn from(value: hdf5_pure::FormatError) -> Self {
-        Error::MessageOwned(value.to_string())
-    }
-}

@@ -5,7 +5,7 @@ Rust implementation of the BEVE (Binary Efficient Versatile Encoding) specificat
 Grab the crate from [crates.io](https://crates.io/crates/beve) and add it to your project with `cargo add beve` or by editing `Cargo.toml`:
 ```toml
 [dependencies]
-beve = "9"
+beve = "10"
 ```
 By default the crate is lean: it depends only on `serde`, `half`, and `simdutf8`, and requires Rust 1.96.1 or newer. Half-precision floats via `half::f16` are supported alongside the standard numeric types. The MATLAB/HDF5 export path is gated behind the opt-in [`mat` feature](#matlab--mat-export), so the HDF5 dependency stack is never pulled into a default build.
 
@@ -278,15 +278,15 @@ For foreign complex types (e.g. `num_complex::Complex`), annotate the field with
 The `mat` feature is **off by default** (it pulls in `hdf5-pure` and its compression stack, which the core ser/de does not need). Enable it to convert BEVE payloads directly into MATLAB v7.3 MAT files:
 ```toml
 [dependencies]
-beve = { version = "9", features = ["mat"] }
+beve = { version = "10", features = ["mat"] }
 ```
 
 The MAT feature uses a pure-Rust HDF5 writer (`hdf5-pure`) and requires no system libraries. The CLI's `to-mat` command is likewise only present when the binary is built with `--features mat`.
 
-### Versioning of the `hdf5-pure` dependency
-`beve::mat` re-exports hdf5-pure's option enums (`Compression`, `NullPolicy`, ...), so moving to a new hdf5-pure release ships as a beve **minor** version rather than a major one — hdf5-pure is pre-1.0, and every release of it is a new `0.x`.
+### The `hdf5-pure` dependency
+`hdf5-pure` is an implementation detail. No type in beve's public API comes from it, so beve follows ordinary semver and its version of `hdf5-pure` is beve's business — you can depend on any version of `hdf5-pure` you like alongside it, including a different one.
 
-This only matters if you depend on hdf5-pure directly as well: match the version named in the [changelog](CHANGELOG.md) and move in step with it, or pin `beve = "~9.0"` to take that move deliberately. Everything else follows ordinary semver.
+This was not true through 9.x, where `beve::mat` re-exported hdf5-pure's option enums (`Compression`, `NullPolicy`, ...) and `MatV73Options` was typed by them. That made every upstream `0.x` bump a semver event here and forced a consumer of both crates into lockstep. beve now owns those enums; see the [10.0.0 changelog entry](CHANGELOG.md) if you are upgrading.
 
 Use `RootBinding::NamedVariable` when one BEVE value should become one MATLAB variable, or `RootBinding::WorkspaceObject` when a string-keyed BEVE object should expand into multiple top-level workspace variables:
 ```rust

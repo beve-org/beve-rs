@@ -1,8 +1,30 @@
 # Changelog
 
-This crate follows [Semantic Versioning](https://semver.org/), with one exemption: the `mat` feature's [hdf5-pure version](README.md#versioning-of-the-hdf5-pure-dependency) moves in minor releases. Dates are the crates.io publication date.
+This crate follows [Semantic Versioning](https://semver.org/). Dates are the crates.io publication date.
+
+Through 9.x there was one exemption, for the `mat` feature's hdf5-pure version. 10.0.0 removed the coupling that made it necessary, and with it the exemption.
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
+
+## 10.0.0 - 2026-08-29
+
+A major for the `mat` feature only. `hdf5-pure` is no longer part of beve's public API, which retires the semver exemption above: beve's version of it is now beve's business, and a consumer of both crates is free to pick its own. Nothing about the `.mat` files beve writes changes: 1344 conversions — every payload class against every option setting and both root bindings — were run under 9.0.2 and under this release and compared byte for byte, error strings included. All are identical. A persisted `MatV73Options` also serializes identically across the two, so a stored 9.x configuration still loads. A default (mat-off) build is untouched.
+
+### Changed
+
+- **The `mat` option enums are beve's own.** `Compression`, `InvalidNamePolicy`, `NullPolicy`, `UnsupportedPolicy`, `OneDimensionalMode`, `RowMajorPolicy` and `LibVer` were re-exports of hdf5-pure's types, which put another crate's types in `MatV73Options`'s public fields. They are beve's own types now, with the same names, the same variants and the same meanings; `MatV73Options::to_pure` is the single place the two vocabularies meet.
+
+  The names still resolve and still construct, so `MatV73Options { null_policy: NullPolicy::Omit, ..Default::default() }` compiles unchanged. **Breaking** in two ways: the types are no longer *the same type* as hdf5-pure's, so code that handed a `beve::Compression` to an hdf5-pure API needs `hdf5_pure::mat::Compression` there instead; and `beve::LibVer` no longer carries the inherent items it inherited from the re-export — `LATEST`, `WRITER_DEFAULT`, `WRITER_OLDEST`, `name()` and `from_superblock_version()` are gone. Name the variant you want (`LibVer::V114` for `LATEST`), or reach for `hdf5_pure::LibVer` if you need the rest. They describe hdf5-pure's writer and its *read* path, neither of which is beve's to state, so they were not mirrored; ask if you want them back, since adding them later is not breaking.
+
+- **Breaking: `beve::mat::StringClass` and `beve::mat::EmptyMarkerEncoding` are gone.** Both were re-exported but named nothing a beve caller could set: `MatV73Options` pins `string_class` to the modern MATLAB `string` class and leaves the empty marker at the encoding beve has always written. They were surface with no meaning behind it.
+
+- **Breaking: `From<hdf5_pure::Error>` and `From<hdf5_pure::FormatError>` for `beve::Error` are gone.** Neither was reachable from beve's own code — the `mat` path converts through `MatError` — and a public `From` impl naming an hdf5-pure type is exactly the coupling this release removes. Errors from hdf5-pure still arrive as `Error::MessageOwned` with the same text.
+
+- **A stored `MatV73Options` keeps loading after the struct gains a field.** `MatV73Options` is `Serialize`/`Deserialize` so a configuration can be persisted, but every field was required on the way back in, so adding one broke every blob written before it. That already happened: `libver` arrived in 6.0.0, and a configuration stored under 5.x has failed to load ever since with "missing field `libver`". Such a blob loads again, and `#[serde(default)]` now sits on the struct rather than on each field, so the next addition cannot repeat it.
+
+  What is written is byte-for-byte unchanged — this is a deserialize-side attribute. The trade is that a truncated or hand-written blob missing a field no longer fails on it; it loads under that field's default.
+
+- **Adding a policy variant is now a compile error rather than a runtime refusal.** Matching on the upstream `#[non_exhaustive]` enums forced `_` arms, so an unhandled policy failed at conversion time with "unrecognized null policy". The enums are beve's own now, so those arms are gone and the four match sites spell out every variant they refuse. This binds beve's own additions; a variant added *upstream* is unreachable until it is mirrored here by hand. That is the one real cost of the decoupling, and it is cheap — beve only writes MAT files, and the write-side policy set has been stable across ten upstream releases.
 
 ## 9.0.2 - 2026-08-29
 
@@ -215,7 +237,7 @@ A major rather than a minor, despite the hdf5-pure exemption above: the exemptio
 
 ### Added
 
-- A documented [versioning policy](README.md#versioning-of-the-hdf5-pure-dependency) for the `mat` feature's hdf5-pure dependency: an hdf5-pure move ships as a beve minor version, not a major.
+- A documented versioning policy for the `mat` feature's hdf5-pure dependency: an hdf5-pure move ships as a beve minor version, not a major. (Retired in 10.0.0, which removed the coupling behind it.)
 
 ## 6.0.0 - 2026-07-30
 

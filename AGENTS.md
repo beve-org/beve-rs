@@ -6,6 +6,14 @@ The crate lives in `src/` with `lib.rs` exporting the public API and delegating 
 ## Build, Test, and Development Commands
 Use `cargo build` for a debug build and `cargo build --release` when benchmarking encoding throughput. Run `cargo test` to execute unit, doc, and integration suites; add `-- --nocapture` when you need stdout. `cargo fmt` formats the codebase and doubles as a CI guard with `cargo fmt -- --check`. Lint with `cargo clippy --all-targets --all-features` before submitting changes. Example binaries can be exercised with `cargo run --example emit_bool`.
 
+## Upgrading `hdf5-pure`
+The `mat` feature writes MATLAB v7.3 files through `hdf5-pure`, which is a private implementation detail: no type in beve's public API comes from it (see `src/mat/options.rs`). Keep it that way. When moving to a new release:
+
+1. Read its changelog for **write-side** changes. beve only ever writes, so read-path changes rarely reach it.
+2. Mirror any added variant of a policy enum (`Compression`, `NullPolicy`, `LibVer`, ...) into `src/mat/options.rs` and its `to_pure` arm. Nothing flags an unmirrored variant; the mapping only runs one way, so it is simply unreachable. A renamed or removed variant does fail the build.
+3. Prove the written bytes did not change rather than that the tests still pass: convert a spread of payload shapes and option settings under both versions and compare byte for byte, error strings included. Past entries in `CHANGELOG.md` record what that spread covered.
+4. An hdf5-pure bump is not on its own a beve semver event any more. Version beve by what changed in *beve*.
+
 ## Coding Style & Naming Conventions
 Follow idiomatic Rust style with rustfmt defaults (4-space indentation, trailing commas, snake_case modules). Public types and traits use UpperCamelCase, while functions, modules, and files stay snake_case. Keep error variants descriptive and suffix serde helper types with `Visitor` or `Adapter` when appropriate. Prefer `&[T]` and iterators over owning collections to keep encoding zero-copy. Let clippy warnings guide refactors; do not ignore new lints without justification.
 

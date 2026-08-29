@@ -59,17 +59,19 @@ hdf5-pure = { version = "0.41", optional = true }
 # so a consumer locked there fails at resolve time.
 num-complex = { version = "0.4.1", optional = true, default-features = false }
 
+# Normal dependencies are already in scope for tests, benches, and examples, so
+# `serde`, `half`, and `bytemuck` are deliberately not repeated here; listing
+# them again only duplicates the version and feature set in a second place that
+# can drift out of step with the real one above.
 [dev-dependencies]
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-criterion = "0.5"
+# The bench harness. No transitive dependencies, where criterion's defaults
+# dragged in the plotters and rayon stacks for an HTML report nothing here
+# reads. It also interleaves a group's cases in rounds rather than running each
+# to completion, so the A/B ratios these benches exist to read survive a run on
+# a machine that is doing something else at the time.
+benchit = "0.1"
 proptest = "1.4"
-# Already a normal dependency; named in dev too so tests can construct f16/bf16
-# values to exercise the half-float typed-array paths.
-half = { version = "2.4", features = ["serde"] }
-# Dev too, so tests can mark a foreign `#[repr(C)]` complex element type as
-# `AnyBitPattern` (the bound the bulk complex-array decode requires).
-bytemuck = "1"
 # `hdf5-pure` is not a dev-dependency: the only test that uses it directly
 # (`tests/mat_v73.rs`) is gated behind `#[cfg(feature = "mat")]`, and enabling
 # `mat` turns on the optional `hdf5-pure` dependency, which is then nameable from
@@ -107,7 +109,7 @@ harness = false
 incremental = false
 debug = "line-tables-only"
 
-# Dependency debuginfo, useful only when stepping into serde or criterion.
+# Dependency debuginfo, useful only when stepping into serde or the bench harness.
 # beve's own frames keep their line numbers; this key covers dependencies only.
 [profile.dev.package."*"]
 debug = 0

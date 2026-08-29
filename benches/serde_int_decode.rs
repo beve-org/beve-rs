@@ -7,25 +7,27 @@
 //! are included as a control: they do not take the 128-bit carrier, so they
 //! should be unaffected by integer-path changes.
 
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use benchit::{Bench, Throughput};
 use std::hint::black_box;
 
 const N: usize = 1_000_000;
 
-fn bench(c: &mut Criterion) {
+fn main() {
+    let mut bench = Bench::from_args();
+
     macro_rules! case {
         ($name:literal, $t:ty, $make:expr) => {{
             let v: Vec<$t> = (0..N).map($make).collect();
             let bytes = beve::to_vec_typed_slice(&v);
-            let mut g = c.benchmark_group(concat!("int_decode/", $name));
+            let mut g = bench.group(concat!("int_decode/", $name));
             g.throughput(Throughput::Bytes((N * std::mem::size_of::<$t>()) as u64));
-            g.bench_function("from_slice", |b| {
+            g.bench("from_slice", |b| {
                 b.iter(|| {
                     let d: Vec<$t> = beve::from_slice(black_box(&bytes)).unwrap();
                     black_box(d);
                 })
             });
-            g.bench_function("from_reader_streaming", |b| {
+            g.bench("from_reader_streaming", |b| {
                 b.iter(|| {
                     let d: Vec<$t> =
                         beve::from_reader_streaming(std::io::Cursor::new(black_box(&bytes)))
@@ -48,6 +50,3 @@ fn bench(c: &mut Criterion) {
     // Control: float path, should be unchanged by integer-path edits.
     case!("vec_f64", f64, |i| i as f64 * 0.5);
 }
-
-criterion_group!(benches, bench);
-criterion_main!(benches);

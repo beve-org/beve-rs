@@ -16,9 +16,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "benchit"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "145835ab749b60cced5cd4abcd03298358c5412e395f7bcbb727d8a3deabdef9"
+checksum = "289b19888103ffd4e5ab90eeeaa92ac21738f73e3e3b6d1193084d115fdfdd53"
 
 [[package]]
 name = "beve"

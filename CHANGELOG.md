@@ -4,6 +4,22 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## 9.0.1 - 2026-08-28
+
+Development tooling only. No code, API, or output changes.
+
+### Changed
+
+- **The benchmarks move from criterion to [benchit](https://crates.io/crates/benchit).** The dev-dependency tree loses 51 crates — clap, plotters, rayon, crossbeam, wasm-bindgen/web-sys, regex, ciborium and walkdir among them — and gains one with no dependencies of its own.
+
+  Nearly every benchmark group here is a paired A/B: a bulk reader against the serde path, `#[serde(with = ...)]` against the unannotated field. criterion runs case A to completion before case B, which puts whatever frequency scaling and thermal drift happened in between onto the ratio; benchit interleaves a group's cases in rounds and reports the median and interquartile range of the per-round paired ratios.
+
+- **`serde`, `half`, and `bytemuck` are dropped from `[dev-dependencies]`.** All three are normal dependencies and so were already in scope for tests and benches; the second listing only duplicated a version and feature set that could drift out of step with the real one.
+
+- **Encode and decode benchmarks are separate groups.** A benchit group's ratio column is relative to its first case, so mixing the two made rows compare a decode against an encode. `numeric_arrays_f64`, `complex_arrays_f64`, `bool_arrays`, `string_arrays` and `large_vecs_{n}` are now `.../encode` and `.../decode` pairs. The roundtrip groups, which hold exactly one of each, are unchanged.
+
+- **`[profile.dev]` turns off incremental compilation and trims debuginfo** to `line-tables-only`, with dependency debuginfo off entirely, which keeps a development `target/` small. Panics and backtraces keep their file and line numbers, and `RUSTFLAGS="-C debuginfo=2"` restores the rest. Cargo ignores a dependency's profile settings, so this reaches only work in this repository.
+
 ## 9.0.0 - 2026-08-27
 
 A major for a security fix. The decoders had no recursion limit, so nested input aborted the process — a Rust stack overflow **aborts** rather than unwinding, so no `Result` carries it and `catch_unwind` cannot contain it. Input nested past `beve::MAX_RECURSION_DEPTH` (128) is now refused with the new `Error::RecursionLimitExceeded`, and `Error` is `#[non_exhaustive]`; that is what makes the release major, since an exhaustive `match` on it no longer compiles.

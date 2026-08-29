@@ -4,6 +4,22 @@ This crate follows [Semantic Versioning](https://semver.org/), with one exemptio
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## 9.0.2 - 2026-08-29
+
+A security fix, found by the fuzz targets this release adds. No API change.
+
+### Fixed
+
+- **Security: decoding into `Value` sized an allocation from an untrusted element count.** `Value`'s sequence visitor passed the wire's count straight to `Vec::reserve`, so a nine-byte document claiming 2^40 elements asked for 35 TB. As with the recursion limit in 9.0.0, this is not an ordinary parse failure: `Vec` answers an impossible request by **aborting** the process, so no `Result` carries it and `catch_unwind` cannot contain it.
+
+  Reserves now clamp to `MAX_PREALLOC_BYTES` (8 MiB), the ceiling the bulk-array markers have used since 7.3.0. Only the up-front reserve is capped — a genuinely large array still grows to whatever elements actually arrive — so no valid document decodes differently. Upgrade if you decode untrusted input into `beve::Value`.
+
+  The ceiling is per-reserve, not per-decode, so nested arrays still stack it up to `MAX_RECURSION_DEPTH` levels: roughly 1 KB of input can reach 1 GiB. That is bounded and does not abort, but a global budget is not in place.
+
+### Changed
+
+- **The test suite gains libFuzzer targets and drops proptest.** `fuzz/` holds two targets: arbitrary bytes into the slice decoders, asserting no panic and bounded allocation, and a generated value through every encoder/decoder pairing. Their bodies are shared with `tests/fuzz_seeds.rs`, which replays the committed seed corpus on stable in every `cargo test`, so a crash found on nightly becomes a permanent regression test. The dev-dependency tree loses 37 crates.
+
 ## 9.0.1 - 2026-08-28
 
 Development tooling only. No code, API, or output changes.

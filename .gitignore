@@ -5,3 +5,10 @@
 # in-repo so that work stays next to the code it is about, untracked so none of
 # it reaches the `.crate` or a commit.
 /tmp
+
+# The fuzzer's scratch space: `corpus/` is the coverage-guided working set it
+# rewrites on every run, `artifacts/` is where a crash lands. The curated inputs
+# are `fuzz/seeds/`, which is committed and replayed by `tests/fuzz_seeds.rs`.
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts

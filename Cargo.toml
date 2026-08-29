@@ -19,11 +19,15 @@ readme = "README.md"
 # than useless, in fact — `build.rs` skips the helpers when the sources are gone,
 # but if they ship without the headers it instead tries to compile them, fails,
 # and warns every downstream build that lacks a C++23 compiler.
-# `fuzz/` is a separate crate holding the libFuzzer targets. It needs nightly,
-# and a consumer building `beve` never compiles it. `tests/fuzz_seeds.rs` goes
-# with it rather than shipping broken: it includes `fuzz/shared.rs` as a module
-# and reads the seed files, so it does not compile without the directory.
-exclude = ["dev/", "tests/cpp/", "fuzz/", "tests/fuzz_seeds.rs"]
+# `/fuzz/` holds the libFuzzer targets. It is a package of its own, which cargo
+# skips when building this one's `.crate` -- so the two things the published
+# `tests/fuzz_seeds.rs` needs, the target bodies and the seed corpus, live under
+# `tests/fuzz/` where they ship with it.
+#
+# The leading slash matters: these are gitignore-style globs, so a bare `fuzz/`
+# means "any directory named fuzz, at any depth" and would take `tests/fuzz/`
+# with it -- silently, since the seeds would just stop shipping.
+exclude = ["dev/", "tests/cpp/", "/fuzz/"]
 
 # Both `mat` and `num-complex` are off by default, and docs.rs builds a crate
 # with its default features unless told otherwise — which rendered the whole

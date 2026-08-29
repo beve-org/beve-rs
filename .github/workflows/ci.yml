@@ -123,7 +123,7 @@ jobs:
   # Coverage-guided fuzzing, nightly-only because cargo-fuzz needs the sanitizer
   # flags. Each target starts from the committed seeds, runs for a few minutes,
   # and uploads whatever crashed. A crash found here becomes a permanent stable
-  # test by being minimised and moved into `fuzz/seeds/<target>/`.
+  # test by being minimised and moved into `tests/fuzz/seeds/<target>/`.
   fuzz:
     name: Fuzz (${{ matrix.target }})
     # Scheduled and manual runs only. `always()` is deliberately not used: this
@@ -156,7 +156,7 @@ jobs:
         run: |
           mkdir -p fuzz/corpus/${{ matrix.target }}
           cargo fuzz run ${{ matrix.target }} \
-            fuzz/corpus/${{ matrix.target }} fuzz/seeds/${{ matrix.target }} \
+            fuzz/corpus/${{ matrix.target }} tests/fuzz/seeds/${{ matrix.target }} \
             -- -max_total_time=300 -rss_limit_mb=2048
 
       - name: Upload crash artifacts

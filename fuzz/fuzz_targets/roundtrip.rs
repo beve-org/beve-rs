@@ -5,7 +5,7 @@
 
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../shared.rs"]
+#[path = "../../tests/fuzz/shared.rs"]
 mod shared;
 
 fuzz_target!(|data: &[u8]| {

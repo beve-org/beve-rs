@@ -8,10 +8,10 @@
 //!
 //! * `fuzz/fuzz_targets/*.rs`, which hand it bytes libFuzzer generated;
 //! * `tests/fuzz_seeds.rs`, which hands it the bytes committed under
-//!   `fuzz/seeds/` on every `cargo test`, on every toolchain.
+//!   `tests/fuzz/seeds/` on every `cargo test`, on every toolchain.
 //!
 //! So the fuzzer explores and the seed corpus defends: a crash found on nightly
-//! becomes a file in `fuzz/seeds/`, and from then on it is a stable-CI
+//! becomes a file in `tests/fuzz/seeds/`, and from then on it is a stable-CI
 //! regression test that no one has to remember to run.
 
 // Each target binary includes this whole file but calls one of its bodies, and

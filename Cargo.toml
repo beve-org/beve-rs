@@ -19,7 +19,11 @@ readme = "README.md"
 # than useless, in fact — `build.rs` skips the helpers when the sources are gone,
 # but if they ship without the headers it instead tries to compile them, fails,
 # and warns every downstream build that lacks a C++23 compiler.
-exclude = ["dev/", "tests/cpp/"]
+# `fuzz/` is a separate crate holding the libFuzzer targets. It needs nightly,
+# and a consumer building `beve` never compiles it. `tests/fuzz_seeds.rs` goes
+# with it rather than shipping broken: it includes `fuzz/shared.rs` as a module
+# and reads the seed files, so it does not compile without the directory.
+exclude = ["dev/", "tests/cpp/", "fuzz/", "tests/fuzz_seeds.rs"]
 
 # Both `mat` and `num-complex` are off by default, and docs.rs builds a crate
 # with its default features unless told otherwise — which rendered the whole
@@ -71,7 +75,6 @@ serde_json = "1"
 # to completion, so the A/B ratios these benches exist to read survive a run on
 # a machine that is doing something else at the time.
 benchit = "0.1"
-proptest = "1.4"
 # `hdf5-pure` is not a dev-dependency: the only test that uses it directly
 # (`tests/mat_v73.rs`) is gated behind `#[cfg(feature = "mat")]`, and enabling
 # `mat` turns on the optional `hdf5-pure` dependency, which is then nameable from

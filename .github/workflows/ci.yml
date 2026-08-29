@@ -7,6 +7,13 @@ on:
   pull_request:
     branches:
       - main
+  # The fuzz job only. Coverage-guided fuzzing gets better the longer it runs
+  # and finds nothing new most nights, so it does not belong on the path of a
+  # pull request; the seed corpus it produces is what guards those, through
+  # `tests/fuzz_seeds.rs` in the `lint-test` job above.
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -112,3 +119,50 @@ jobs:
       # feature. `mat` stays off; hdf5-pure has its own big-endian job.
       - name: cargo test on s390x (big-endian)
         run: cross test --locked --target s390x-unknown-linux-gnu --features num-complex
+
+  # Coverage-guided fuzzing, nightly-only because cargo-fuzz needs the sanitizer
+  # flags. Each target starts from the committed seeds, runs for a few minutes,
+  # and uploads whatever crashed. A crash found here becomes a permanent stable
+  # test by being minimised and moved into `fuzz/seeds/<target>/`.
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    # Scheduled and manual runs only. `always()` is deliberately not used: this
+    # should not run on every push, and it must not gate a pull request.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [decode_arbitrary, roundtrip]
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target\n fuzz -> fuzz/target"
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      # `-rss_limit_mb` is libFuzzer's own ceiling and is independent of the
+      # allocation bound the targets assert; it catches a runaway that the
+      # in-process check would only see after the fact.
+      - name: Fuzz ${{ matrix.target }}
+        run: |
+          mkdir -p fuzz/corpus/${{ matrix.target }}
+          cargo fuzz run ${{ matrix.target }} \
+            fuzz/corpus/${{ matrix.target }} fuzz/seeds/${{ matrix.target }} \
+            -- -max_total_time=300 -rss_limit_mb=2048
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

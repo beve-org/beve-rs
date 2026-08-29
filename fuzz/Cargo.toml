@@ -1,0 +1,40 @@
+# The fuzz targets live in their own crate on purpose. `cargo fuzz` needs
+# nightly and pulls in libfuzzer-sys, and neither belongs in the dependency
+# graph that `cargo build`, `cargo test`, or a consumer of `beve` ever sees.
+# The empty `[workspace]` table below keeps this package out of the parent's
+# build, and `exclude` in the parent manifest keeps it out of the `.crate`.
+
+[package]
+name = "beve-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde = { version = "1", features = ["derive"] }
+
+[dependencies.beve]
+path = ".."
+
+# The target bodies are in `shared.rs`, which `tests/fuzz_seeds.rs` also
+# includes so the seed corpus is replayed on stable. Each binary here is a thin
+# entry point around one of them.
+[[bin]]
+name = "decode_arbitrary"
+path = "fuzz_targets/decode_arbitrary.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

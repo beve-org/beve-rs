@@ -58,6 +58,28 @@ impl HalfKind {
 /// matters.
 pub(crate) const MAX_PREALLOC_BYTES: usize = 8 * 1024 * 1024;
 
+/// How much of a sequence's `size_hint` to reserve up front when filling a
+/// `Vec<E>` element by element.
+///
+/// The hint is a length field off the wire, so it is untrusted: a two-byte edit
+/// turns a 27-byte input into a claim of 2^55 elements, and `Vec` answers an
+/// impossible request by aborting the process, which no decoder gets to turn
+/// into an `Err`. The fill grows to whatever elements actually arrive, so
+/// clamping the reserve costs a few reallocations on a genuinely huge array and
+/// bounds a malformed one.
+///
+/// Same ceiling, for the same reason, as the raw payload read in
+/// `StreamingDeserializer::read_exact_vec`.
+///
+/// Every hand-written `visit_seq` in this crate reserves through here. serde's
+/// own `Vec` visitor clamps for the same reason; the ones that have gone wrong
+/// were the ones that reached for `size_hint` directly -- `Value`'s did, and a
+/// nine-byte document claiming 2^40 elements asked for 35 TB.
+pub(crate) fn reserve_from_hint<E>(hint: Option<usize>) -> usize {
+    let elem = core::mem::size_of::<E>().max(1);
+    hint.unwrap_or(0).min(MAX_PREALLOC_BYTES / elem)
+}
+
 /// Ceiling on how deeply a decoded value may nest.
 ///
 /// Decoding a nested value recurses one native stack frame per level. Nesting is

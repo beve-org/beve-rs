@@ -688,10 +688,9 @@ impl<'de> Visitor<'de> for ValueVisitor {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
-        let mut values = Vec::new();
-        if let Some(hint) = seq.size_hint() {
-            values.reserve(hint);
-        }
+        // The hint is the wire's element count, which nothing has backed with
+        // bytes yet -- a nine-byte document can claim 2^40 elements.
+        let mut values = Vec::with_capacity(crate::de::reserve_from_hint::<Value>(seq.size_hint()));
         while let Some(elem) = seq.next_element()? {
             values.push(elem);
         }

@@ -6,7 +6,9 @@ Through 9.x there was one exemption, for the `mat` feature's hdf5-pure version. 
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
-## Unreleased
+## 10.0.1 - 2026-10-26
+
+Dependency update only. No API change and no change to the bytes written.
 
 ### Changed
 

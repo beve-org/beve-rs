@@ -22,7 +22,7 @@ checksum = "289b19888103ffd4e5ab90eeeaa92ac21738f73e3e3b6d1193084d115fdfdd53"
 
 [[package]]
 name = "beve"
-version = "10.0.0"
+version = "10.0.1"
 dependencies = [
  "benchit",
  "bytemuck",

@@ -6,6 +6,12 @@ Through 9.x there was one exemption, for the `mat` feature's hdf5-pure version. 
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Changed
+
+- The `mat` feature moves to **hdf5-pure 0.47** (was 0.41). No beve API change and no change to the bytes written: 86,400 conversions (40 payload shapes, the full cross product of every `MatV73Options` setting, both root bindings) were run under both versions and compared byte for byte, error strings included. All are identical. Upstream's changes in between are read-side, in-place editing, or names beve never uses; the `mat` policy enums are unchanged, so there is nothing new to mirror.
+
 ## 10.0.0 - 2026-08-29
 
 A major for the `mat` feature only. `hdf5-pure` is no longer part of beve's public API, which retires the semver exemption above: beve's version of it is now beve's business, and a consumer of both crates is free to pick its own. Nothing about the `.mat` files beve writes changes: 1344 conversions — every payload class against every option setting and both root bindings — were run under 9.0.2 and under this release and compared byte for byte, error strings included. All are identical. A persisted `MatV73Options` also serializes identically across the two, so a stored 9.x configuration still loads. A default (mat-off) build is untouched.

@@ -1,3 +1,4 @@
+use crate::aligned::read_typed_array_prefix;
 use crate::de::MAX_RECURSION_DEPTH;
 use crate::error::{Error, Result};
 use crate::header::*;
@@ -675,20 +676,16 @@ fn write_object(
 }
 
 fn write_typed_array(reader: &mut BeveReader<'_>, out: &mut Vec<u8>, header: u8) -> Result<()> {
+    let (header, len) = read_typed_array_prefix(reader.buf, &mut reader.pos, header)?;
     let value_type = parse_subtype(header);
     let byte_code = parse_byte_count_code(header);
     out.push(b'[');
-    match value_type {
-        ARRAY_FLOAT => write_typed_float_array(reader, out, byte_code)?,
-        ARRAY_SIGNED => write_typed_signed_array(reader, out, byte_code)?,
-        ARRAY_UNSIGNED => write_typed_unsigned_array(reader, out, byte_code)?,
-        ARRAY_BOOL_OR_STRING => {
-            if byte_code == 0 {
-                write_typed_bool_array(reader, out)?;
-            } else {
-                write_typed_string_array(reader, out)?;
-            }
-        }
+    match (value_type, byte_code) {
+        (ARRAY_FLOAT, _) => write_typed_float_array(reader, out, byte_code, len)?,
+        (ARRAY_SIGNED, _) => write_typed_signed_array(reader, out, byte_code, len)?,
+        (ARRAY_UNSIGNED, _) => write_typed_unsigned_array(reader, out, byte_code, len)?,
+        (ARRAY_BOOL_OR_STRING, ARRAY_KIND_BOOL) => write_typed_bool_array(reader, out, len)?,
+        (ARRAY_BOOL_OR_STRING, ARRAY_KIND_STRING) => write_typed_string_array(reader, out, len)?,
         _ => return Err(Error::InvalidHeader(header)),
     }
     out.push(b']');
@@ -699,6 +696,7 @@ fn write_typed_unsigned_array(
     reader: &mut BeveReader<'_>,
     out: &mut Vec<u8>,
     byte_code: u8,
+    len: usize,
 ) -> Result<()> {
     let bytes_per = match byte_code {
         0 => 1,
@@ -708,7 +706,6 @@ fn write_typed_unsigned_array(
         4 => 16,
         _ => return Err(Error::Unsupported("unsigned width not supported")),
     };
-    let len = reader.read_size()? as usize;
     for i in 0..len {
         if i > 0 {
             out.push(b',');
@@ -726,6 +723,7 @@ fn write_typed_signed_array(
     reader: &mut BeveReader<'_>,
     out: &mut Vec<u8>,
     byte_code: u8,
+    len: usize,
 ) -> Result<()> {
     let bytes_per = match byte_code {
         0 => 1,
@@ -735,7 +733,6 @@ fn write_typed_signed_array(
         4 => 16,
         _ => return Err(Error::Unsupported("signed width not supported")),
     };
-    let len = reader.read_size()? as usize;
     for i in 0..len {
         if i > 0 {
             out.push(b',');
@@ -758,8 +755,8 @@ fn write_typed_float_array(
     reader: &mut BeveReader<'_>,
     out: &mut Vec<u8>,
     byte_code: u8,
+    len: usize,
 ) -> Result<()> {
-    let len = reader.read_size()? as usize;
     for i in 0..len {
         if i > 0 {
             out.push(b',');
@@ -794,8 +791,11 @@ fn write_typed_float_array(
     Ok(())
 }
 
-fn write_typed_bool_array(reader: &mut BeveReader<'_>, out: &mut Vec<u8>) -> Result<()> {
-    let len = reader.read_size()? as usize;
+fn write_typed_bool_array(
+    reader: &mut BeveReader<'_>,
+    out: &mut Vec<u8>,
+    len: usize,
+) -> Result<()> {
     let packed = len.div_ceil(8);
     let bytes = reader.read_exact(packed)?;
     for idx in 0..len {
@@ -813,8 +813,11 @@ fn write_typed_bool_array(reader: &mut BeveReader<'_>, out: &mut Vec<u8>) -> Res
     Ok(())
 }
 
-fn write_typed_string_array(reader: &mut BeveReader<'_>, out: &mut Vec<u8>) -> Result<()> {
-    let len = reader.read_size()? as usize;
+fn write_typed_string_array(
+    reader: &mut BeveReader<'_>,
+    out: &mut Vec<u8>,
+    len: usize,
+) -> Result<()> {
     for i in 0..len {
         if i > 0 {
             out.push(b',');
@@ -1053,27 +1056,23 @@ fn skip_value(reader: &mut BeveReader<'_>, depth: usize) -> Result<()> {
             }
         }
         TYPE_TYPED_ARRAY => {
+            let (header, len) = read_typed_array_prefix(reader.buf, &mut reader.pos, header)?;
             let value_type = parse_subtype(header);
             let byte_code = parse_byte_count_code(header);
-            match value_type {
-                ARRAY_FLOAT | ARRAY_SIGNED | ARRAY_UNSIGNED => {
+            match (value_type, byte_code) {
+                (ARRAY_FLOAT | ARRAY_SIGNED | ARRAY_UNSIGNED, _) => {
                     let elem_bytes =
                         numeric_width(value_type, byte_code).ok_or(Error::InvalidHeader(header))?;
-                    let len = reader.read_size()? as usize;
                     let total = len.checked_mul(elem_bytes).ok_or(Error::InvalidSize)?;
                     reader.read_exact(total)?;
                 }
-                ARRAY_BOOL_OR_STRING => {
-                    if byte_code == 0 {
-                        let len = reader.read_size()? as usize;
-                        let packed = len.div_ceil(8);
-                        reader.read_exact(packed)?;
-                    } else {
-                        let len = reader.read_size()? as usize;
-                        for _ in 0..len {
-                            let slen = reader.read_size()? as usize;
-                            reader.read_exact(slen)?;
-                        }
+                (ARRAY_BOOL_OR_STRING, ARRAY_KIND_BOOL) => {
+                    reader.read_exact(len.div_ceil(8))?;
+                }
+                (ARRAY_BOOL_OR_STRING, ARRAY_KIND_STRING) => {
+                    for _ in 0..len {
+                        let slen = reader.read_size()? as usize;
+                        reader.read_exact(slen)?;
                     }
                 }
                 _ => return Err(Error::InvalidHeader(header)),

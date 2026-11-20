@@ -40,6 +40,11 @@
 //! actual payload pointer and refuses (rather than risk unsoundness) when the
 //! caller's buffer is not aligned, in which case [`read_aligned_typed_slice`]
 //! (one bulk copy, always works) is the fallback.
+//!
+//! Every general decoder (`from_slice`, `from_reader_streaming`, `skip_value`,
+//! the JSON and MAT converters) also reads an aligned array, as the ordinary
+//! numeric array it wraps; the functions here add the zero-copy borrow and the
+//! element-type check.
 
 use crate::error::{Error, Result};
 use crate::fast::BeveTypedSlice;
@@ -48,18 +53,66 @@ use crate::size::{read_size, size_encoded_len, write_size};
 #[cfg(target_endian = "little")]
 use core::ptr;
 
-/// High-bit discriminator distinguishing aligned arrays from boolean (0) and
-/// string (1) arrays within the bool/string/aligned typed-array category.
-const ALIGNED_DISCRIMINATOR: u8 = 2;
-
 /// The marker header byte (`0x5C`) that opens an aligned typed array.
 #[inline]
 fn aligned_marker_header() -> u8 {
-    make_header(
-        TYPE_TYPED_ARRAY,
-        ARRAY_BOOL_OR_STRING,
-        ALIGNED_DISCRIMINATOR,
-    )
+    make_header(TYPE_TYPED_ARRAY, ARRAY_BOOL_OR_STRING, ARRAY_KIND_ALIGNED)
+}
+
+/// Whether `header` is the marker that opens an aligned typed array.
+#[inline]
+pub(crate) fn is_aligned_marker(header: u8) -> bool {
+    header == aligned_marker_header()
+}
+
+/// Check the `NUMERIC_HEADER` inside an aligned array: it must be a typed
+/// array of a numeric category, since only numeric payloads are aligned.
+#[inline]
+pub(crate) fn check_aligned_numeric_header(numeric: u8) -> Result<()> {
+    if parse_type(numeric) != TYPE_TYPED_ARRAY || parse_subtype(numeric) == ARRAY_BOOL_OR_STRING {
+        return Err(Error::InvalidType("aligned array numeric header malformed"));
+    }
+    Ok(())
+}
+
+/// Read what follows an aligned marker up to `DATA`: `NUMERIC_HEADER`, `SIZE`,
+/// `PADDING_LENGTH` and the padding. Returns the numeric header and element
+/// count, with `*pos` at the first payload byte.
+fn read_aligned_prefix(input: &[u8], pos: &mut usize) -> Result<(u8, usize)> {
+    let numeric = *input.get(*pos).ok_or(Error::Eof)?;
+    *pos += 1;
+    check_aligned_numeric_header(numeric)?;
+
+    let len = read_size(input, pos)? as usize;
+
+    let padding = *input.get(*pos).ok_or(Error::Eof)? as usize;
+    *pos += 1;
+    let data = pos.checked_add(padding).ok_or(Error::InvalidSize)?;
+    if data > input.len() {
+        return Err(Error::Eof);
+    }
+    *pos = data;
+    Ok((numeric, len))
+}
+
+/// Read the prefix of the typed array whose `header` was just consumed,
+/// returning the header that describes its elements and their count, with
+/// `*pos` at the first payload byte.
+///
+/// For an ordinary typed array that is `header` itself and the SIZE after it.
+/// An aligned array is a numeric typed array with a padding run before its
+/// payload, so it returns the inner numeric header and steps over the padding:
+/// past this call, a decoder reads it exactly as it reads the numeric array.
+pub(crate) fn read_typed_array_prefix(
+    input: &[u8],
+    pos: &mut usize,
+    header: u8,
+) -> Result<(u8, usize)> {
+    if is_aligned_marker(header) {
+        read_aligned_prefix(input, pos)
+    } else {
+        Ok((header, read_size(input, pos)? as usize))
+    }
 }
 
 /// Number of padding bytes that must follow a `PADDING_LENGTH` byte sitting at
@@ -204,31 +257,15 @@ fn parse_aligned_header<T: BeveTypedSlice>(input: &[u8]) -> Result<(&[u8], usize
 
     let marker = *input.get(pos).ok_or(Error::Eof)?;
     pos += 1;
-    if parse_type(marker) != TYPE_TYPED_ARRAY
-        || parse_subtype(marker) != ARRAY_BOOL_OR_STRING
-        || parse_byte_count_code(marker) != ALIGNED_DISCRIMINATOR
-    {
+    if !is_aligned_marker(marker) {
         return Err(Error::InvalidType("not an aligned typed array"));
     }
 
-    let numeric = *input.get(pos).ok_or(Error::Eof)?;
-    pos += 1;
-    if parse_type(numeric) != TYPE_TYPED_ARRAY {
-        return Err(Error::InvalidType("aligned array numeric header malformed"));
-    }
+    let (numeric, len) = read_aligned_prefix(input, &mut pos)?;
     if parse_subtype(numeric) != T::CLASS || parse_byte_count_code(numeric) != T::BYTE_CODE {
         return Err(Error::Mismatch(
             "aligned array element type does not match T",
         ));
-    }
-
-    let len = read_size(input, &mut pos)? as usize;
-
-    let padding = *input.get(pos).ok_or(Error::Eof)? as usize;
-    pos += 1;
-    pos = pos.checked_add(padding).ok_or(Error::InvalidSize)?;
-    if pos > input.len() {
-        return Err(Error::Eof);
     }
 
     let payload = len.checked_mul(T::ELEM_SIZE).ok_or(Error::InvalidSize)?;

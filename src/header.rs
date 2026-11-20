@@ -26,6 +26,13 @@ pub const ARRAY_SIGNED: u8 = 1;
 pub const ARRAY_UNSIGNED: u8 = 2;
 pub const ARRAY_BOOL_OR_STRING: u8 = 3;
 
+// Kinds within the ARRAY_BOOL_OR_STRING category (bits 5..7, the field other
+// categories use for the byte count). 3 through 7 are undefined.
+pub const ARRAY_KIND_BOOL: u8 = 0;
+pub const ARRAY_KIND_STRING: u8 = 1;
+/// Zero-copy aligned numeric array; see [`crate::aligned`] for its layout.
+pub const ARRAY_KIND_ALIGNED: u8 = 2;
+
 // Extension ids (bits 3..7)
 /// Data delimiter extension id (like newline in NDJSON).
 pub const EXT_DELIMITER: u8 = 0;

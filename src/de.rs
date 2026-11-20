@@ -4,6 +4,7 @@ use serde::de::value::{BoolDeserializer, BorrowedStrDeserializer};
 use serde::de::{self, Visitor};
 use serde::forward_to_deserialize_any;
 
+use crate::aligned::read_typed_array_prefix;
 use crate::error::{Error, Result};
 use crate::header::*;
 use crate::size::read_size;
@@ -812,9 +813,9 @@ impl<'de> Deserializer<'de> {
                 }
             }
             TYPE_TYPED_ARRAY => {
+                let (header, len) = read_typed_array_prefix(self.input, &mut self.pos, header)?;
                 let cat = parse_subtype(header);
                 let bc = parse_byte_count_code(header);
-                let len = read_size(self.input, &mut self.pos)? as usize;
                 match cat {
                     ARRAY_FLOAT => match bc {
                         0 => visitor.visit_seq(make_seq_half(self, len, HalfKind::Bf16)?),
@@ -827,9 +828,8 @@ impl<'de> Deserializer<'de> {
                     },
                     ARRAY_SIGNED => visitor.visit_seq(make_seq_signed(self, len, bc)?),
                     ARRAY_UNSIGNED => visitor.visit_seq(make_seq_unsigned(self, len, bc)?),
-                    ARRAY_BOOL_OR_STRING => {
-                        if (header & 0b0010_0000) == 0 {
-                            // boolean array
+                    ARRAY_BOOL_OR_STRING => match bc {
+                        ARRAY_KIND_BOOL => {
                             let packed_len = len.div_ceil(8);
                             let data = self.read_exact(packed_len)?;
                             visitor.visit_seq(SeqAccessBool {
@@ -838,14 +838,14 @@ impl<'de> Deserializer<'de> {
                                 byte_idx: 0,
                                 bit_idx: 0,
                             })
-                        } else {
-                            // string array
-                            visitor.visit_seq(SeqAccessString {
-                                de: self,
-                                remaining: len,
-                            })
                         }
-                    }
+                        ARRAY_KIND_STRING => visitor.visit_seq(SeqAccessString {
+                            de: self,
+                            remaining: len,
+                        }),
+                        // Aligned arrays were unwrapped by the prefix read.
+                        _ => Err(Error::InvalidHeader(header)),
+                    },
                     _ => Err(Error::InvalidHeader(header)),
                 }
             }

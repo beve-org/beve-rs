@@ -210,7 +210,7 @@ struct Capture {
 }
 ```
 
-`beve::typed::*` covers the numeric scalars (`i8`–`i128`, `u8`–`u128`, `f32`, `f64`); `beve::complex_array::*` covers complex arrays whose element implements `beve::ComplexElement` (including `num_complex::Complex` under this crate's `num-complex` feature). The on-wire bytes are identical to the unannotated `Vec<T>`, so an annotated and a plain field interoperate. See [Complex Numbers and Matrices](#complex-numbers-and-matrices) for the foreign-type details.
+`beve::typed::*` covers the numeric scalars (`i8`–`i128`, `u8`–`u128`, `f32`, `f64`); `beve::complex_array::*` covers complex arrays whose element implements `beve::ComplexElement` (including `num_complex::Complex` under this crate's `num-complex` feature). The on-wire bytes are identical to the unannotated `Vec<T>` with one exception: an empty field. A plain `Vec` gives serde no element to read a type from, so it writes a generic empty array, while the helpers write a zero-length typed or complex array that still names its element type. Either form decodes into either field, so an annotated and a plain field interoperate. See [Complex Numbers and Matrices](#complex-numbers-and-matrices) for the foreign-type details.
 
 ### Integer Map Keys
 Maps with integer keys serialize deterministically and read back into ordered maps:
@@ -457,6 +457,18 @@ Two constraints follow from writing front-to-back, with no ability to revise a h
 
 - **Containers must have known lengths** (structs, `Vec`, `HashMap`, etc.), which covers virtually all standard Rust types. A custom `Serialize` that passes `None` for a length is an error here, and `#[serde(flatten)]` is rejected for the same reason.
 - **Tuples and fixed-size arrays encode as generic arrays**, where `to_vec` coalesces a homogeneous one into a typed array. Serde routes Rust arrays through the same hook as tuples, so `[u8; 4]` cannot be told apart from `(u8, bool)`; detecting from the first element would commit this writer to a header it cannot revise, and every mixed tuple would then fail. Both encodings are valid and read back identically through either reader, so this affects bytes and size, not meaning. Use `to_vec`, or a `Vec<T>`, when the compact form matters.
+
+### Framing a Value by Hand
+A payload too large to hold in memory, such as a multi-gigabyte complex array arriving in chunks, can't go through `to_writer_streaming`, which needs the whole value. `beve::wire` exposes the framing instead: the SIZE codec (`write_size`, `read_size`, `size_encoded_len`) and the headers that precede a container's contents (objects and their keys, generic arrays, typed and complex arrays). Write the headers, append complete values in between with `beve::to_writer(&mut out, &value)`, and append the payload bytes as they arrive; the result is byte-identical to encoding the whole value at once.
+```rust
+use beve::wire;
+
+let mut out = Vec::new();
+wire::write_object_header(&mut out, 1);
+wire::write_object_key(&mut out, "iq");
+wire::write_complex_array_header::<f32>(&mut out, 2);
+// ...then 2 complex f32 values (re, im, little-endian), in as many chunks as you like.
+```
 
 ### Data Delimiters
 When writing multiple values to the same stream, use `beve::write_delimiter` to insert the BEVE data delimiter byte (`0x06`) between entries — analogous to `\n` in NDJSON. `from_slice` and `from_reader_streaming` skip delimiters transparently during deserialization (note: `validate_slice` expects a single value and will reject delimiter-separated streams):

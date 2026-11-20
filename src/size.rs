@@ -5,7 +5,7 @@
 use crate::error::{Error, Result};
 
 #[inline]
-pub fn write_size(mut n: u64, out: &mut Vec<u8>) {
+pub fn write_size(out: &mut Vec<u8>, mut n: u64) {
     if n < (1 << 6) {
         // 1 byte: 2-bit code 0, 6-bit value
         let b = (n as u8) << 2;
@@ -44,10 +44,10 @@ pub fn write_size(mut n: u64, out: &mut Vec<u8>) {
 
 /// Number of bytes the SIZE codec emits for `n`.
 ///
-/// This is the width [`write_size`] / [`encode_size_to_array`] would produce for
-/// `n`, computed without writing any bytes. It shares the same 1/2/4/8-byte
-/// thresholds so an analytic size (e.g. [`crate::typed_slice_size`]) cannot drift
-/// from what the encoders actually emit.
+/// This is the width [`crate::wire::write_size`] would produce for `n` (1, 2, 4
+/// or 8), computed without writing any bytes. beve's own encoders share the
+/// same thresholds, so an analytic size (e.g. [`crate::typed_slice_size`])
+/// cannot drift from what they actually emit.
 #[inline]
 pub fn size_encoded_len(n: u64) -> usize {
     if n < (1 << 6) {
@@ -97,6 +97,11 @@ pub fn encode_size_to_array(mut n: u64, out: &mut [u8; 8]) -> usize {
     }
 }
 
+/// Decode a SIZE value from `input` at `*pos`, advancing `*pos` past it.
+///
+/// # Errors
+///
+/// [`Error::Eof`] if `input` ends before the encoded width does.
 #[inline]
 pub fn read_size(input: &[u8], pos: &mut usize) -> Result<u64> {
     if *pos >= input.len() {

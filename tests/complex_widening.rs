@@ -307,8 +307,8 @@ fn a_narrower_integer_source_decodes_through_the_fallback() {
 }
 
 /// The same-class path must still be the borrowing bulk copy it always was, and
-/// an empty `Vec` must still decode: it encodes as a *generic* empty array, not
-/// a complex one, so it reaches the marker as a shape the fast path declines.
+/// an empty `Vec` must still decode. (The generic empty array a plain `Vec`
+/// writes, which the fast path declines, is covered in `complex_slice.rs`.)
 #[test]
 fn the_same_class_and_empty_cases_are_unchanged() {
     #[derive(Serialize, Deserialize, PartialEq, Debug)]

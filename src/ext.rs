@@ -273,18 +273,18 @@ where
 /// `serialize_with` helpers, and the encode half of the
 /// [`complex_array`](crate::complex_array) `serde(with)` helpers.
 ///
-/// The encoded bytes are identical to serializing the same values one at a
-/// time, so this is a throughput change and not a format change; the
-/// `complex_slice_bulk_matches_element_wise` tests pin that.
+/// For a non-empty slice, the encoded bytes are identical to serializing the
+/// same values one at a time; the `complex_slice_bulk_matches_element_wise`
+/// tests pin that.
 ///
-/// An **empty** slice keeps the element-wise encoding (a generic empty array,
-/// not a zero-length complex array), which is what this wrapper has always
-/// written. That differs from [`TypedSlice`], whose empty form is a typed empty
-/// array, and from [`crate::to_writer_complex_slice`], whose empty form is a
-/// zero-length complex array. All three decode back to an empty `Vec`, but the
-/// distinction is visible to consumers that read the element type off the
-/// header — notably the MATLAB export, where a typed empty array becomes a cell
-/// and a generic one becomes `[]`.
+/// An **empty** slice encodes as a zero-length complex array, the same bytes
+/// [`crate::to_vec_complex_slice`] writes, and like [`TypedSlice`]'s typed empty
+/// array. A plain `Vec<Complex<T>>` cannot do this: serde hands the encoder no
+/// element from which to read a type, so an empty one is a generic empty array.
+/// Both decode back to an empty `Vec`, but only the typed form tells a reader
+/// what the array would have held; the MATLAB export, for one, turns it into an
+/// empty complex array of the element's class where the generic form becomes an
+/// empty cell.
 pub struct ComplexSlice<'a, T>(pub &'a [Complex<T>]);
 
 /// Shared `Serialize` body for every `ComplexSlice<T>`: hand the interleaved
@@ -295,10 +295,12 @@ pub struct ComplexSlice<'a, T>(pub &'a [Complex<T>]);
 /// emits a beve-private newtype, so the element-wise path was never portable to
 /// another binary format either.
 ///
-/// Three cases keep the element-wise path, and each is load-bearing:
-/// human-readable formats (JSON and friends must still see a sequence),
-/// big-endian targets (the in-memory bytes are not little-endian), and the
-/// empty slice (see [`ComplexSlice`]'s note on empty encoding).
+/// Two cases keep the element-wise path, and each is load-bearing:
+/// human-readable formats (JSON and friends must still see a sequence), and a
+/// non-empty slice on a big-endian target (the in-memory bytes are not
+/// little-endian). An empty slice has no bytes to convert, so it takes the bulk
+/// path on every target, which keeps it typed rather than a generic empty
+/// array (see [`ComplexSlice`]'s note on empty encoding).
 #[inline]
 pub(crate) fn serialize_complex_slice<S, T>(
     slice: &[Complex<T>],
@@ -315,8 +317,9 @@ where
     Complex<T>: Serialize,
 {
     // `cfg!` rather than `#[cfg]` so the bulk arm is type-checked on every
-    // target; it folds to a constant, so big-endian still compiles it out.
-    if cfg!(target_endian = "little") && !s.is_human_readable() && !slice.is_empty() {
+    // target; it folds to a constant, so on big-endian only the empty slice,
+    // whose payload has no bytes to be in the wrong order, takes it.
+    if !s.is_human_readable() && (cfg!(target_endian = "little") || slice.is_empty()) {
         // SAFETY: `Complex<T>` is `#[repr(C)]` over two `T`, and `T: BeveTypedSlice`
         // is a fixed-width scalar with every bit pattern valid, so there is no
         // padding and the slice's bytes are exactly the interleaved `(re, im)`
@@ -432,10 +435,11 @@ impl_complex_slice_serialize! {
 /// generic empty array. Both decode back to an empty `Vec<T>`.
 pub struct TypedSlice<'a, T>(pub &'a [T]);
 
-/// Shared `Serialize` body for every `TypedSlice<T>`: on little-endian, borrow the
-/// slice as bytes and tag it by `name`; on big-endian, fall back to the
-/// per-element sequence path (except an empty slice, which has no bytes to convert
-/// and so takes the little-endian typed-array path on every target).
+/// Shared `Serialize` body for every `TypedSlice<T>`: borrow the slice as bytes
+/// and tag it by `name`, so beve emits it with one `write_all`. The rule for
+/// when the element-wise sequence path is taken instead is the same as
+/// [`serialize_complex_slice`]'s, and so is the reason an empty slice is typed
+/// on every target.
 #[inline]
 pub(crate) fn serialize_typed_slice<S, T>(
     slice: &[T],
@@ -446,20 +450,7 @@ where
     S: serde::Serializer,
     T: Serialize,
 {
-    // Human-readable formats (JSON, ...) get the portable element-wise sequence,
-    // so a field using these helpers still round-trips through them. The bulk
-    // newtype/raw-bytes form is meaningful only to beve (and other binary
-    // formats that don't special-case the marker would mis-read it).
-    if s.is_human_readable() {
-        use serde::ser::SerializeSeq;
-        let mut seq = s.serialize_seq(Some(slice.len()))?;
-        for v in slice {
-            seq.serialize_element(v)?;
-        }
-        return seq.end();
-    }
-    #[cfg(target_endian = "little")]
-    {
+    if !s.is_human_readable() && (cfg!(target_endian = "little") || slice.is_empty()) {
         // Sound: `BeveTypedSlice` types are fixed-width no-padding scalars with
         // every bit pattern valid; this mirrors the `fast` module's
         // reinterpret-as-bytes. The borrowed view is only read inside
@@ -467,26 +458,14 @@ where
         let payload: &[u8] = unsafe {
             core::slice::from_raw_parts(slice.as_ptr() as *const u8, core::mem::size_of_val(slice))
         };
-        s.serialize_newtype_struct(name, &RawBytes(payload))
+        return s.serialize_newtype_struct(name, &RawBytes(payload));
     }
-    #[cfg(not(target_endian = "little"))]
-    {
-        // On big-endian the in-memory bytes are not little-endian, so a non-empty
-        // slice is converted element-by-element through the sequence path. An
-        // *empty* slice has no payload bytes to convert, so it takes the same
-        // typed-array newtype path as little-endian, keeping `TypedSlice`
-        // byte-identical to `to_writer_typed_slice` (a typed empty array, never a
-        // generic one) on every target.
-        if slice.is_empty() {
-            return s.serialize_newtype_struct(name, &RawBytes(&[]));
-        }
-        use serde::ser::SerializeSeq;
-        let mut seq = s.serialize_seq(Some(slice.len()))?;
-        for v in slice {
-            seq.serialize_element(v)?;
-        }
-        seq.end()
+    use serde::ser::SerializeSeq;
+    let mut seq = s.serialize_seq(Some(slice.len()))?;
+    for v in slice {
+        seq.serialize_element(v)?;
     }
+    seq.end()
 }
 
 /// Generates, per scalar type: the typed-array newtype-name constant, the
@@ -799,7 +778,7 @@ fn validate_matrix_shape(extents: &[usize], data_len: usize) -> core::result::Re
 fn write_unsigned_typed_header(out: &mut Vec<u8>, byte_code: u8, len: usize) {
     let header = ((byte_code & 0b111) << 5) | ((ARRAY_UNSIGNED & 0b11) << 3) | TYPE_TYPED_ARRAY;
     out.push(header);
-    write_size(len as u64, out);
+    write_size(out, len as u64);
 }
 
 fn write_matrix_extents(out: &mut Vec<u8>, extents: &[usize]) {

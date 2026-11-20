@@ -1,6 +1,6 @@
 #![deny(warnings)]
 
-use beve::{Complex, to_vec, to_vec_complex_slice};
+use beve::{Complex, ComplexSlice, to_vec, to_vec_complex_slice};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -228,6 +228,29 @@ fn interop_complex_numbers() {
         assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
         assert_eq!(String::from_utf8_lossy(&out), "OK\n");
     }
+}
+
+/// An empty complex array keeps its type in both directions. Glaze writes a
+/// zero-length complex array and does not accept the generic empty array
+/// (`05 00`) a plain empty `Vec<Complex<T>>` writes, so `ComplexSlice` must
+/// match Glaze byte for byte.
+#[test]
+fn interop_empty_complex_array() {
+    if glaze_bin().is_none() {
+        return;
+    }
+    let empty: [Complex<f64>; 0] = [];
+    let ours = to_vec(&ComplexSlice(&empty)).unwrap();
+
+    let (code, theirs, _err) = run_glaze(&["write", "vcplx64_empty"], None).unwrap();
+    assert_eq!(code, 0);
+    assert_eq!(theirs, ours, "Glaze and ComplexSlice must agree");
+    let got: Vec<Complex<f64>> = beve::from_slice(&theirs).unwrap();
+    assert!(got.is_empty());
+
+    let (code, out, err) = run_glaze(&["read", "vcplx64_empty"], Some(&ours)).unwrap();
+    assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+    assert_eq!(String::from_utf8_lossy(&out), "OK\n");
 }
 
 #[test]

@@ -635,7 +635,7 @@ impl Serializer {
 
     fn write_str_value(&mut self, s: &str) {
         self.push(TYPE_STRING);
-        write_size(s.len() as u64, &mut self.buf);
+        write_size(&mut self.buf, s.len() as u64);
         self.extend_from_slice(s.as_bytes());
     }
 
@@ -652,8 +652,8 @@ impl Serializer {
     /// serializer sees them, and those already encode correctly.
     fn write_variant_object_prefix(&mut self, variant: &'static str) {
         self.push(TYPE_OBJECT | (KEY_STRING << 3));
-        write_size(1, &mut self.buf);
-        write_size(variant.len() as u64, &mut self.buf);
+        write_size(&mut self.buf, 1);
+        write_size(&mut self.buf, variant.len() as u64);
         self.extend_from_slice(variant.as_bytes());
     }
 
@@ -661,7 +661,7 @@ impl Serializer {
         // Typed array of u8
         let header = make_header(TYPE_TYPED_ARRAY, ARRAY_UNSIGNED, 0);
         self.push(header);
-        write_size(bytes.len() as u64, &mut self.buf);
+        write_size(&mut self.buf, bytes.len() as u64);
         self.extend_from_slice(bytes);
     }
 
@@ -686,7 +686,7 @@ impl Serializer {
             "typed-array payload must be a whole number of elements"
         );
         let count = payload.len() / elem_size;
-        write_size(count as u64, &mut self.buf);
+        write_size(&mut self.buf, count as u64);
         self.extend_from_slice(payload);
     }
 
@@ -718,26 +718,26 @@ impl Serializer {
         self.push(make_extension_header(EXT_COMPLEX));
         self.push(Self::complex_header(class, byte_code, true));
         let count = payload.len() / elem_bytes;
-        write_size(count as u64, &mut self.buf);
+        write_size(&mut self.buf, count as u64);
         self.extend_from_slice(payload);
         Ok(())
     }
 
     fn write_generic_array_header(&mut self, len: usize) {
         self.push(TYPE_GENERIC_ARRAY);
-        write_size(len as u64, &mut self.buf);
+        write_size(&mut self.buf, len as u64);
     }
 
     fn write_typed_array_header_numeric(&mut self, class: u8, byte_code: u8, len: usize) {
         let header = make_header(TYPE_TYPED_ARRAY, class, byte_code);
         self.push(header);
-        write_size(len as u64, &mut self.buf);
+        write_size(&mut self.buf, len as u64);
     }
 
     fn write_typed_array_header_bool(&mut self, len: usize) {
         let header = make_header(TYPE_TYPED_ARRAY, ARRAY_BOOL_OR_STRING, 0);
         self.push(header);
-        write_size(len as u64, &mut self.buf);
+        write_size(&mut self.buf, len as u64);
     }
 
     fn write_typed_array_header_string(&mut self, len: usize) {
@@ -749,7 +749,7 @@ impl Serializer {
         // For boolean/string category, we use bit5 to indicate string (1) vs boolean (0).
         // Our make_header uses byte_code in bits 5..7; setting to 1 sets the bit5.
         self.push(header);
-        write_size(len as u64, &mut self.buf);
+        write_size(&mut self.buf, len as u64);
     }
 
     #[inline]
@@ -1503,7 +1503,7 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
     fn serialize_str(self, v: &str) -> Result<()> {
         if matches!(self.seq.mode, SeqMode::Unknown | SeqMode::TypedString) {
             self.seq.start_typed_string_if_needed();
-            write_size(v.len() as u64, &mut self.seq.ser.buf);
+            write_size(&mut self.seq.ser.buf, v.len() as u64);
             self.seq.ser.extend_from_slice(v.as_bytes());
             self.seq.count += 1;
             Ok(())
@@ -1521,7 +1521,7 @@ impl<'a, 'b> ser::Serializer for &'b mut SeqElemSer<'a, 'b> {
         // Write full VALUE for bytes as a typed array of u8
         let header = make_header(TYPE_TYPED_ARRAY, ARRAY_UNSIGNED, 0);
         self.seq.ser.push(header);
-        write_size(v.len() as u64, &mut self.seq.ser.buf);
+        write_size(&mut self.seq.ser.buf, v.len() as u64);
         self.seq.ser.extend_from_slice(v);
         self.seq.count += 1;
         Ok(())
@@ -1897,7 +1897,7 @@ impl<'a, 'b> SeqElemSer<'a, 'b> {
                     self.seq
                         .ser
                         .push(Serializer::complex_header(class, byte_code, true));
-                    write_size(n as u64, &mut self.seq.ser.buf);
+                    write_size(&mut self.seq.ser.buf, n as u64);
                     self.seq.mode = SeqMode::TypedComplex { class, byte_code };
                 }
                 None => {
@@ -2083,7 +2083,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                     KeyMode::Unknown => {
                         if let Some(n) = self.map.len {
                             self.map.ser.push(TYPE_OBJECT | (KEY_STRING << 3));
-                            write_size(n as u64, &mut self.map.ser.buf);
+                            write_size(&mut self.map.ser.buf, n as u64);
                         } else {
                             self.map.ser.push(TYPE_OBJECT | (KEY_STRING << 3));
                             self.map.patch = Some(self.map.ser.reserve_size_patch());
@@ -2093,7 +2093,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                     KeyMode::String => {}
                     _ => return Err(Error::Mismatch("object keys must be homogeneous")),
                 }
-                write_size(v.len() as u64, &mut self.map.ser.buf);
+                write_size(&mut self.map.ser.buf, v.len() as u64);
                 self.map.ser.extend_from_slice(v.as_bytes());
                 Ok(())
             }
@@ -2106,7 +2106,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                             self.map
                                 .ser
                                 .push(make_header(TYPE_OBJECT, KEY_SIGNED, code));
-                            write_size(n as u64, &mut self.map.ser.buf);
+                            write_size(&mut self.map.ser.buf, n as u64);
                         } else {
                             self.map
                                 .ser
@@ -2135,7 +2135,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                             self.map
                                 .ser
                                 .push(make_header(TYPE_OBJECT, KEY_SIGNED, code));
-                            write_size(n as u64, &mut self.map.ser.buf);
+                            write_size(&mut self.map.ser.buf, n as u64);
                         } else {
                             self.map
                                 .ser
@@ -2164,7 +2164,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                             self.map
                                 .ser
                                 .push(make_header(TYPE_OBJECT, KEY_SIGNED, code));
-                            write_size(n as u64, &mut self.map.ser.buf);
+                            write_size(&mut self.map.ser.buf, n as u64);
                         } else {
                             self.map
                                 .ser
@@ -2193,7 +2193,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                             self.map
                                 .ser
                                 .push(make_header(TYPE_OBJECT, KEY_SIGNED, code));
-                            write_size(n as u64, &mut self.map.ser.buf);
+                            write_size(&mut self.map.ser.buf, n as u64);
                         } else {
                             self.map
                                 .ser
@@ -2222,7 +2222,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                             self.map
                                 .ser
                                 .push(make_header(TYPE_OBJECT, KEY_SIGNED, code));
-                            write_size(n as u64, &mut self.map.ser.buf);
+                            write_size(&mut self.map.ser.buf, n as u64);
                         } else {
                             self.map
                                 .ser
@@ -2251,7 +2251,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                             self.map
                                 .ser
                                 .push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code));
-                            write_size(n as u64, &mut self.map.ser.buf);
+                            write_size(&mut self.map.ser.buf, n as u64);
                         } else {
                             self.map
                                 .ser
@@ -2280,7 +2280,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                             self.map
                                 .ser
                                 .push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code));
-                            write_size(n as u64, &mut self.map.ser.buf);
+                            write_size(&mut self.map.ser.buf, n as u64);
                         } else {
                             self.map
                                 .ser
@@ -2309,7 +2309,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                             self.map
                                 .ser
                                 .push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code));
-                            write_size(n as u64, &mut self.map.ser.buf);
+                            write_size(&mut self.map.ser.buf, n as u64);
                         } else {
                             self.map
                                 .ser
@@ -2338,7 +2338,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                             self.map
                                 .ser
                                 .push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code));
-                            write_size(n as u64, &mut self.map.ser.buf);
+                            write_size(&mut self.map.ser.buf, n as u64);
                         } else {
                             self.map
                                 .ser
@@ -2367,7 +2367,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
                             self.map
                                 .ser
                                 .push(make_header(TYPE_OBJECT, KEY_UNSIGNED, code));
-                            write_size(n as u64, &mut self.map.ser.buf);
+                            write_size(&mut self.map.ser.buf, n as u64);
                         } else {
                             self.map
                                 .ser
@@ -2565,7 +2565,7 @@ impl<'a> StructSerializer<'a> {
         let mut map = MapSerializer::new(ser, Some(len));
         // Emit header for string-keyed object immediately
         map.ser.push(TYPE_OBJECT | (KEY_STRING << 3));
-        write_size(len as u64, &mut map.ser.buf);
+        write_size(&mut map.ser.buf, len as u64);
         map.mode = KeyMode::String;
         Self { map, declared: len }
     }
@@ -2579,7 +2579,7 @@ impl<'a> ser::SerializeStruct for StructSerializer<'a> {
         key: &'static str,
         value: &T,
     ) -> Result<()> {
-        write_size(key.len() as u64, &mut self.map.ser.buf);
+        write_size(&mut self.map.ser.buf, key.len() as u64);
         self.map.ser.extend_from_slice(key.as_bytes());
         value.serialize(&mut *self.map.ser)?;
         self.map.count += 1;

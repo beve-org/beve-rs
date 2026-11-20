@@ -217,7 +217,7 @@ pub fn from_field_slice<T: serde::de::DeserializeOwned>(
 
     let mut buf = Vec::with_capacity(1 + 8 + slice_data_len);
     buf.push(header);
-    crate::size::write_size(count as u64, &mut buf);
+    crate::size::write_size(&mut buf, count as u64);
     buf.extend_from_slice(&bytes[pos..pos + slice_data_len]);
 
     // Deserialize through the normal path from the synthetic buffer.

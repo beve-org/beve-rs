@@ -8,6 +8,10 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 ## Unreleased
 
+### Breaking
+
+- The deprecated Version 1 type tag (`0x0E`) now reads its variant index as the compressed SIZE the spec defines, as Glaze writes it. beve 1.x through 4.x wrote a headered number or string there instead, so its data-carrying variants and its unit variants in a sequence (such as a `Vec` of a unit-only enum) no longer decode. The JSON converter does not detect these and may produce wrong output. ([#60](https://github.com/beve-org/beve-rs/issues/60))
+
 ### Added
 
 - **`beve::wire`**: the SIZE codec (`write_size`, `read_size`, `size_encoded_len`, `MAX_SIZE`) and header writers for objects, object keys, generic arrays, typed arrays and complex arrays, so a writer can stream a payload too large to hold. Each writes exactly what beve's own encoders write.

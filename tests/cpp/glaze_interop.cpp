@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <iostream>
 #include <optional>
+#include <variant>
 
 #include "glaze/api/impl.hpp"
 #include "glaze/beve/read.hpp"
@@ -127,6 +128,33 @@ static Outer sample_nested() {
   return o;
 }
 
+// Version 1 variants: Glaze writes the type tag extension with the index as a
+// compressed SIZE.
+using Var = std::variant<bool, uint32_t, std::string>;
+
+struct VariantDoc {
+  Var v{};
+  std::vector<Var> list{};
+  uint8_t after{};
+};
+
+template <> struct glz::meta<VariantDoc> {
+  using T = VariantDoc;
+  static constexpr auto value = object(
+    "v", &T::v,
+    "list", &T::list,
+    "after", &T::after
+  );
+};
+
+static VariantDoc sample_variant_doc() {
+  VariantDoc d{};
+  d.v = uint32_t{0xDEADBEEF};
+  d.list = {Var{true}, Var{uint32_t{7}}, Var{std::string{"hi"}}};
+  d.after = 5;
+  return d;
+}
+
 static std::string read_stdin_all() {
   std::string s; std::string chunk;
   char buf[4096];
@@ -156,6 +184,7 @@ int main(int argc, char** argv) {
     else if (cas == "color") { auto v=sample_color(); glz::write_beve(v, out); }
     else if (cas == "basic") { auto v=sample_basic(); glz::write_beve(v, out); }
     else if (cas == "nested") { auto v=sample_nested(); glz::write_beve(v, out); }
+    else if (cas == "variant_doc") { auto v=sample_variant_doc(); glz::write_beve(v, out); }
     else if (cas == "cplx64") { std::complex<double> v{1.5, -2.25}; glz::write_beve(v, out); }
     else if (cas == "vcplx64") { std::vector<std::complex<double>> v{{1.0,2.0},{-3.0,4.5}}; glz::write_beve(v, out); }
     else if (cas == "vcplx64_empty") { std::vector<std::complex<double>> v; glz::write_beve(v, out); }

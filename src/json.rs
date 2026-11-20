@@ -843,8 +843,9 @@ fn write_extension(
             out.push(b'\n');
         }
         EXT_TYPE_TAG => {
-            // Skip variant tag and emit the associated value only.
-            skip_value(reader, depth + 1)?;
+            // A Version 1 variant: drop the positional index (a compressed
+            // SIZE) and emit the value alone.
+            reader.read_size()?;
             write_value(reader, out, depth + 1)?;
         }
         EXT_COMPLEX => write_complex_extension(reader, out)?,
@@ -1021,101 +1022,6 @@ fn write_matrix_extension(
     out.extend_from_slice(b",\"value\":");
     write_value(reader, out, depth + 1)?;
     out.push(b'}');
-    Ok(())
-}
-
-fn skip_value(reader: &mut BeveReader<'_>, depth: usize) -> Result<()> {
-    if depth >= MAX_RECURSION_DEPTH {
-        return Err(Error::RecursionLimitExceeded);
-    }
-    let header = reader.read_byte()?;
-    let ty = parse_type(header);
-    match ty {
-        TYPE_NULL_BOOL => {}
-        TYPE_NUMBER => {
-            let len = numeric_width(parse_subtype(header), parse_byte_count_code(header))
-                .ok_or(Error::InvalidHeader(header))?;
-            reader.read_exact(len)?;
-        }
-        TYPE_STRING => {
-            let len = reader.read_size()? as usize;
-            reader.read_exact(len)?;
-        }
-        TYPE_OBJECT => {
-            let len = reader.read_size()? as usize;
-            for _ in 0..len {
-                let key_len = reader.read_size()? as usize;
-                reader.read_exact(key_len)?;
-                skip_value(reader, depth + 1)?;
-            }
-        }
-        TYPE_GENERIC_ARRAY => {
-            let len = reader.read_size()? as usize;
-            for _ in 0..len {
-                skip_value(reader, depth + 1)?;
-            }
-        }
-        TYPE_TYPED_ARRAY => {
-            let (header, len) = read_typed_array_prefix(reader.buf, &mut reader.pos, header)?;
-            let value_type = parse_subtype(header);
-            let byte_code = parse_byte_count_code(header);
-            match (value_type, byte_code) {
-                (ARRAY_FLOAT | ARRAY_SIGNED | ARRAY_UNSIGNED, _) => {
-                    let elem_bytes =
-                        numeric_width(value_type, byte_code).ok_or(Error::InvalidHeader(header))?;
-                    let total = len.checked_mul(elem_bytes).ok_or(Error::InvalidSize)?;
-                    reader.read_exact(total)?;
-                }
-                (ARRAY_BOOL_OR_STRING, ARRAY_KIND_BOOL) => {
-                    reader.read_exact(len.div_ceil(8))?;
-                }
-                (ARRAY_BOOL_OR_STRING, ARRAY_KIND_STRING) => {
-                    for _ in 0..len {
-                        let slen = reader.read_size()? as usize;
-                        reader.read_exact(slen)?;
-                    }
-                }
-                _ => return Err(Error::InvalidHeader(header)),
-            }
-        }
-        TYPE_EXTENSION => {
-            let ext_id = parse_extension_id(header);
-            match ext_id {
-                EXT_DELIMITER => {}
-                EXT_TYPE_TAG => {
-                    skip_value(reader, depth + 1)?;
-                    skip_value(reader, depth + 1)?;
-                }
-                EXT_COMPLEX => {
-                    let ch = reader.read_byte()?;
-                    let (is_array, numeric, byte_code) = parse_complex_header_byte(ch)?;
-                    let elem_bytes = complex_elem_len(numeric, byte_code)?;
-                    if !is_array {
-                        let total = elem_bytes.checked_mul(2usize).ok_or(Error::InvalidSize)?;
-                        reader.read_exact(total)?;
-                    } else {
-                        let len = reader.read_size()? as usize;
-                        let total = elem_bytes
-                            .checked_mul(2usize)
-                            .and_then(|v| v.checked_mul(len))
-                            .ok_or(Error::InvalidSize)?;
-                        reader.read_exact(total)?;
-                    }
-                }
-                EXT_MATRICES => {
-                    reader.read_byte()?; // matrix header
-                    skip_value(reader, depth + 1)?;
-                    skip_value(reader, depth + 1)?;
-                }
-                _ => {
-                    return Err(Error::Unsupported(
-                        "extension not supported for JSON conversion",
-                    ));
-                }
-            }
-        }
-        _ => return Err(Error::InvalidHeader(header)),
-    }
     Ok(())
 }
 

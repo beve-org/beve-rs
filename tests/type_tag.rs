@@ -99,12 +99,32 @@ fn a_multi_byte_index_is_read_whole() {
 }
 
 /// beve 1.x through 4.x wrote the index as a headered u32. Read as the spec
-/// says, `0x51 0x00` is SIZE 20, a variant this enum does not have.
+/// says, `0x51 0x01` is SIZE 84, a variant this enum does not have.
 #[test]
 fn the_headered_index_beve_4_wrote_is_rejected() {
     let bytes = [0x0E, 0x51, 0x01, 0x00, 0x00, 0x00, 0x11, 0x07];
     assert!(beve::from_slice::<Variant>(&bytes).is_err());
     assert!(beve::from_reader_streaming::<_, Variant>(Cursor::new(&bytes)).is_err());
+}
+
+#[derive(Deserialize, Debug)]
+enum Unit {
+    Alpha,
+    Beta,
+}
+
+/// What beve 4.0.0 wrote for `vec![Unit::Beta, Unit::Alpha]`: the leading unit
+/// variant under the type tag with a headered index and a null, then a bare
+/// index. The type-tagged element is not spec form, so the sequence no longer
+/// decodes.
+#[test]
+fn a_version_4_unit_variant_sequence_is_rejected() {
+    let bytes = [
+        0x05, 0x08, 0x0E, 0x51, 0x01, 0x00, 0x00, 0x00, 0x00, 0x51, 0x00, 0x00, 0x00, 0x00,
+    ];
+    assert!(beve::from_slice::<Vec<Unit>>(&bytes).is_err());
+    assert!(beve::from_reader_streaming::<_, Vec<Unit>>(Cursor::new(&bytes)).is_err());
+    assert!(beve::validate_slice(&bytes).is_err());
 }
 
 #[test]

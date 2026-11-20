@@ -6,7 +6,9 @@ Through 9.x there was one exemption, for the `mat` feature's hdf5-pure version. 
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
-## Unreleased
+## 11.0.0 - 2026-11-20
+
+A major for the deprecated Version 1 type tag only. Everything else is additive or a decoding fix, and nothing beve writes by default changes except an empty `ComplexSlice`.
 
 ### Breaking
 

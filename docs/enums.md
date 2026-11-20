@@ -70,7 +70,9 @@ The internally tagged form is the shape a Glaze `std::variant` declaring `tag`/`
 
 ## Reading Version 1 documents
 
-Version 1 encoded a variant as the **type tag extension** (id `1`, header byte `0x0E`) followed by a positional index or a string name, and this crate additionally offered a numeric encoding that wrote a bare index for a unit variant. Extension 1 is deprecated and reserved in Version 2. **This crate never emits it**, but both legacy forms still decode, so existing documents load unchanged.
+Version 1 encoded a variant as the **type tag extension** (id `1`, header byte `0x0E`), a positional index as a compressed SIZE, then the value. This crate additionally offered a numeric encoding that wrote a bare index for a unit variant. Extension 1 is deprecated and reserved in Version 2. **This crate never emits it**, but both legacy forms still decode.
+
+One exception: beve 1.x through 4.x wrote the type tag's index as a headered number or string rather than a SIZE. That departed from the spec, and those variants no longer decode.
 
 Two limits are worth knowing. Legacy leniency lives in the enum path, so a Version 1 document read through `#[serde(untagged)]` or into `beve::Value` is not covered; and a Version 1 unit variant that carries a payload cannot be distinguished from one that does not, because the extension records no count, so the payload is left for the caller and surfaces as a decode error rather than being silently consumed.
 

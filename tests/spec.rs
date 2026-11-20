@@ -334,16 +334,9 @@ fn no_encoder_path_emits_the_deprecated_type_tag() {
 /// positional index the old numeric enum encoding wrote.
 #[test]
 fn version_1_variants_still_decode() {
-    // `0x0e` type tag, index 0 as u32, then the value.
-    let v1_newtype = vec![0x0e, 0x51, 0x00, 0x00, 0x00, 0x00, 0x11, 0x07];
+    // `0x0e` type tag, index 0 as a compressed SIZE, then the value.
+    let v1_newtype = vec![0x0e, 0x00, 0x11, 0x07];
     let back: TaggedEnum = beve::from_slice(&v1_newtype).unwrap();
-    assert_eq!(back, TaggedEnum::Scalar(7));
-
-    // `0x0e` type tag with a string tag rather than an index.
-    let v1_named_tag = vec![
-        0x0e, 0x02, 0x18, b'S', b'c', b'a', b'l', b'a', b'r', 0x11, 0x07,
-    ];
-    let back: TaggedEnum = beve::from_slice(&v1_named_tag).unwrap();
     assert_eq!(back, TaggedEnum::Scalar(7));
 
     // A bare positional index, which is what the removed numeric encoding
@@ -896,44 +889,35 @@ mod reader_writer_parity {
     /// Version 1 fixtures must decode identically in both readers too.
     #[test]
     fn version_1_variants_decode_the_same_in_both_readers() {
-        assert_readers_agree(
-            &[0x0e, 0x51, 0x00, 0x00, 0x00, 0x00, 0x11, 0x07],
-            TaggedEnum::Scalar(7),
-        );
+        assert_readers_agree(&[0x0e, 0x00, 0x11, 0x07], TaggedEnum::Scalar(7));
         assert_readers_agree(
             &[
-                0x0e, 0x02, 0x18, b'S', b'c', b'a', b'l', b'a', b'r', 0x11, 0x07,
+                0x0e, 0x08, 0x03, 0x04, 0x14, b'c', b'o', b'u', b'n', b't', 0x31, 0x09, 0x00,
             ],
-            TaggedEnum::Scalar(7),
+            TaggedEnum::Named { count: 9 },
         );
         assert_readers_agree(&[0x51, 0x01, 0x00, 0x00, 0x00], UnitEnum::Beta);
     }
 
-    /// Byte-for-byte output captured from beve 4.0.0, covering the three places
-    /// it put a unit variant. Each is a distinct wire form, and the middle one
-    /// regressed once already:
-    ///
-    /// - top level and struct field: a bare positional index, no extension
-    /// - leading a sequence: the type-tag extension, the index, and an explicit
-    ///   `null` payload (`write_null` after `write_enum_tag`)
-    ///
-    /// That third form is why a unit-variant target must consume a value after
-    /// the extension. Reading the tag and stopping leaves the `null` to be taken
-    /// as the next element, which made a 4.x-written `Vec<SomeUnitEnum>`
-    /// undecodable.
+    /// A unit variant under the type-tag extension still carries a value, an
+    /// explicit `null`, so a unit-variant target must consume one. Reading the
+    /// tag and stopping leaves the `null` to be taken as the next element.
+    #[test]
+    fn a_type_tagged_unit_variant_consumes_its_null() {
+        // `[Beta, Alpha]`: the first element is the extension, index 1 and a
+        // null; the second a bare positional index.
+        assert_readers_agree(
+            &[0x05, 0x08, 0x0e, 0x04, 0x00, 0x51, 0x00, 0x00, 0x00, 0x00],
+            vec![UnitEnum::Beta, UnitEnum::Alpha],
+        );
+    }
+
+    /// Byte-for-byte output captured from beve 4.0.0 for a unit variant outside
+    /// a sequence: a bare positional index, no extension.
     #[test]
     fn unit_variants_written_by_version_4_still_decode() {
         // `UnitEnum::Beta` at the root.
         assert_readers_agree(&[0x51, 0x01, 0x00, 0x00, 0x00], UnitEnum::Beta);
-
-        // `vec![UnitEnum::Beta, UnitEnum::Alpha]`: the first element carries the
-        // extension plus a null, the second is a bare index.
-        assert_readers_agree(
-            &[
-                0x05, 0x08, 0x0e, 0x51, 0x01, 0x00, 0x00, 0x00, 0x00, 0x51, 0x00, 0x00, 0x00, 0x00,
-            ],
-            vec![UnitEnum::Beta, UnitEnum::Alpha],
-        );
 
         // A unit variant as a struct field, with a sibling field after it. The
         // bare index must not swallow the next key.

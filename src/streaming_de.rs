@@ -317,31 +317,10 @@ impl<R: Read> StreamingDeserializer<R> {
         String::from_utf8(bytes).map_err(|_| Error::InvalidType("invalid utf-8"))
     }
 
+    /// The positional index after a Version 1 type-tag extension header: a
+    /// compressed SIZE, not a headered value.
     fn read_enum_tag(&mut self) -> Result<EnumTagOwned> {
-        let header = self.read_byte()?;
-        match parse_type(header) {
-            TYPE_NUMBER => {
-                let subtype = parse_subtype(header);
-                let bc = parse_byte_count_code(header);
-                match subtype {
-                    NUM_UNSIGNED => Ok(EnumTagOwned::Index(self.parse_unsigned(bc)? as u64)),
-                    NUM_SIGNED => {
-                        let v = self.parse_signed(bc)?;
-                        if v < 0 {
-                            Err(Error::InvalidType("negative enum index"))
-                        } else {
-                            Ok(EnumTagOwned::Index(v as u64))
-                        }
-                    }
-                    _ => Err(Error::InvalidType("enum tag must be integer")),
-                }
-            }
-            TYPE_STRING => {
-                let name = self.parse_string_owned()?;
-                Ok(EnumTagOwned::Name(name))
-            }
-            _ => Err(Error::InvalidType("unsupported enum tag")),
-        }
+        Ok(EnumTagOwned::Index(self.read_size()?))
     }
 
     fn deserialize_half_newtype<'de, V: Visitor<'de>>(

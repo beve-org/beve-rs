@@ -422,7 +422,9 @@ The internally tagged form is the shape a Glaze `std::variant` declaring `tag`/`
 
 ### Reading Version 1 documents
 
-Version 1 encoded a variant as the **type tag extension** (id `1`, header byte `0x0E`) followed by a positional index, and this crate additionally offered a numeric encoding that wrote a bare index for a unit variant. Extension 1 is deprecated and reserved in Version 2; **this crate never emits it**, but it still reads both legacy forms, so existing documents load unchanged.
+Version 1 encoded a variant as the **type tag extension** (id `1`, header byte `0x0E`), a positional index as a compressed SIZE, then the value. This crate additionally offered a numeric encoding that wrote a bare index for a unit variant. Extension 1 is deprecated and reserved in Version 2; **this crate never emits it**, but it still reads both legacy forms.
+
+One exception: beve 1.x through 4.x wrote the type tag's index as a headered number or string rather than a SIZE. That departed from the spec, and those variants no longer decode.
 
 The reverse does not hold: a peer pinned to a pre-Version-2 decoder cannot read variants written here. Upgrade the peer, or pin this side, until both ends move.
 

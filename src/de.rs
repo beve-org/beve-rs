@@ -687,31 +687,10 @@ impl<'de> Deserializer<'de> {
         decode_utf8(s, "invalid utf-8")
     }
 
+    /// The positional index after a Version 1 type-tag extension header: a
+    /// compressed SIZE, not a headered value.
     fn read_enum_tag(&mut self) -> Result<EnumTag<'de>> {
-        let header = self.read_byte()?;
-        match parse_type(header) {
-            TYPE_NUMBER => {
-                let subtype = parse_subtype(header);
-                let bc = parse_byte_count_code(header);
-                match subtype {
-                    NUM_UNSIGNED => Ok(EnumTag::Index(self.parse_unsigned(bc)? as u64)),
-                    NUM_SIGNED => {
-                        let v = self.parse_signed(bc)?;
-                        if v < 0 {
-                            Err(Error::InvalidType("negative enum index"))
-                        } else {
-                            Ok(EnumTag::Index(v as u64))
-                        }
-                    }
-                    _ => Err(Error::InvalidType("enum tag must be integer")),
-                }
-            }
-            TYPE_STRING => {
-                let name = self.parse_string_borrowed()?;
-                Ok(EnumTag::Name(name))
-            }
-            _ => Err(Error::InvalidType("unsupported enum tag")),
-        }
+        Ok(EnumTag::Index(read_size(self.input, &mut self.pos)?))
     }
 
     fn deserialize_value<V: Visitor<'de>>(&mut self, visitor: V) -> Result<V::Value> {

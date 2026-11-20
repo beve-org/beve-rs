@@ -498,9 +498,9 @@ fn skip_value_at_depth(input: &[u8], pos: &mut usize, depth: usize) -> Result<()
             let ext = parse_extension_id(header);
             match ext {
                 EXT_TYPE_TAG => {
-                    // tag (number or string) + value
-                    skip_value_at_depth(input, pos, depth + 1)?; // tag
-                    skip_value_at_depth(input, pos, depth + 1)?; // value
+                    // Version 1 variant: a compressed SIZE index, then the value.
+                    read_size(input, pos)?;
+                    skip_value_at_depth(input, pos, depth + 1)?;
                 }
                 EXT_DELIMITER => { /* nothing to skip */ }
                 EXT_MATRICES => {

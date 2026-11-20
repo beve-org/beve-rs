@@ -7,6 +7,9 @@ use std::io::Read;
 use serde::de::{self, DeserializeOwned, Visitor};
 use serde::forward_to_deserialize_any;
 
+use crate::aligned::{
+    aligned_element_width, check_aligned_padding, is_aligned_marker, size_to_usize,
+};
 use crate::de::{
     ComplexArrayPlan, EnumIndexAccess, HalfBitsDeserializer, HalfKind, NumDe, VariantAccessNoValue,
     complex_array_plan, le_signed, widen_complex_components,
@@ -162,6 +165,24 @@ impl<R: Read> StreamingDeserializer<R> {
         } else {
             read_size_from_reader(&mut self.reader)
         }
+    }
+
+    /// Streaming twin of [`crate::aligned::read_typed_array_prefix`]: the header
+    /// that describes the elements of the typed array whose `header` was just
+    /// read, and their count, with the reader at the first payload byte. An
+    /// aligned array yields its inner numeric header, its padding consumed.
+    fn read_typed_array_prefix(&mut self, header: u8) -> Result<(u8, usize)> {
+        if !is_aligned_marker(header) {
+            return Ok((header, size_to_usize(self.read_size()?)?));
+        }
+        let numeric = self.read_byte()?;
+        let width = aligned_element_width(numeric)?;
+        let len = size_to_usize(self.read_size()?)?;
+        let padding = self.read_byte()? as usize;
+        check_aligned_padding(padding, width)?;
+        let mut discard = [0u8; u8::MAX as usize];
+        self.read_exact_into(&mut discard[..padding])?;
+        Ok((numeric, len))
     }
 
     /// Streaming twin of `Deserializer::typed_array_payload`: if the value here is
@@ -437,9 +458,9 @@ impl<R: Read> StreamingDeserializer<R> {
                 }
             }
             TYPE_TYPED_ARRAY => {
+                let (header, len) = self.read_typed_array_prefix(header)?;
                 let cat = parse_subtype(header);
                 let bc = parse_byte_count_code(header);
-                let len = self.read_size()? as usize;
                 match cat {
                     ARRAY_FLOAT => match bc {
                         0 => visitor.visit_seq(SeqAccessHalfStreaming {
@@ -478,21 +499,20 @@ impl<R: Read> StreamingDeserializer<R> {
                             elem_size,
                         })
                     }
-                    ARRAY_BOOL_OR_STRING => {
-                        if (header & 0b0010_0000) == 0 {
-                            visitor.visit_seq(SeqAccessBoolStreaming {
-                                de: self,
-                                remaining: len,
-                                current_byte: 0,
-                                bit_idx: 0,
-                            })
-                        } else {
-                            visitor.visit_seq(SeqAccessStringStreaming {
-                                de: self,
-                                remaining: len,
-                            })
-                        }
-                    }
+                    ARRAY_BOOL_OR_STRING => match bc {
+                        ARRAY_KIND_BOOL => visitor.visit_seq(SeqAccessBoolStreaming {
+                            de: self,
+                            remaining: len,
+                            current_byte: 0,
+                            bit_idx: 0,
+                        }),
+                        ARRAY_KIND_STRING => visitor.visit_seq(SeqAccessStringStreaming {
+                            de: self,
+                            remaining: len,
+                        }),
+                        // Aligned arrays were unwrapped by the prefix read.
+                        _ => Err(Error::InvalidHeader(header)),
+                    },
                     _ => Err(Error::InvalidHeader(header)),
                 }
             }

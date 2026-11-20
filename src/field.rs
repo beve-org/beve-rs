@@ -70,6 +70,7 @@
 //! assert_eq!(slice, vec![100.0, 101.0, 102.0]);
 //! ```
 
+use crate::aligned::read_typed_array_prefix;
 use crate::error::{Error, Result};
 use crate::header::*;
 use crate::size::read_size;
@@ -187,16 +188,20 @@ pub fn from_field_slice<T: serde::de::DeserializeOwned>(
         ));
     }
 
+    // An aligned array slices as its inner numeric array.
+    let (header, len) = read_typed_array_prefix(bytes, &mut pos, header)?;
     let cat = parse_subtype(header);
     if cat == ARRAY_BOOL_OR_STRING {
-        return Err(Error::Unsupported(
-            "slicing not supported for boolean or string typed arrays",
-        ));
+        return Err(match parse_byte_count_code(header) {
+            ARRAY_KIND_BOOL | ARRAY_KIND_STRING => {
+                Error::Unsupported("slicing not supported for boolean or string typed arrays")
+            }
+            _ => Error::InvalidHeader(header),
+        });
     }
 
     let elem_size =
         numeric_width(cat, parse_byte_count_code(header)).ok_or(Error::InvalidHeader(header))?;
-    let len = read_size(bytes, &mut pos)? as usize;
 
     let end = start.checked_add(count).ok_or(Error::InvalidSize)?;
     if end > len {
@@ -461,21 +466,21 @@ fn skip_value_at_depth(input: &[u8], pos: &mut usize, depth: usize) -> Result<()
             }
         }
         TYPE_TYPED_ARRAY => {
+            let (header, len) = read_typed_array_prefix(input, pos, header)?;
             let cat = parse_subtype(header);
             let bc = parse_byte_count_code(header);
-            let len = read_size(input, pos)? as usize;
 
             if cat == ARRAY_BOOL_OR_STRING {
-                let is_string = (header & 0b0010_0000) != 0;
-                if is_string {
-                    for _ in 0..len {
-                        let s = read_size(input, pos)? as usize;
-                        advance(input, pos, s)?;
+                match bc {
+                    ARRAY_KIND_BOOL => advance(input, pos, len.div_ceil(8))?,
+                    ARRAY_KIND_STRING => {
+                        for _ in 0..len {
+                            let s = read_size(input, pos)? as usize;
+                            advance(input, pos, s)?;
+                        }
                     }
-                } else {
-                    // boolean: ceil(len / 8) packed bytes
-                    let packed = len.div_ceil(8);
-                    advance(input, pos, packed)?;
+                    // Aligned arrays were unwrapped by the prefix read.
+                    _ => return Err(Error::InvalidHeader(header)),
                 }
             } else {
                 let elem_size = numeric_width(cat, bc).ok_or(Error::InvalidHeader(header))?;

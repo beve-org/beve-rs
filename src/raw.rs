@@ -1,3 +1,4 @@
+use crate::aligned::read_typed_array_prefix;
 use crate::error::{Error, Result};
 use crate::header::*;
 use crate::size::read_size;
@@ -119,23 +120,19 @@ impl<'a> Reader<'a> {
         if parse_type(header) != TYPE_TYPED_ARRAY {
             return Err(Error::InvalidType("expected typed array"));
         }
-        let class = match parse_subtype(header) {
-            ARRAY_FLOAT => TypedArrayClass::Float,
-            ARRAY_SIGNED => TypedArrayClass::Signed,
-            ARRAY_UNSIGNED => TypedArrayClass::Unsigned,
-            ARRAY_BOOL_OR_STRING => {
-                if (header & 0b0010_0000) == 0 {
-                    TypedArrayClass::Bool
-                } else {
-                    TypedArrayClass::String
-                }
-            }
+        let (header, len) = read_typed_array_prefix(self.input, &mut self.pos, header)?;
+        let class = match (parse_subtype(header), parse_byte_count_code(header)) {
+            (ARRAY_FLOAT, _) => TypedArrayClass::Float,
+            (ARRAY_SIGNED, _) => TypedArrayClass::Signed,
+            (ARRAY_UNSIGNED, _) => TypedArrayClass::Unsigned,
+            (ARRAY_BOOL_OR_STRING, ARRAY_KIND_BOOL) => TypedArrayClass::Bool,
+            (ARRAY_BOOL_OR_STRING, ARRAY_KIND_STRING) => TypedArrayClass::String,
             _ => return Err(Error::InvalidHeader(header)),
         };
         Ok(TypedArrayHeader {
             class,
             byte_code: parse_byte_count_code(header),
-            len: self.read_size()?,
+            len,
         })
     }
 

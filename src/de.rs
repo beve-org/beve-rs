@@ -14,18 +14,6 @@ fn decode_utf8<'de>(bytes: &'de [u8], context: &'static str) -> Result<&'de str>
     from_utf8(bytes).map_err(|_| Error::InvalidType(context))
 }
 
-#[inline]
-pub(crate) fn byte_count_to_bytes(code: u8) -> Result<usize> {
-    match code {
-        0 => Ok(1),
-        1 => Ok(2),
-        2 => Ok(4),
-        3 => Ok(8),
-        4 => Ok(16),
-        _ => Err(Error::Unsupported("byte width > 16 not supported")),
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum HalfKind {
     Bf16,
@@ -304,7 +292,7 @@ fn make_seq_unsigned<'de>(
     len: usize,
     byte_code: u8,
 ) -> Result<SeqAccessUnsigned<'de>> {
-    let elem_size = byte_count_to_bytes(byte_code)?;
+    let elem_size = integer_width(byte_code)?;
     let total = elem_size.checked_mul(len).ok_or(Error::InvalidSize)?;
     let data = de.read_exact(total)?;
     Ok(SeqAccessUnsigned {
@@ -321,7 +309,7 @@ fn make_seq_signed<'de>(
     len: usize,
     byte_code: u8,
 ) -> Result<SeqAccessSigned<'de>> {
-    let elem_size = byte_count_to_bytes(byte_code)?;
+    let elem_size = integer_width(byte_code)?;
     let total = elem_size.checked_mul(len).ok_or(Error::InvalidSize)?;
     let data = de.read_exact(total)?;
     Ok(SeqAccessSigned {
@@ -1242,7 +1230,7 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessGeneric<'a, 'de> {
 }
 
 /// Widen `elem_size` little-endian bytes to `u128`. `chunk.len()` must equal
-/// `elem_size` (1/2/4/8/16, the only values `byte_count_to_bytes` yields).
+/// `elem_size` (1/2/4/8/16, the only values `integer_width` yields).
 ///
 /// Narrow widths (1/2/4) read at native width, where the old 16-byte buffer
 /// round-trip was pure overhead — this is where the big wins are. The 8/16-byte

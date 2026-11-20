@@ -343,7 +343,7 @@ fn find_signed_key(
     byte_code: u8,
     target: i64,
 ) -> Result<bool> {
-    let nbytes = byte_count_to_bytes(byte_code)?;
+    let nbytes = integer_width(byte_code)?;
     for _ in 0..count {
         let key_val = read_signed_int(input, pos, nbytes)?;
         if key_val == target as i128 {
@@ -361,7 +361,7 @@ fn find_unsigned_key(
     byte_code: u8,
     target: u64,
 ) -> Result<bool> {
-    let nbytes = byte_count_to_bytes(byte_code)?;
+    let nbytes = integer_width(byte_code)?;
     for _ in 0..count {
         let key_val = read_unsigned_int(input, pos, nbytes)?;
         if key_val == target as u128 {
@@ -451,7 +451,7 @@ fn skip_value_at_depth(input: &[u8], pos: &mut usize, depth: usize) -> Result<()
                     }
                 }
                 KEY_SIGNED | KEY_UNSIGNED => {
-                    let key_size = byte_count_to_bytes(bc)?;
+                    let key_size = integer_width(bc)?;
                     for _ in 0..count {
                         advance(input, pos, key_size)?; // skip key
                         skip_value_at_depth(input, pos, depth + 1)?; // skip value
@@ -538,18 +538,6 @@ fn skip_value_at_depth(input: &[u8], pos: &mut usize, depth: usize) -> Result<()
 // ---------------------------------------------------------------------------
 // Low-level helpers
 // ---------------------------------------------------------------------------
-
-#[inline]
-fn byte_count_to_bytes(code: u8) -> Result<usize> {
-    match code {
-        0 => Ok(1),
-        1 => Ok(2),
-        2 => Ok(4),
-        3 => Ok(8),
-        4 => Ok(16),
-        _ => Err(Error::Unsupported("byte width > 16 not supported")),
-    }
-}
 
 #[inline]
 fn read_byte(input: &[u8], pos: &mut usize) -> Result<u8> {

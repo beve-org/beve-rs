@@ -1030,24 +1030,8 @@ fn skip_value(reader: &mut BeveReader<'_>, depth: usize) -> Result<()> {
     match ty {
         TYPE_NULL_BOOL => {}
         TYPE_NUMBER => {
-            let byte_code = parse_byte_count_code(header);
-            let len = match parse_subtype(header) {
-                NUM_FLOAT => match byte_code {
-                    0 | 1 => 2,
-                    2 => 4,
-                    3 => 8,
-                    _ => return Err(Error::Unsupported("float width not supported")),
-                },
-                NUM_SIGNED | NUM_UNSIGNED => match byte_code {
-                    0 => 1,
-                    1 => 2,
-                    2 => 4,
-                    3 => 8,
-                    4 => 16,
-                    _ => return Err(Error::Unsupported("integer width not supported")),
-                },
-                _ => return Err(Error::InvalidHeader(header)),
-            };
+            let len = numeric_width(parse_subtype(header), parse_byte_count_code(header))
+                .ok_or(Error::InvalidHeader(header))?;
             reader.read_exact(len)?;
         }
         TYPE_STRING => {
@@ -1072,27 +1056,10 @@ fn skip_value(reader: &mut BeveReader<'_>, depth: usize) -> Result<()> {
             let value_type = parse_subtype(header);
             let byte_code = parse_byte_count_code(header);
             match value_type {
-                ARRAY_FLOAT => {
+                ARRAY_FLOAT | ARRAY_SIGNED | ARRAY_UNSIGNED => {
+                    let elem_bytes =
+                        numeric_width(value_type, byte_code).ok_or(Error::InvalidHeader(header))?;
                     let len = reader.read_size()? as usize;
-                    let elem_bytes: usize = match byte_code {
-                        0 | 1 => 2usize,
-                        2 => 4usize,
-                        3 => 8usize,
-                        _ => return Err(Error::Unsupported("float width not supported")),
-                    };
-                    let total = len.checked_mul(elem_bytes).ok_or(Error::InvalidSize)?;
-                    reader.read_exact(total)?;
-                }
-                ARRAY_SIGNED | ARRAY_UNSIGNED => {
-                    let len = reader.read_size()? as usize;
-                    let elem_bytes: usize = match byte_code {
-                        0 => 1usize,
-                        1 => 2usize,
-                        2 => 4usize,
-                        3 => 8usize,
-                        4 => 16usize,
-                        _ => return Err(Error::Unsupported("integer width not supported")),
-                    };
                     let total = len.checked_mul(elem_bytes).ok_or(Error::InvalidSize)?;
                     reader.read_exact(total)?;
                 }

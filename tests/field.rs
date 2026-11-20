@@ -1211,9 +1211,50 @@ fn field_slice_bf16() {
     assert_eq!(slice, &data[4..7]);
 }
 
+// Glaze writes a 16-byte float (`long double`, `std::float128_t`) at float
+// byte code 4. beve has no such type to decode into, but must still step over
+// one to reach what follows.
+
+#[test]
+fn skip_f128_number() {
+    let mut bytes = vec![0x81];
+    bytes.extend_from_slice(&[0xAB; 16]);
+    let mut pos = 0;
+    beve::skip_value(&bytes, &mut pos).unwrap();
+    assert_eq!(pos, 17);
+}
+
+#[test]
+fn skip_f128_typed_array() {
+    // Header 0x84: typed array, float, byte code 4; SIZE 2; 32 payload bytes.
+    let mut bytes = vec![0x84, 0x08];
+    bytes.extend_from_slice(&[0xAB; 32]);
+    let mut pos = 0;
+    beve::skip_value(&bytes, &mut pos).unwrap();
+    assert_eq!(pos, bytes.len());
+}
+
+#[test]
+fn field_after_an_f128() {
+    let mut bytes = Vec::new();
+    beve::wire::write_object_header(&mut bytes, 2);
+    beve::wire::write_object_key(&mut bytes, "a");
+    bytes.push(0x81);
+    bytes.extend_from_slice(&[0xAB; 16]);
+    beve::wire::write_object_key(&mut bytes, "b");
+    beve::to_writer(&mut bytes, &7u8).unwrap();
+    assert_eq!(beve::from_field::<u8>(&bytes, "/b").unwrap(), 7);
+}
+
 #[test]
 fn skip_rejects_undefined_float_width() {
-    // Float byte code 4 would be a 16-byte float, which BEVE does not define.
+    // Float byte code 5 would be 32 bytes, which BEVE does not define. Enough
+    // payload follows that only the header can be what is rejected.
+    let mut bytes = vec![0xA1];
+    bytes.extend_from_slice(&[0; 32]);
     let mut pos = 0;
-    assert!(beve::skip_value(&[0x81, 0, 0], &mut pos).is_err());
+    assert!(matches!(
+        beve::skip_value(&bytes, &mut pos),
+        Err(beve::Error::InvalidHeader(0xA1))
+    ));
 }

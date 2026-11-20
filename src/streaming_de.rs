@@ -9,7 +9,7 @@ use serde::forward_to_deserialize_any;
 
 use crate::de::{
     ComplexArrayPlan, EnumIndexAccess, HalfBitsDeserializer, HalfKind, NumDe, VariantAccessNoValue,
-    byte_count_to_bytes, complex_array_plan, le_signed, widen_complex_components,
+    complex_array_plan, le_signed, widen_complex_components,
 };
 use crate::error::{Error, Result};
 use crate::header::*;
@@ -250,7 +250,7 @@ impl<R: Read> StreamingDeserializer<R> {
     // -- parse helpers --
 
     fn parse_signed(&mut self, code: u8) -> Result<i128> {
-        let nbytes = byte_count_to_bytes(code)?;
+        let nbytes = integer_width(code)?;
         let mut buf = [0u8; 16];
         self.read_exact_into(&mut buf[..nbytes])?;
         if nbytes < 16 && (buf[nbytes - 1] & 0x80) != 0 {
@@ -262,7 +262,7 @@ impl<R: Read> StreamingDeserializer<R> {
     }
 
     fn parse_unsigned(&mut self, code: u8) -> Result<u128> {
-        let nbytes = byte_count_to_bytes(code)?;
+        let nbytes = integer_width(code)?;
         let mut buf = [0u8; 16];
         self.read_exact_into(&mut buf[..nbytes])?;
         Ok(u128::from_le_bytes(buf))
@@ -463,7 +463,7 @@ impl<R: Read> StreamingDeserializer<R> {
                         _ => Err(Error::Unsupported("unsupported typed float array width")),
                     },
                     ARRAY_SIGNED => {
-                        let elem_size = byte_count_to_bytes(bc)?;
+                        let elem_size = integer_width(bc)?;
                         visitor.visit_seq(SeqAccessSignedStreaming {
                             de: self,
                             remaining: len,
@@ -471,7 +471,7 @@ impl<R: Read> StreamingDeserializer<R> {
                         })
                     }
                     ARRAY_UNSIGNED => {
-                        let elem_size = byte_count_to_bytes(bc)?;
+                        let elem_size = integer_width(bc)?;
                         visitor.visit_seq(SeqAccessUnsignedStreaming {
                             de: self,
                             remaining: len,
@@ -1229,7 +1229,7 @@ impl<'de, 'a, R: Read> de::MapAccess<'de> for MatrixAccessStreaming<'a, R> {
                 let len = self.de.read_size()? as usize;
                 let bc = parse_byte_count_code(h);
                 let subtype = parse_subtype(h);
-                let elem_size = byte_count_to_bytes(bc)?;
+                let elem_size = integer_width(bc)?;
                 match subtype {
                     ARRAY_UNSIGNED => seed.deserialize(SeqDeserializerWrapper {
                         de: self.de,

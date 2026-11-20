@@ -18,7 +18,7 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 ### Fixed
 
-- `skip_value` and `from_field_slice` sized a `bf16` as 1 byte instead of 2, so a document containing one desynchronized. ([#58](https://github.com/beve-org/beve-rs/issues/58))
+- `skip_value`, `from_field` and `from_field_slice` sized a `bf16` as 1 byte instead of 2, so a document containing one desynchronized. ([#58](https://github.com/beve-org/beve-rs/issues/58))
 
 ## 10.0.1 - 2026-10-26
 

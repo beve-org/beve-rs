@@ -46,23 +46,25 @@ pub const EXT_COMPLEX: u8 = 3;
 /// `f16` at `byte_code` 1 — so it does **not** follow the generic
 /// `1 << byte_code` width, which would give 1 and 2 there. A path that reaches
 /// for the generic formula mis-sizes every `bf16`, and sizes `f16` correctly
-/// only by coincidence. There is no 16-byte float, so FLOAT stops at
-/// `byte_code` 3 while the integer classes go to 4.
+/// only by coincidence. From `byte_code` 2 up the generic width holds for every
+/// class, through the 16-byte widths at `byte_code` 4 (`i128`, `u128`, and the
+/// 128-bit float Glaze writes for `long double` and `std::float128_t`).
 #[inline]
 pub fn numeric_width(class: u8, byte_code: u8) -> Option<usize> {
-    match class {
-        NUM_FLOAT => match byte_code {
-            0 | 1 => Some(2),
-            2 => Some(4),
-            3 => Some(8),
-            _ => None,
-        },
-        NUM_SIGNED | NUM_UNSIGNED => match byte_code {
-            0..=4 => Some(1usize << byte_code),
-            _ => None,
-        },
+    match (class, byte_code) {
+        (NUM_FLOAT, 0 | 1) => Some(2),
+        (NUM_FLOAT | NUM_SIGNED | NUM_UNSIGNED, 0..=4) => Some(1usize << byte_code),
         _ => None,
     }
+}
+
+/// Byte width of an integer at `byte_code`, for the places whose class is fixed
+/// to signed or unsigned: integer object keys and integer reads. Anything whose
+/// class is read from the input goes through [`numeric_width`] instead.
+#[inline]
+pub fn integer_width(byte_code: u8) -> Result<usize> {
+    numeric_width(NUM_UNSIGNED, byte_code)
+        .ok_or(Error::Unsupported("byte width > 16 not supported"))
 }
 
 #[inline]

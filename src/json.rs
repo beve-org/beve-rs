@@ -905,7 +905,7 @@ fn complex_elem_len(kind: ComplexNumeric, byte_code: u8) -> Result<usize> {
         ComplexNumeric::Signed => NUM_SIGNED,
         ComplexNumeric::Unsigned => NUM_UNSIGNED,
     };
-    complex_component_bytes(class, byte_code).ok_or(match kind {
+    numeric_width(class, byte_code).ok_or(match kind {
         ComplexNumeric::Float => Error::Unsupported("complex float width unsupported"),
         _ => Error::Unsupported("complex width not supported"),
     })

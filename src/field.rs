@@ -194,8 +194,8 @@ pub fn from_field_slice<T: serde::de::DeserializeOwned>(
         ));
     }
 
-    let bc = parse_byte_count_code(header);
-    let elem_size = byte_count_to_bytes(bc)?;
+    let elem_size =
+        numeric_width(cat, parse_byte_count_code(header)).ok_or(Error::InvalidHeader(header))?;
     let len = read_size(bytes, &mut pos)? as usize;
 
     let end = start.checked_add(count).ok_or(Error::InvalidSize)?;
@@ -429,8 +429,8 @@ fn skip_value_at_depth(input: &[u8], pos: &mut usize, depth: usize) -> Result<()
             // Fully encoded in the header byte; nothing else to consume.
         }
         TYPE_NUMBER => {
-            let bc = parse_byte_count_code(header);
-            let nbytes = byte_count_to_bytes(bc)?;
+            let nbytes = numeric_width(parse_subtype(header), parse_byte_count_code(header))
+                .ok_or(Error::InvalidHeader(header))?;
             advance(input, pos, nbytes)?;
         }
         TYPE_STRING => {
@@ -478,7 +478,7 @@ fn skip_value_at_depth(input: &[u8], pos: &mut usize, depth: usize) -> Result<()
                     advance(input, pos, packed)?;
                 }
             } else {
-                let elem_size = byte_count_to_bytes(bc)?;
+                let elem_size = numeric_width(cat, bc).ok_or(Error::InvalidHeader(header))?;
                 let total = elem_size.checked_mul(len).ok_or(Error::InvalidSize)?;
                 advance(input, pos, total)?;
             }
@@ -511,11 +511,7 @@ fn skip_value_at_depth(input: &[u8], pos: &mut usize, depth: usize) -> Result<()
                     }
                     let is_array = (ch & 0x01) != 0;
                     let cbc = (ch >> 5) & 0x07;
-                    // Not `byte_count_to_bytes`: a complex component does not
-                    // follow the generic scalar width. Sharing the rule is what
-                    // keeps `bf16` skippable — it is 2 bytes at byte code 0,
-                    // where the generic formula says 1.
-                    let component_bytes = complex_component_bytes(class, cbc)
+                    let component_bytes = numeric_width(class, cbc)
                         .ok_or(Error::Unsupported("unsupported complex width"))?;
                     let n = if is_array {
                         read_size(input, pos)? as usize

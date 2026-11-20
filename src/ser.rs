@@ -783,7 +783,7 @@ impl Serializer {
 /// `byte_code`, or [`Error::Mismatch`] when the two name a width BEVE does not
 /// define.
 ///
-/// The width rule itself lives in [`complex_component_bytes`] so that the
+/// The width rule itself lives in [`numeric_width`] so that the
 /// readers share it rather than restate it; this is the writer-facing doubling
 /// of it. Both serializers route every complex payload through here. Neither
 /// may reach the error in practice — each caller derives `class` and
@@ -792,7 +792,7 @@ impl Serializer {
 /// writing a length the reader cannot honor.
 #[inline]
 pub(crate) fn complex_elem_bytes(class: u8, byte_code: u8) -> Result<usize> {
-    complex_component_bytes(class, byte_code)
+    numeric_width(class, byte_code)
         .map(|component| component * 2)
         .ok_or(Error::Mismatch("invalid complex payload size"))
 }

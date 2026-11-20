@@ -152,7 +152,7 @@ pub(crate) enum ComplexArrayPlan {
 ///
 /// Sizes nothing from the destination width unless the classes match: a source
 /// component is as wide as its own class says, which for a half float is not the
-/// generic `1 << byte_code` (see [`complex_component_bytes`]).
+/// generic `1 << byte_code` (see [`numeric_width`]).
 pub(crate) fn complex_array_plan(
     src_class: u8,
     src_byte_code: u8,
@@ -169,7 +169,7 @@ pub(crate) fn complex_array_plan(
     if !complex_widening_supported(src_class, src_byte_code, dst_class, dst_byte_code) {
         return Ok(ComplexArrayPlan::ElementWise);
     }
-    let src_width = complex_component_bytes(src_class, src_byte_code)
+    let src_width = numeric_width(src_class, src_byte_code)
         .ok_or(Error::Unsupported("unsupported complex component width"))?;
     Ok(ComplexArrayPlan::Widen {
         payload_len: complex_payload_len(len, src_width)?,
@@ -245,11 +245,11 @@ pub(crate) fn widen_complex_components(
             const SW: usize = core::mem::size_of::<$src_ty>();
             const DW: usize = core::mem::size_of::<$dst_ty>();
             // The source width is stated twice: here by the arm's own type, and
-            // by `complex_component_bytes` where the caller sizes the read. They
+            // by `numeric_width` where the caller sizes the read. They
             // agree today; if an arm ever pairs a class with the wrong type,
             // refuse the payload rather than dropping the trailing partial
             // component and returning a silently short `Vec`.
-            debug_assert_eq!(Some(SW), complex_component_bytes(src_class, src_bc));
+            debug_assert_eq!(Some(SW), numeric_width(src_class, src_bc));
             if !src.len().is_multiple_of(SW) {
                 return None;
             }
@@ -2120,7 +2120,7 @@ mod tests {
     /// The converter writes the destination width for every component it reads,
     /// so an output buffer is `len * 2 * size_of::<dst>()` however wide the
     /// source was. A half-float source is the one that catches a generic
-    /// `1 << byte_code` width rule (see `header::complex_component_bytes`).
+    /// `1 << byte_code` width rule (see `header::numeric_width`).
     #[test]
     fn widened_output_is_sized_by_the_destination_not_the_source() {
         // Compared as bytes rather than decoded back, which also pins the output

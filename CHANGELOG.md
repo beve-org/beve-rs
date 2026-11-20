@@ -16,6 +16,10 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 
 - An empty `ComplexSlice` (and the `complex_array::*` / `complex::*_array` helpers) now writes a zero-length complex array instead of `05 00`, matching `TypedSlice` and `to_vec_complex_slice`. Both forms still decode. A plain empty `Vec<Complex<T>>` still writes `05 00`.
 
+### Fixed
+
+- `skip_value`, `from_field` and `from_field_slice` sized a `bf16` as 1 byte instead of 2, so a document containing one desynchronized. ([#58](https://github.com/beve-org/beve-rs/issues/58))
+
 ## 10.0.1 - 2026-10-26
 
 Dependency update only. No API change and no change to the bytes written.

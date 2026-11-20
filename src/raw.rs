@@ -66,7 +66,7 @@ impl<'a> Reader<'a> {
     }
 
     pub(crate) fn read_signed(&mut self, byte_code: u8) -> Result<i128> {
-        let nbytes = byte_count_to_bytes(byte_code)?;
+        let nbytes = integer_width(byte_code)?;
         let bytes = self.read_exact(nbytes)?;
         let mut buf = [0u8; 16];
         buf[..nbytes].copy_from_slice(bytes);
@@ -79,7 +79,7 @@ impl<'a> Reader<'a> {
     }
 
     pub(crate) fn read_unsigned(&mut self, byte_code: u8) -> Result<u128> {
-        let nbytes = byte_count_to_bytes(byte_code)?;
+        let nbytes = integer_width(byte_code)?;
         let bytes = self.read_exact(nbytes)?;
         let mut buf = [0u8; 16];
         buf[..nbytes].copy_from_slice(bytes);
@@ -199,16 +199,5 @@ impl<'a> Reader<'a> {
         let byte = self.peek_byte()?;
         self.pos += 1;
         Ok(byte)
-    }
-}
-
-pub(crate) fn byte_count_to_bytes(code: u8) -> Result<usize> {
-    match code {
-        0 => Ok(1),
-        1 => Ok(2),
-        2 => Ok(4),
-        3 => Ok(8),
-        4 => Ok(16),
-        _ => Err(Error::Unsupported("byte width > 16 not supported")),
     }
 }

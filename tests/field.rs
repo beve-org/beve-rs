@@ -1146,3 +1146,115 @@ fn field_slice_deeply_nested() {
     let slice: Vec<u32> = beve::from_field_slice(&bytes, "/b/c/values", 20, 5).unwrap();
     assert_eq!(slice, vec![20, 21, 22, 23, 24]);
 }
+
+// ---- half floats: bf16 is 2 bytes at byte code 0 ----
+//
+// BEVE has no 8-bit float, so the float class spends byte code 0 on bf16, which
+// is 2 bytes wide. The generic `1 << code` integer width says 1 there, and a
+// skipper that uses it desynchronizes on every bf16. f16 (code 1) is listed too:
+// the generic rule gets it right only by coincidence.
+
+#[test]
+fn skip_bf16_number() {
+    // Header 0x01: number, float, byte code 0.
+    let mut pos = 0;
+    beve::skip_value(&[0x01, 0xad, 0xbe], &mut pos).unwrap();
+    assert_eq!(pos, 3);
+}
+
+#[test]
+fn skip_bf16_typed_array() {
+    // Header 0x04: typed array, float, byte code 0; SIZE 2; 4 payload bytes.
+    let mut pos = 0;
+    beve::skip_value(&[0x04, 0x08, 1, 2, 3, 4], &mut pos).unwrap();
+    assert_eq!(pos, 6);
+}
+
+#[test]
+fn skip_half_floats_in_encoded_documents() {
+    use half::{bf16, f16};
+
+    #[derive(Serialize)]
+    struct Doc {
+        b: bf16,
+        h: f16,
+        bs: Vec<bf16>,
+        hs: Vec<f16>,
+        after: u32,
+    }
+    let doc = Doc {
+        b: bf16::from_f32(1.5),
+        h: f16::from_f32(-2.0),
+        bs: (0..5).map(|i| bf16::from_f32(i as f32)).collect(),
+        hs: (0..5).map(|i| f16::from_f32(i as f32)).collect(),
+        after: 0xDEAD_BEEF,
+    };
+    let bytes = beve::to_vec(&doc).unwrap();
+
+    let mut pos = 0;
+    beve::skip_value(&bytes, &mut pos).unwrap();
+    assert_eq!(pos, bytes.len());
+
+    // Reaching `after` skips every half-float field before it.
+    let after: u32 = beve::from_field(&bytes, "/after").unwrap();
+    assert_eq!(after, 0xDEAD_BEEF);
+}
+
+#[test]
+fn field_slice_bf16() {
+    use half::bf16;
+
+    let data: Vec<bf16> = (0..10).map(|i| bf16::from_f32(i as f32)).collect();
+    let bytes = beve::to_vec(&data).unwrap();
+
+    let slice: Vec<bf16> = beve::from_field_slice(&bytes, "", 4, 3).unwrap();
+    assert_eq!(slice, &data[4..7]);
+}
+
+// Glaze writes a 16-byte float (`long double`, `std::float128_t`) at float
+// byte code 4. beve has no such type to decode into, but must still step over
+// one to reach what follows.
+
+#[test]
+fn skip_f128_number() {
+    let mut bytes = vec![0x81];
+    bytes.extend_from_slice(&[0xAB; 16]);
+    let mut pos = 0;
+    beve::skip_value(&bytes, &mut pos).unwrap();
+    assert_eq!(pos, 17);
+}
+
+#[test]
+fn skip_f128_typed_array() {
+    // Header 0x84: typed array, float, byte code 4; SIZE 2; 32 payload bytes.
+    let mut bytes = vec![0x84, 0x08];
+    bytes.extend_from_slice(&[0xAB; 32]);
+    let mut pos = 0;
+    beve::skip_value(&bytes, &mut pos).unwrap();
+    assert_eq!(pos, bytes.len());
+}
+
+#[test]
+fn field_after_an_f128() {
+    let mut bytes = Vec::new();
+    beve::wire::write_object_header(&mut bytes, 2);
+    beve::wire::write_object_key(&mut bytes, "a");
+    bytes.push(0x81);
+    bytes.extend_from_slice(&[0xAB; 16]);
+    beve::wire::write_object_key(&mut bytes, "b");
+    beve::to_writer(&mut bytes, &7u8).unwrap();
+    assert_eq!(beve::from_field::<u8>(&bytes, "/b").unwrap(), 7);
+}
+
+#[test]
+fn skip_rejects_undefined_float_width() {
+    // Float byte code 5 would be 32 bytes, which BEVE does not define. Enough
+    // payload follows that only the header can be what is rejected.
+    let mut bytes = vec![0xA1];
+    bytes.extend_from_slice(&[0; 32]);
+    let mut pos = 0;
+    assert!(matches!(
+        beve::skip_value(&bytes, &mut pos),
+        Err(beve::Error::InvalidHeader(0xA1))
+    ));
+}

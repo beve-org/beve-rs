@@ -45,6 +45,15 @@
 //! [`crate::read_typed_slice`], the JSON and MAT converters) also reads an
 //! aligned array, as the ordinary numeric array it wraps; the functions here add
 //! the zero-copy borrow and reject anything but an aligned array.
+//!
+//! An aligned *complex* array (complex kind 2) nests an aligned typed array of
+//! the interleaved `re, im` components inside the complex extension:
+//!
+//! ```text
+//! HEADER(0x1E) | COMPLEX HEADER | 0x5C | NUMERIC_HEADER | SIZE(2N) | PADDING_LENGTH | PADDING | DATA
+//! ```
+//!
+//! The decoders read it as the plain complex array of `N` values.
 
 use crate::error::{Error, Result};
 use crate::fast::BeveTypedSlice;
@@ -161,6 +170,75 @@ pub(crate) fn read_typed_array_prefix_from_reader<R: Read>(
         .read_exact(&mut discard[..padding])
         .map_err(|_| Error::Eof)?;
     Ok((numeric, len))
+}
+
+/// Check that the value inside an aligned complex array opens an aligned typed
+/// array; an unaligned one is not allowed there.
+#[inline]
+pub(crate) fn check_aligned_complex_marker(marker: u8) -> Result<()> {
+    if !is_aligned_marker(marker) {
+        return Err(Error::InvalidType(
+            "aligned complex array value is not an aligned typed array",
+        ));
+    }
+    Ok(())
+}
+
+/// Check an aligned complex array's nested aligned typed array, whose inner
+/// `numeric` header and component count were just read, against its COMPLEX
+/// HEADER `ch`, and return the number of complex elements. The two headers must
+/// agree on class and width, and the components come in `re, im` pairs.
+pub(crate) fn aligned_complex_len(ch: u8, numeric: u8, components: usize) -> Result<usize> {
+    const NUMERIC_BITS: u8 = 0b1111_1000;
+    if numeric != (TYPE_TYPED_ARRAY | (ch & NUMERIC_BITS)) {
+        return Err(Error::InvalidType(
+            "aligned complex array numeric header does not match its complex header",
+        ));
+    }
+    if !components.is_multiple_of(2) {
+        return Err(Error::InvalidType(
+            "aligned complex array has an odd component count",
+        ));
+    }
+    Ok(components / 2)
+}
+
+/// Read the prefix of the complex array whose COMPLEX HEADER `ch`, of an array
+/// kind, was just consumed, returning its element count with `*pos` at the
+/// first component. A plain array carries a SIZE; an aligned one nests an
+/// aligned typed array of the interleaved components, whose padding this
+/// consumes, so past this call both read the same.
+pub(crate) fn read_complex_array_prefix(input: &[u8], pos: &mut usize, ch: u8) -> Result<usize> {
+    match parse_complex_kind(ch)? {
+        ComplexKind::Array => size_to_usize(read_size(input, pos)?),
+        ComplexKind::AlignedArray => {
+            let marker = *input.get(*pos).ok_or(Error::Eof)?;
+            *pos += 1;
+            check_aligned_complex_marker(marker)?;
+            let (numeric, components) = read_aligned_prefix(input, pos)?;
+            aligned_complex_len(ch, numeric, components)
+        }
+        ComplexKind::Scalar => Err(Error::InvalidType("expected a complex array")),
+    }
+}
+
+/// [`read_complex_array_prefix`] for a reader, leaving it at the first
+/// component.
+pub(crate) fn read_complex_array_prefix_from_reader<R: Read>(
+    reader: &mut R,
+    ch: u8,
+) -> Result<usize> {
+    match parse_complex_kind(ch)? {
+        ComplexKind::Array => size_to_usize(read_size_from_reader(reader)?),
+        ComplexKind::AlignedArray => {
+            let mut marker = [0u8; 1];
+            reader.read_exact(&mut marker).map_err(|_| Error::Eof)?;
+            check_aligned_complex_marker(marker[0])?;
+            let (numeric, components) = read_typed_array_prefix_from_reader(reader, marker[0])?;
+            aligned_complex_len(ch, numeric, components)
+        }
+        ComplexKind::Scalar => Err(Error::InvalidType("expected a complex array")),
+    }
 }
 
 /// Number of padding bytes that must follow a `PADDING_LENGTH` byte sitting at

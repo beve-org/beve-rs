@@ -675,8 +675,7 @@ fn walk_complex(
     path: &str,
 ) -> Result<()> {
     let header = reader.read_complex_header()?;
-    if header.is_array {
-        let len = reader.read_size()?;
+    if let Some(len) = header.len {
         let dims = mb.vector_dims(len);
         write_complex_array(reader, mb, options, name, &dims, header, len, None, path)
     } else {
@@ -1174,12 +1173,11 @@ fn walk_matrix_complex(
     path: &str,
 ) -> Result<()> {
     let info = reader.read_complex_header()?;
-    if !info.is_array {
+    let Some(len) = info.len else {
         return Err(Error::msg(format!(
             "matrix complex payload must be an array at {path}"
         )));
-    }
-    let len = reader.read_size()?;
+    };
     let expected = product(extents)?;
     if len != expected {
         return Err(Error::msg(format!(

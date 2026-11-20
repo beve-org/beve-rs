@@ -1,4 +1,4 @@
-use crate::aligned::read_typed_array_prefix;
+use crate::aligned::{read_complex_array_prefix, read_typed_array_prefix};
 use crate::error::{Error, Result};
 use crate::header::*;
 use crate::size::read_size;
@@ -31,8 +31,10 @@ pub(crate) struct TypedArrayHeader {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ComplexHeader {
     pub(crate) class: u8,
-    pub(crate) is_array: bool,
     pub(crate) byte_code: u8,
+    /// The element count of a complex array, plain or aligned, with the reader
+    /// at its first component; `None` for a single complex value.
+    pub(crate) len: Option<usize>,
 }
 
 pub(crate) struct Reader<'a> {
@@ -136,12 +138,22 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// Read a COMPLEX HEADER and, for an array, its element count, leaving the
+    /// reader at the first component.
     pub(crate) fn read_complex_header(&mut self) -> Result<ComplexHeader> {
         let header = self.read_byte()?;
+        let len = match parse_complex_kind(header)? {
+            ComplexKind::Scalar => None,
+            ComplexKind::Array | ComplexKind::AlignedArray => Some(read_complex_array_prefix(
+                self.input,
+                &mut self.pos,
+                header,
+            )?),
+        };
         Ok(ComplexHeader {
             class: (header >> 3) & 0b11,
-            is_array: (header & 0x01) != 0,
             byte_code: (header >> 5) & 0b111,
+            len,
         })
     }
 

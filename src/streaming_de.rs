@@ -8,7 +8,8 @@ use serde::de::{self, DeserializeOwned, Visitor};
 use serde::forward_to_deserialize_any;
 
 use crate::aligned::{
-    aligned_element_width, check_aligned_padding, is_aligned_marker, size_to_usize,
+    aligned_complex_len, aligned_element_width, check_aligned_complex_marker,
+    check_aligned_padding, is_aligned_marker, size_to_usize,
 };
 use crate::de::{
     ComplexArrayPlan, EnumIndexAccess, HalfBitsDeserializer, HalfKind, NumDe, VariantAccessNoValue,
@@ -185,6 +186,22 @@ impl<R: Read> StreamingDeserializer<R> {
         Ok((numeric, len))
     }
 
+    /// Streaming twin of [`crate::aligned::read_complex_array_prefix`]: the
+    /// element count of the complex array whose COMPLEX HEADER `ch` was just
+    /// read, with the reader at the first component.
+    fn read_complex_array_prefix(&mut self, ch: u8) -> Result<usize> {
+        match parse_complex_kind(ch)? {
+            ComplexKind::Array => size_to_usize(self.read_size()?),
+            ComplexKind::AlignedArray => {
+                let marker = self.read_byte()?;
+                check_aligned_complex_marker(marker)?;
+                let (numeric, components) = self.read_typed_array_prefix(marker)?;
+                aligned_complex_len(ch, numeric, components)
+            }
+            ComplexKind::Scalar => Err(Error::InvalidType("expected a complex array")),
+        }
+    }
+
     /// Streaming twin of `Deserializer::typed_array_payload`: if the value here is
     /// a typed numeric array matching `(class, byte_code)`, bulk-read its payload
     /// into a `Vec<u8>`; otherwise return `None` (the caller falls back to the
@@ -228,10 +245,9 @@ impl<R: Read> StreamingDeserializer<R> {
         }
         self.read_byte()?; // extension header
         let ch = self.read_byte()?; // complex header byte
-        let is_array = (ch & 0x01) != 0;
         let src_class = (ch >> 3) & 0x03;
         let src_byte_code = (ch >> 5) & 0x07;
-        if !is_array {
+        if parse_complex_kind(ch)? == ComplexKind::Scalar {
             // A single complex value, not an array. The slice decoder rewinds to
             // the header and lets `deserialize_any` present the 2-element scalar
             // pair; the header is already consumed here, so name the same pair
@@ -243,7 +259,7 @@ impl<R: Read> StreamingDeserializer<R> {
                 byte_code: src_byte_code,
             }));
         }
-        let len = self.read_size()? as usize;
+        let len = self.read_complex_array_prefix(ch)?;
 
         // Unlike the slice decoder this decides before reading, since the
         // element-wise access reads the payload itself.
@@ -511,10 +527,9 @@ impl<R: Read> StreamingDeserializer<R> {
                     }
                     EXT_COMPLEX => {
                         let ch = self.read_byte()?;
-                        let is_array = (ch & 0x01) != 0;
                         let class = (ch >> 3) & 0x03;
                         let bc = (ch >> 5) & 0x07;
-                        if !is_array {
+                        if parse_complex_kind(ch)? == ComplexKind::Scalar {
                             visitor.visit_seq(ComplexPairStreaming {
                                 de: self,
                                 class,
@@ -522,7 +537,7 @@ impl<R: Read> StreamingDeserializer<R> {
                                 state: 0,
                             })
                         } else {
-                            let len = self.read_size()? as usize;
+                            let len = self.read_complex_array_prefix(ch)?;
                             visitor.visit_seq(SeqAccessComplexStreaming {
                                 de: self,
                                 remaining: len,

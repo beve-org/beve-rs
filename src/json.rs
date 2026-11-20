@@ -1,4 +1,4 @@
-use crate::aligned::read_typed_array_prefix;
+use crate::aligned::{read_complex_array_prefix, read_typed_array_prefix};
 use crate::de::MAX_RECURSION_DEPTH;
 use crate::error::{Error, Result};
 use crate::header::*;
@@ -883,12 +883,7 @@ impl ComplexValue {
 }
 
 fn parse_complex_header_byte(header: u8) -> Result<(bool, ComplexNumeric, u8)> {
-    let form = header & 0x07;
-    let is_array = match form {
-        0 => false,
-        1 => true,
-        _ => return Err(Error::Unsupported("complex extension form not supported")),
-    };
+    let is_array = parse_complex_kind(header)? != ComplexKind::Scalar;
     let numeric = match (header >> 3) & 0x03 {
         NUM_FLOAT => ComplexNumeric::Float,
         NUM_SIGNED => ComplexNumeric::Signed,
@@ -927,7 +922,7 @@ fn write_complex_extension(reader: &mut BeveReader<'_>, out: &mut Vec<u8>) -> Re
         im.write_json(out);
         out.push(b']');
     } else {
-        let len = reader.read_size()? as usize;
+        let len = read_complex_array_prefix(reader.buf, &mut reader.pos, header)?;
         out.push(b'[');
         for i in 0..len {
             if i > 0 {

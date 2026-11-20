@@ -40,6 +40,32 @@ pub const EXT_TYPE_TAG: u8 = 1;
 pub const EXT_MATRICES: u8 = 2;
 pub const EXT_COMPLEX: u8 = 3;
 
+/// Sub-type of a complex extension: the low 3 bits of its COMPLEX HEADER. The
+/// next 2 bits are the numeric class and the top 3 the BYTE COUNT, as in a
+/// number header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ComplexKind {
+    /// `HEADER | COMPLEX HEADER | DATA`: one `re, im` pair.
+    Scalar,
+    /// `HEADER | COMPLEX HEADER | SIZE | DATA`: `SIZE` interleaved pairs.
+    Array,
+    /// `HEADER | COMPLEX HEADER | VALUE`, `VALUE` an aligned typed array of the
+    /// interleaved components; see [`crate::aligned`].
+    AlignedArray,
+}
+
+/// The kind of the COMPLEX HEADER `ch`. Kinds 3 through 7 are undefined, and
+/// their layout unknown, so they are rejected.
+#[inline]
+pub(crate) fn parse_complex_kind(ch: u8) -> Result<ComplexKind> {
+    match ch & 0b111 {
+        0 => Ok(ComplexKind::Scalar),
+        1 => Ok(ComplexKind::Array),
+        2 => Ok(ComplexKind::AlignedArray),
+        _ => Err(Error::InvalidHeader(ch)),
+    }
+}
+
 /// Byte width of one numeric scalar of class `class` (float, signed or
 /// unsigned) and `byte_code`, or `None` when the two name a width BEVE does not
 /// define. The class values coincide across a number header's subtype, a typed

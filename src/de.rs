@@ -4,7 +4,7 @@ use serde::de::value::{BoolDeserializer, BorrowedStrDeserializer};
 use serde::de::{self, Visitor};
 use serde::forward_to_deserialize_any;
 
-use crate::aligned::read_typed_array_prefix;
+use crate::aligned::{read_complex_array_prefix, read_typed_array_prefix};
 use crate::error::{Error, Result};
 use crate::header::*;
 use crate::size::read_size;
@@ -552,14 +552,13 @@ impl<'de> Deserializer<'de> {
         let rewind = self.pos;
         self.read_byte()?; // extension header
         let ch = self.read_byte()?; // complex header byte
-        let is_array = (ch & 0x01) != 0;
         let src_class = (ch >> 3) & 0x03;
         let src_byte_code = (ch >> 5) & 0x07;
-        if !is_array {
+        if parse_complex_kind(ch)? == ComplexKind::Scalar {
             self.pos = rewind;
             return Ok(None);
         }
-        let len = read_size(self.input, &mut self.pos)? as usize;
+        let len = read_complex_array_prefix(self.input, &mut self.pos, ch)?;
 
         match complex_array_plan(src_class, src_byte_code, len, class, byte_code, scalar_size)? {
             ComplexArrayPlan::AsIs { payload_len } => Ok(Some(ComplexArrayPayload::Borrowed(
@@ -845,10 +844,9 @@ impl<'de> Deserializer<'de> {
                     }
                     EXT_COMPLEX => {
                         let ch = self.read_byte()?; // complex header
-                        let is_array = (ch & 0x01) != 0;
                         let class = (ch >> 3) & 0x03;
                         let bc = (ch >> 5) & 0x07;
-                        if !is_array {
+                        if parse_complex_kind(ch)? == ComplexKind::Scalar {
                             // single complex -> present as 2-element sequence
                             visitor.visit_seq(ComplexPairAccess {
                                 de: self,
@@ -857,7 +855,7 @@ impl<'de> Deserializer<'de> {
                                 state: 0,
                             })
                         } else {
-                            let len = read_size(self.input, &mut self.pos)? as usize;
+                            let len = read_complex_array_prefix(self.input, &mut self.pos, ch)?;
                             visitor.visit_seq(SeqAccessComplexArray {
                                 de: self,
                                 remaining: len,

@@ -191,6 +191,48 @@ fn rust_to_glaze_variant_cases_need_a_v2_glaze() {
     rust_to_glaze_ok!("basic", sample_basic());
 }
 
+#[derive(Debug, PartialEq, Deserialize)]
+enum Var {
+    Flag(bool),
+    Word(u32),
+    Text(String),
+}
+
+#[derive(Debug, PartialEq, Deserialize)]
+struct VariantDoc {
+    v: Var,
+    list: Vec<Var>,
+    after: u8,
+}
+
+/// Glaze writes a `std::variant` as the Version 1 type tag extension, its index
+/// a compressed SIZE. Every decoder must read that, and step over it to reach
+/// the field after it.
+#[test]
+fn glaze_variants_decode() {
+    if glaze_bin().is_none() {
+        return;
+    }
+    let (code, bytes, _err) = run_glaze(&["write", "variant_doc"], None).unwrap();
+    assert_eq!(code, 0, "glaze write variant_doc failed");
+    let expected = VariantDoc {
+        v: Var::Word(0xDEAD_BEEF),
+        list: vec![Var::Flag(true), Var::Word(7), Var::Text("hi".into())],
+        after: 5,
+    };
+    assert_eq!(beve::from_slice::<VariantDoc>(&bytes).unwrap(), expected);
+    assert_eq!(
+        beve::from_reader_streaming::<_, VariantDoc>(std::io::Cursor::new(&bytes)).unwrap(),
+        expected
+    );
+    beve::validate_slice(&bytes).unwrap();
+    assert_eq!(beve::from_field::<u8>(&bytes, "/after").unwrap(), 5);
+    assert_eq!(
+        beve::beve_slice_to_json_string(&bytes).unwrap(),
+        r#"{"v":3735928559,"list":[true,7,"hi"],"after":5}"#
+    );
+}
+
 #[test]
 fn interop_complex_numbers() {
     // Glaze -> Rust

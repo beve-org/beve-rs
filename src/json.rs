@@ -115,7 +115,7 @@ impl BeveBuilder {
 
     fn write_string(&mut self, value: &str) {
         self.push(TYPE_STRING);
-        write_size(value.len() as u64, &mut self.buf);
+        write_size(&mut self.buf, value.len() as u64);
         self.extend(value.as_bytes());
     }
 
@@ -302,7 +302,7 @@ impl<'a> JsonParser<'a> {
                         return Err(Error::InvalidType("json object keys must be strings"));
                     }
                     let key = self.parse_string()?;
-                    write_size(key.len() as u64, &mut builder.buf);
+                    write_size(&mut builder.buf, key.len() as u64);
                     builder.extend(key.as_bytes());
                     self.skip_ws();
                     self.expect_byte(b':')?;

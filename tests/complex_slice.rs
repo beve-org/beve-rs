@@ -3,12 +3,13 @@
 //! The wrapper writes a complex array as one bulk copy of the borrowed
 //! `(re, im)` payload instead of a `serialize_element` per value. That is a
 //! throughput change only, so the whole suite is one claim in several
-//! positions: **the bytes must be exactly what the element-by-element path
-//! produced**. The reference for "element-by-element" is a plain
+//! positions: **for every non-empty slice, the bytes must be exactly what the
+//! element-by-element path produced**. An empty slice is the one deliberate
+//! difference: see `an_empty_slice_is_a_zero_length_complex_array`. The reference for "element-by-element" is a plain
 //! `Vec<Complex<T>>`, whose derived `Serialize` walks elements one at a time —
 //! which is precisely what `ComplexSlice` itself used to do.
 
-use beve::{BeveTypedSlice, Complex, ComplexSlice, to_vec_complex_slice};
+use beve::{BeveTypedSlice, Complex, ComplexSlice, to_vec_complex_slice, wire};
 use half::{bf16, f16};
 use serde::{Deserialize, Serialize};
 
@@ -27,20 +28,25 @@ where
     let owned = values.to_vec();
 
     let bulk = beve::to_vec(&ComplexSlice(values)).expect("buffered encode");
-    let element_wise = beve::to_vec(&owned).expect("buffered encode of Vec");
-    assert_eq!(
-        bulk, element_wise,
-        "buffered: ComplexSlice must equal the element-wise Vec (len={n})"
-    );
-
     let mut bulk_stream = Vec::new();
     beve::to_writer_streaming(&mut bulk_stream, &ComplexSlice(values)).expect("streaming encode");
-    let mut element_wise_stream = Vec::new();
-    beve::to_writer_streaming(&mut element_wise_stream, &owned).expect("streaming encode of Vec");
-    assert_eq!(
-        bulk_stream, element_wise_stream,
-        "streaming: ComplexSlice must equal the element-wise Vec (len={n})"
-    );
+
+    // Parity with the element-wise path holds for every non-empty slice. An
+    // empty one is the exception: see `an_empty_slice_is_a_zero_length_complex_array`.
+    if n > 0 {
+        let element_wise = beve::to_vec(&owned).expect("buffered encode of Vec");
+        assert_eq!(
+            bulk, element_wise,
+            "buffered: ComplexSlice must equal the element-wise Vec (len={n})"
+        );
+        let mut element_wise_stream = Vec::new();
+        beve::to_writer_streaming(&mut element_wise_stream, &owned)
+            .expect("streaming encode of Vec");
+        assert_eq!(
+            bulk_stream, element_wise_stream,
+            "streaming: ComplexSlice must equal the element-wise Vec (len={n})"
+        );
+    }
     assert_eq!(
         bulk_stream, bulk,
         "streaming and buffered must agree (len={n})"
@@ -58,14 +64,12 @@ where
     assert_eq!(&back, &owned, "round-trip mismatch (len={n})");
 
     // Parity with the non-serde primitive, which writes the same framing
-    // directly. Empty is excluded: see `an_empty_slice_keeps_the_generic_array`.
-    if n > 0 {
-        assert_eq!(
-            bulk,
-            to_vec_complex_slice(values),
-            "ComplexSlice must equal to_vec_complex_slice (len={n})"
-        );
-    }
+    // directly, at every length including empty.
+    assert_eq!(
+        bulk,
+        to_vec_complex_slice(values),
+        "ComplexSlice must equal to_vec_complex_slice (len={n})"
+    );
 }
 
 macro_rules! check_type {
@@ -140,27 +144,53 @@ fn complex_slice_bulk_matches_element_wise_for_every_scalar() {
     });
 }
 
-/// An empty slice has no element from which to detect a type, and has always
-/// encoded as a generic empty array here. The bulk path must not quietly
-/// promote it to a zero-length complex array: consumers that read the element
-/// type off the header (the MATLAB export among them) can tell the two apart.
+/// An empty slice is a zero-length complex array, the same bytes
+/// `to_vec_complex_slice` writes, so a reader can see the element type of an
+/// array that holds nothing. A plain `Vec` cannot: serde gives its encoder no
+/// element to read a type from, so it writes a generic empty array. Both forms
+/// decode back to an empty `Vec`, through either decoder, with or without the
+/// `complex_array` helper; documents written before the wrapper switched forms
+/// still carry the generic one.
 #[test]
-fn an_empty_slice_keeps_the_generic_array() {
+fn an_empty_slice_is_a_zero_length_complex_array() {
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct Plain {
+        iq: Vec<Complex<f32>>,
+    }
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct Bulk {
+        #[serde(with = "beve::complex_array::f32")]
+        iq: Vec<Complex<f32>>,
+    }
+
     let empty: [Complex<f32>; 0] = [];
-
     let wrapper = beve::to_vec(&ComplexSlice(&empty)).unwrap();
-    let plain = beve::to_vec(&Vec::<Complex<f32>>::new()).unwrap();
-    assert_eq!(wrapper, plain, "empty must still encode as the Vec does");
-
-    assert_ne!(
-        wrapper,
-        to_vec_complex_slice(&empty),
-        "the non-serde primitive writes a typed empty array; the divergence is \
-         deliberate and documented on ComplexSlice"
+    // Extension 3 (complex), then array of f32 (class float, byte code 2), SIZE 0.
+    assert_eq!(wrapper, [0x1e, 0x41, 0x00]);
+    assert_eq!(
+        beve::to_vec(&Vec::<Complex<f32>>::new()).unwrap(),
+        [0x05, 0x00]
     );
 
-    let back: Vec<Complex<f32>> = beve::from_slice(&wrapper).unwrap();
-    assert!(back.is_empty());
+    let plain = beve::to_vec(&Plain { iq: Vec::new() }).unwrap();
+    let bulk = beve::to_vec(&Bulk { iq: Vec::new() }).unwrap();
+    assert_ne!(plain, bulk);
+    for bytes in [&plain, &bulk] {
+        assert_eq!(beve::from_slice::<Plain>(bytes).unwrap().iq, empty);
+        assert_eq!(beve::from_slice::<Bulk>(bytes).unwrap().iq, empty);
+        assert_eq!(
+            beve::from_reader_streaming::<_, Plain>(std::io::Cursor::new(bytes))
+                .unwrap()
+                .iq,
+            empty
+        );
+        assert_eq!(
+            beve::from_reader_streaming::<_, Bulk>(std::io::Cursor::new(bytes))
+                .unwrap()
+                .iq,
+            empty
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +221,25 @@ fn sample_iq(n: usize) -> Vec<Complex<i16>> {
         .collect()
 }
 
+/// What a frame holding `plain`'s values encodes as through `ComplexSlice` or a
+/// complex-array helper: the plain `Vec` field's bytes, except that an empty
+/// array is a zero-length complex one rather than the generic empty array a
+/// plain `Vec` writes (see `an_empty_slice_is_a_zero_length_complex_array`).
+fn expected_frame(plain: &FrameVec) -> Vec<u8> {
+    if !plain.iq.is_empty() {
+        return beve::to_vec(plain).unwrap();
+    }
+    let mut out = Vec::new();
+    wire::write_object_header(&mut out, 3);
+    wire::write_object_key(&mut out, "id");
+    beve::to_writer(&mut out, &plain.id).unwrap();
+    wire::write_object_key(&mut out, "iq");
+    wire::write_complex_array_header::<i16>(&mut out, 0);
+    wire::write_object_key(&mut out, "tail");
+    beve::to_writer(&mut out, &plain.tail).unwrap();
+    out
+}
+
 #[test]
 fn a_struct_field_matches_the_plain_vec_field() {
     for &n in &[0usize, 1, 8, 64, 1000] {
@@ -206,16 +255,13 @@ fn a_struct_field_matches_the_plain_vec_field() {
             tail: 9,
         };
 
+        let expected = expected_frame(&plain);
         let a = beve::to_vec(&slice).unwrap();
-        let b = beve::to_vec(&plain).unwrap();
-        assert_eq!(a, b, "buffered struct field (n={n})");
+        assert_eq!(a, expected, "buffered struct field (n={n})");
 
         let mut sa = Vec::new();
         beve::to_writer_streaming(&mut sa, &slice).unwrap();
-        let mut sb = Vec::new();
-        beve::to_writer_streaming(&mut sb, &plain).unwrap();
-        assert_eq!(sa, sb, "streaming struct field (n={n})");
-        assert_eq!(sa, a, "streaming and buffered struct field (n={n})");
+        assert_eq!(sa, expected, "streaming struct field (n={n})");
 
         let back: FrameVec = beve::from_slice(&a).unwrap();
         assert_eq!(back, plain, "struct field round-trip (n={n})");
@@ -295,18 +341,17 @@ fn the_serialize_with_helper_reaches_the_bulk_path() {
             tail: 9,
         };
 
+        let expected = expected_frame(&plain);
         assert_eq!(
             beve::to_vec(&foreign).unwrap(),
-            beve::to_vec(&plain).unwrap(),
+            expected,
             "buffered: complex::i16_array must equal the plain Vec field (n={n})"
         );
 
         let mut a = Vec::new();
         beve::to_writer_streaming(&mut a, &foreign).unwrap();
-        let mut b = Vec::new();
-        beve::to_writer_streaming(&mut b, &plain).unwrap();
         assert_eq!(
-            a, b,
+            a, expected,
             "streaming: complex::i16_array must equal the plain Vec field (n={n})"
         );
     }

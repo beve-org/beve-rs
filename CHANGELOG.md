@@ -6,6 +6,16 @@ Through 9.x there was one exemption, for the `mat` feature's hdf5-pure version. 
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Added
+
+- **`beve::wire`**: the SIZE codec (`write_size`, `read_size`, `size_encoded_len`, `MAX_SIZE`) and header writers for objects, object keys, generic arrays, typed arrays and complex arrays, so a writer can stream a payload too large to hold. Each writes exactly what beve's own encoders write.
+
+### Changed
+
+- An empty `ComplexSlice` (and the `complex_array::*` / `complex::*_array` helpers) now writes a zero-length complex array instead of `05 00`, matching `TypedSlice` and `to_vec_complex_slice`. Both forms still decode. A plain empty `Vec<Complex<T>>` still writes `05 00`.
+
 ## 10.0.1 - 2026-10-26
 
 Dependency update only. No API change and no change to the bytes written.

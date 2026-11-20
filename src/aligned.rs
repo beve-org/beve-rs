@@ -134,7 +134,7 @@ pub fn write_aligned_typed_slice_at<T: BeveTypedSlice>(
 
     out.push(aligned_marker_header());
     out.push(make_header(TYPE_TYPED_ARRAY, T::CLASS, T::BYTE_CODE));
-    write_size(slice.len() as u64, out);
+    write_size(out, slice.len() as u64);
 
     // The PADDING_LENGTH byte's offset *in the frame* is `base_offset` plus however
     // many bytes (marker + numeric header + SIZE) we have written into `out` since

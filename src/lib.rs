@@ -59,6 +59,7 @@ mod size;
 mod streaming_de;
 mod streaming_ser;
 mod value;
+pub mod wire;
 
 pub use crate::aligned::{
     aligned_typed_slice_size, read_aligned_typed_slice, read_aligned_typed_slice_ref,

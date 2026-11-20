@@ -158,6 +158,7 @@ int main(int argc, char** argv) {
     else if (cas == "nested") { auto v=sample_nested(); glz::write_beve(v, out); }
     else if (cas == "cplx64") { std::complex<double> v{1.5, -2.25}; glz::write_beve(v, out); }
     else if (cas == "vcplx64") { std::vector<std::complex<double>> v{{1.0,2.0},{-3.0,4.5}}; glz::write_beve(v, out); }
+    else if (cas == "vcplx64_empty") { std::vector<std::complex<double>> v; glz::write_beve(v, out); }
     else if (cas == "mapi8") { std::map<int8_t,int> m{{-1,10},{2,20}}; glz::write_beve(m, out); }
     else if (cas == "mapu16") { std::map<uint16_t,int> m{{1,10},{65535,20}}; glz::write_beve(m, out); }
     else if (cas == "mapu64") { std::map<uint64_t,int> m{{1,10},{(uint64_t)1<<40,20}}; glz::write_beve(m, out); }
@@ -176,6 +177,7 @@ int main(int argc, char** argv) {
     else if (cas == "nested") { auto expect=sample_nested(); decltype(expect) got; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (eq(got, expect)) { std::cout<<"OK\n"; return 0; } }
     else if (cas == "cplx64") { std::complex<double> expect{1.5,-2.25}; decltype(expect) got; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (got==expect) { std::cout<<"OK\n"; return 0; } }
     else if (cas == "vcplx64") { std::vector<std::complex<double>> expect{{1.0,2.0},{-3.0,4.5}}; decltype(expect) got; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (got==expect) { std::cout<<"OK\n"; return 0; } }
+    else if (cas == "vcplx64_empty") { std::vector<std::complex<double>> got{{9.0,9.0}}; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (got.empty()) { std::cout<<"OK\n"; return 0; } }
     else if (cas == "mapi8") { std::map<int8_t,int> expect{{-1,10},{2,20}}; decltype(expect) got; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (got==expect) { std::cout<<"OK\n"; return 0; } }
     else if (cas == "mapu16") { std::map<uint16_t,int> expect{{1,10},{65535,20}}; decltype(expect) got; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (got==expect) { std::cout<<"OK\n"; return 0; } }
     else if (cas == "mapu64") { std::map<uint64_t,int> expect{{1,10},{(uint64_t)1<<40,20}}; decltype(expect) got; if (glz::read_beve(got, bytes)) { std::cerr<<"parse error\n"; return 4; } if (got==expect) { std::cout<<"OK\n"; return 0; } }

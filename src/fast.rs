@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 #[inline]
 fn write_typed_array_header_numeric(out: &mut Vec<u8>, class: u8, byte_code: u8, len: usize) {
     out.push(make_header(TYPE_TYPED_ARRAY, class, byte_code));
-    write_size(len as u64, out);
+    write_size(out, len as u64);
 }
 
 /// Write a typed array header for boolean arrays.
@@ -23,7 +23,7 @@ fn write_typed_array_header_numeric(out: &mut Vec<u8>, class: u8, byte_code: u8,
 fn write_typed_array_header_bool(out: &mut Vec<u8>, len: usize) {
     let header = ((ARRAY_BOOL_OR_STRING & 0b11) << 3) | (TYPE_TYPED_ARRAY & 0b111);
     out.push(header);
-    write_size(len as u64, out);
+    write_size(out, len as u64);
 }
 
 /// Write a typed array header for string arrays.
@@ -32,7 +32,7 @@ fn write_typed_array_header_string(out: &mut Vec<u8>, len: usize) {
     // For boolean/string category, we use byte_code=1 to indicate string arrays
     let header = ((1u8) << 5) | ((ARRAY_BOOL_OR_STRING & 0b11) << 3) | (TYPE_TYPED_ARRAY & 0b111);
     out.push(header);
-    write_size(len as u64, out);
+    write_size(out, len as u64);
 }
 
 /// A trait implemented for scalar numeric types supported by BEVE typed arrays.
@@ -340,7 +340,7 @@ pub fn to_vec_bool_slice(slice: &[bool]) -> Vec<u8> {
 pub fn write_str_slice(out: &mut Vec<u8>, slice: &[&str]) {
     write_typed_array_header_string(out, slice.len());
     for s in slice {
-        write_size(s.len() as u64, out);
+        write_size(out, s.len() as u64);
         out.extend_from_slice(s.as_bytes());
     }
 }
@@ -356,7 +356,7 @@ pub fn to_vec_str_slice(slice: &[&str]) -> Vec<u8> {
 pub fn write_string_slice(out: &mut Vec<u8>, slice: &[String]) {
     write_typed_array_header_string(out, slice.len());
     for s in slice {
-        write_size(s.len() as u64, out);
+        write_size(out, s.len() as u64);
         out.extend_from_slice(s.as_bytes());
     }
 }
@@ -371,7 +371,7 @@ pub fn to_vec_string_slice(slice: &[String]) -> Vec<u8> {
 // -------- Complex numbers (extension) --------
 
 #[inline]
-fn write_complex_header(out: &mut Vec<u8>, is_array: bool, class: u8, byte_code: u8) {
+pub(crate) fn write_complex_header(out: &mut Vec<u8>, is_array: bool, class: u8, byte_code: u8) {
     // Extension header + complex header
     out.push(((EXT_COMPLEX & 0x1f) << 3) | (TYPE_EXTENSION & 0b111));
     let h = ((byte_code & 0b111) << 5) | ((class & 0b11) << 3) | (if is_array { 1 } else { 0 });
@@ -383,7 +383,7 @@ pub fn write_complex_slice<T: BeveTypedSlice>(out: &mut Vec<u8>, slice: &[Comple
     let payload = core::mem::size_of_val(slice);
     out.reserve(2 + 8 + payload);
     write_complex_header(out, true, T::CLASS, T::BYTE_CODE);
-    write_size(slice.len() as u64, out);
+    write_size(out, slice.len() as u64);
     if !slice.is_empty() {
         #[cfg(target_endian = "little")]
         {

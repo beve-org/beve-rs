@@ -19,7 +19,7 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 ### Fixed
 
 - `skip_value`, `from_field` and `from_field_slice` sized a `bf16` as 1 byte instead of 2, so a document containing one desynchronized. ([#58](https://github.com/beve-org/beve-rs/issues/58))
-- Decoders read an aligned typed array as a boolean array and desynchronized, and accepted the undefined kinds 3 through 7 of that category. ([#59](https://github.com/beve-org/beve-rs/issues/59))
+- Decoders read an aligned typed array as a boolean array and desynchronized, and accepted the undefined kinds 3 through 7 of that category and padding as wide as an element. `read_typed_slice` and `read_typed_slice_from_reader` now read aligned arrays too. ([#59](https://github.com/beve-org/beve-rs/issues/59))
 
 ## 10.0.1 - 2026-10-26
 

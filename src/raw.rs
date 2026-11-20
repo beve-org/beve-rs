@@ -1,4 +1,4 @@
-use crate::aligned::{is_aligned_marker, read_typed_array_prefix};
+use crate::aligned::read_typed_array_prefix;
 use crate::error::{Error, Result};
 use crate::header::*;
 use crate::size::read_size;
@@ -120,11 +120,7 @@ impl<'a> Reader<'a> {
         if parse_type(header) != TYPE_TYPED_ARRAY {
             return Err(Error::InvalidType("expected typed array"));
         }
-        let (header, len) = if is_aligned_marker(header) {
-            read_typed_array_prefix(self.input, &mut self.pos, header)?
-        } else {
-            (header, self.read_size()?)
-        };
+        let (header, len) = read_typed_array_prefix(self.input, &mut self.pos, header)?;
         let class = match (parse_subtype(header), parse_byte_count_code(header)) {
             (ARRAY_FLOAT, _) => TypedArrayClass::Float,
             (ARRAY_SIGNED, _) => TypedArrayClass::Signed,

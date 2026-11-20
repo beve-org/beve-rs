@@ -192,9 +192,12 @@ pub fn from_field_slice<T: serde::de::DeserializeOwned>(
     let (header, len) = read_typed_array_prefix(bytes, &mut pos, header)?;
     let cat = parse_subtype(header);
     if cat == ARRAY_BOOL_OR_STRING {
-        return Err(Error::Unsupported(
-            "slicing not supported for boolean or string typed arrays",
-        ));
+        return Err(match parse_byte_count_code(header) {
+            ARRAY_KIND_BOOL | ARRAY_KIND_STRING => {
+                Error::Unsupported("slicing not supported for boolean or string typed arrays")
+            }
+            _ => Error::InvalidHeader(header),
+        });
     }
 
     let elem_size =

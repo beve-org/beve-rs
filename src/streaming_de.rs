@@ -7,7 +7,9 @@ use std::io::Read;
 use serde::de::{self, DeserializeOwned, Visitor};
 use serde::forward_to_deserialize_any;
 
-use crate::aligned::{check_aligned_numeric_header, is_aligned_marker};
+use crate::aligned::{
+    aligned_element_width, check_aligned_padding, is_aligned_marker, size_to_usize,
+};
 use crate::de::{
     ComplexArrayPlan, EnumIndexAccess, HalfBitsDeserializer, HalfKind, NumDe, VariantAccessNoValue,
     complex_array_plan, le_signed, widen_complex_components,
@@ -171,12 +173,13 @@ impl<R: Read> StreamingDeserializer<R> {
     /// aligned array yields its inner numeric header, its padding consumed.
     fn read_typed_array_prefix(&mut self, header: u8) -> Result<(u8, usize)> {
         if !is_aligned_marker(header) {
-            return Ok((header, self.read_size()? as usize));
+            return Ok((header, size_to_usize(self.read_size()?)?));
         }
         let numeric = self.read_byte()?;
-        check_aligned_numeric_header(numeric)?;
-        let len = self.read_size()? as usize;
+        let width = aligned_element_width(numeric)?;
+        let len = size_to_usize(self.read_size()?)?;
         let padding = self.read_byte()? as usize;
+        check_aligned_padding(padding, width)?;
         let mut discard = [0u8; u8::MAX as usize];
         self.read_exact_into(&mut discard[..padding])?;
         Ok((numeric, len))

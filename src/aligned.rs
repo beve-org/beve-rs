@@ -42,16 +42,17 @@
 //! (one bulk copy, always works) is the fallback.
 //!
 //! Every general decoder (`from_slice`, `from_reader_streaming`, `skip_value`,
-//! the JSON and MAT converters) also reads an aligned array, as the ordinary
-//! numeric array it wraps; the functions here add the zero-copy borrow and the
-//! element-type check.
+//! [`crate::read_typed_slice`], the JSON and MAT converters) also reads an
+//! aligned array, as the ordinary numeric array it wraps; the functions here add
+//! the zero-copy borrow and reject anything but an aligned array.
 
 use crate::error::{Error, Result};
 use crate::fast::BeveTypedSlice;
 use crate::header::*;
-use crate::size::{read_size, size_encoded_len, write_size};
+use crate::size::{read_size, read_size_from_reader, size_encoded_len, write_size};
 #[cfg(target_endian = "little")]
 use core::ptr;
+use std::io::Read;
 
 /// The marker header byte (`0x5C`) that opens an aligned typed array.
 #[inline]
@@ -65,14 +66,35 @@ pub(crate) fn is_aligned_marker(header: u8) -> bool {
     header == aligned_marker_header()
 }
 
-/// Check the `NUMERIC_HEADER` inside an aligned array: it must be a typed
-/// array of a numeric category, since only numeric payloads are aligned.
+/// Check the `NUMERIC_HEADER` inside an aligned array and return the width of
+/// one element. It must be a typed array of a numeric category with a defined
+/// width, since only numeric payloads are aligned.
 #[inline]
-pub(crate) fn check_aligned_numeric_header(numeric: u8) -> Result<()> {
-    if parse_type(numeric) != TYPE_TYPED_ARRAY || parse_subtype(numeric) == ARRAY_BOOL_OR_STRING {
-        return Err(Error::InvalidType("aligned array numeric header malformed"));
+pub(crate) fn aligned_element_width(numeric: u8) -> Result<usize> {
+    const MALFORMED: Error = Error::InvalidType("aligned array numeric header malformed");
+    if parse_type(numeric) != TYPE_TYPED_ARRAY {
+        return Err(MALFORMED);
+    }
+    numeric_width(parse_subtype(numeric), parse_byte_count_code(numeric)).ok_or(MALFORMED)
+}
+
+/// Check a `PADDING_LENGTH` against the element width. The padding aligns
+/// `DATA` to the element, so it runs `0..width`; Glaze rejects anything longer.
+#[inline]
+pub(crate) fn check_aligned_padding(padding: usize, width: usize) -> Result<()> {
+    if padding >= width {
+        return Err(Error::InvalidType(
+            "aligned array padding exceeds its alignment",
+        ));
     }
     Ok(())
+}
+
+/// A decoded SIZE as an in-memory count, rejecting one past `usize::MAX`
+/// rather than truncating it on a 32-bit target.
+#[inline]
+pub(crate) fn size_to_usize(n: u64) -> Result<usize> {
+    usize::try_from(n).map_err(|_| Error::InvalidSize)
 }
 
 /// Read what follows an aligned marker up to `DATA`: `NUMERIC_HEADER`, `SIZE`,
@@ -81,12 +103,13 @@ pub(crate) fn check_aligned_numeric_header(numeric: u8) -> Result<()> {
 fn read_aligned_prefix(input: &[u8], pos: &mut usize) -> Result<(u8, usize)> {
     let numeric = *input.get(*pos).ok_or(Error::Eof)?;
     *pos += 1;
-    check_aligned_numeric_header(numeric)?;
+    let width = aligned_element_width(numeric)?;
 
-    let len = read_size(input, pos)? as usize;
+    let len = size_to_usize(read_size(input, pos)?)?;
 
     let padding = *input.get(*pos).ok_or(Error::Eof)? as usize;
     *pos += 1;
+    check_aligned_padding(padding, width)?;
     let data = pos.checked_add(padding).ok_or(Error::InvalidSize)?;
     if data > input.len() {
         return Err(Error::Eof);
@@ -111,8 +134,33 @@ pub(crate) fn read_typed_array_prefix(
     if is_aligned_marker(header) {
         read_aligned_prefix(input, pos)
     } else {
-        Ok((header, read_size(input, pos)? as usize))
+        Ok((header, size_to_usize(read_size(input, pos)?)?))
     }
+}
+
+/// [`read_typed_array_prefix`] for a reader, leaving it at the first payload
+/// byte.
+pub(crate) fn read_typed_array_prefix_from_reader<R: Read>(
+    reader: &mut R,
+    header: u8,
+) -> Result<(u8, usize)> {
+    if !is_aligned_marker(header) {
+        return Ok((header, size_to_usize(read_size_from_reader(reader)?)?));
+    }
+    let mut byte = [0u8; 1];
+    reader.read_exact(&mut byte).map_err(|_| Error::Eof)?;
+    let numeric = byte[0];
+    let width = aligned_element_width(numeric)?;
+    let len = size_to_usize(read_size_from_reader(reader)?)?;
+    reader.read_exact(&mut byte).map_err(|_| Error::Eof)?;
+    let padding = byte[0] as usize;
+    check_aligned_padding(padding, width)?;
+    // `padding < width`, and no element is wider than 16 bytes.
+    let mut discard = [0u8; 16];
+    reader
+        .read_exact(&mut discard[..padding])
+        .map_err(|_| Error::Eof)?;
+    Ok((numeric, len))
 }
 
 /// Number of padding bytes that must follow a `PADDING_LENGTH` byte sitting at
@@ -131,9 +179,9 @@ fn padding_for(padding_length_offset: usize, align: usize) -> usize {
 ///
 /// Because the padding is derived from `out.len()`, this composes with any fixed
 /// prefix already in `out`: write the message header/query first, then call this,
-/// and the payload is aligned within the final buffer. The bytes are *not*
-/// interchangeable with the regular typed array ([`crate::write_typed_slice`]);
-/// decode them with [`read_aligned_typed_slice`] / [`read_aligned_typed_slice_ref`].
+/// and the payload is aligned within the final buffer. The bytes differ from the
+/// regular typed array ([`crate::write_typed_slice`]), but every decoder reads
+/// both; [`read_aligned_typed_slice_ref`] adds the zero-copy borrow.
 ///
 /// Equivalent to [`write_aligned_typed_slice_at`] with `base_offset == out.len()`.
 /// Reach for `_at` when the payload's eventual position in the wire frame differs

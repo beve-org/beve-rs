@@ -1,3 +1,4 @@
+use crate::aligned::{read_typed_array_prefix, read_typed_array_prefix_from_reader};
 use crate::error::{Error, Result};
 use crate::ext::Complex;
 use crate::header::*;
@@ -232,6 +233,9 @@ pub fn typed_slice_size<T: BeveTypedSlice>(slice: &[T]) -> u64 {
 /// zero-copy: the input bytes may be unaligned for `T`); on big-endian targets it
 /// copies and then byte-reverses each element in place.
 ///
+/// An aligned typed array ([`crate::write_aligned_typed_slice`]) reads the same
+/// way, its padding skipped.
+///
 /// Errors if `input` is not a typed *numeric* array, if the on-wire class /
 /// byte-code do not match `T`, or if the payload is truncated. Any bytes after
 /// the array are ignored (matching [`crate::from_slice`]); the function returns
@@ -257,11 +261,12 @@ pub fn read_typed_slice<T: BeveTypedSlice>(input: &[u8]) -> Result<Vec<T>> {
     if parse_type(header) != TYPE_TYPED_ARRAY {
         return Err(Error::InvalidType("not a typed array"));
     }
+    // An aligned array reads as the numeric array it wraps.
+    let (header, len) = read_typed_array_prefix(input, &mut pos, header)?;
     if parse_subtype(header) != T::CLASS || parse_byte_count_code(header) != T::BYTE_CODE {
         return Err(Error::Mismatch("typed array element type does not match T"));
     }
 
-    let len = read_size(input, &mut pos)? as usize;
     let payload = len.checked_mul(T::ELEM_SIZE).ok_or(Error::InvalidSize)?;
     if input.len() - pos < payload {
         return Err(Error::Eof);
@@ -634,10 +639,10 @@ pub fn read_typed_slice_from_reader<T: BeveTypedSlice, R: Read>(mut reader: R) -
     if parse_type(header) != TYPE_TYPED_ARRAY {
         return Err(Error::InvalidType("not a typed array"));
     }
+    let (header, len) = read_typed_array_prefix_from_reader(&mut reader, header)?;
     if parse_subtype(header) != T::CLASS || parse_byte_count_code(header) != T::BYTE_CODE {
         return Err(Error::Mismatch("typed array element type does not match T"));
     }
-    let len = read_size_from_reader(&mut reader)? as usize;
     read_le_payload::<T, R>(&mut reader, len, T::ELEM_SIZE)
 }
 

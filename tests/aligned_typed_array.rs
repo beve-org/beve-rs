@@ -160,6 +160,74 @@ fn aligned_arrays_of_every_scalar_round_trip() {
     check::<f64>(&[]);
 }
 
+/// The bulk typed-slice readers read an aligned array as its numeric array too.
+#[test]
+fn the_bulk_readers_read_an_aligned_array() {
+    let values = [1.0f64, -2.5, 3.25];
+    let bytes = beve::to_vec_aligned_typed_slice(&values);
+    assert_eq!(beve::read_typed_slice::<f64>(&bytes).unwrap(), values);
+    assert_eq!(
+        beve::read_typed_slice_from_reader::<f64, _>(Cursor::new(&bytes)).unwrap(),
+        values
+    );
+    assert!(matches!(
+        beve::read_typed_slice::<f32>(&bytes),
+        Err(beve::Error::Mismatch(_))
+    ));
+}
+
+/// Every decoder must reject `bytes`.
+fn rejected_everywhere(bytes: &[u8], what: &str) {
+    let mut pos = 0;
+    assert!(beve::skip_value(bytes, &mut pos).is_err(), "{what}: skip");
+    assert!(beve::validate_slice(bytes).is_err(), "{what}: validate");
+    assert!(beve::from_slice::<Value>(bytes).is_err(), "{what}: Value");
+    assert!(
+        beve::from_reader_streaming::<_, Value>(Cursor::new(bytes)).is_err(),
+        "{what}: streaming"
+    );
+    assert!(
+        beve::beve_slice_to_json_string(bytes).is_err(),
+        "{what}: JSON"
+    );
+    assert!(
+        beve::from_field_slice::<Vec<f64>>(bytes, "", 0, 0).is_err(),
+        "{what}: field slice"
+    );
+    #[cfg(feature = "mat")]
+    {
+        let options = beve::MatV73Options::default();
+        assert!(
+            beve::beve_slice_to_mat_v73_bytes(
+                bytes,
+                beve::RootBinding::NamedVariable("x"),
+                &options
+            )
+            .is_err(),
+            "{what}: MAT"
+        );
+    }
+}
+
+/// The padding aligns `DATA` to the element, so it is shorter than one element.
+/// Glaze rejects a longer run, and so must every decoder here.
+#[test]
+fn padding_as_wide_as_an_element_is_rejected() {
+    // f64 with 8 padding bytes, one past the most an 8-byte element needs.
+    let mut f64_bytes = vec![0x5C, 0x64, 0x04, 0x08];
+    f64_bytes.extend_from_slice(&[0; 8]);
+    f64_bytes.extend_from_slice(&1.0f64.to_le_bytes());
+    rejected_everywhere(&f64_bytes, "f64 padding 8");
+    assert!(beve::read_aligned_typed_slice::<f64>(&f64_bytes).is_err());
+    assert!(beve::read_typed_slice::<f64>(&f64_bytes).is_err());
+    assert!(beve::read_typed_slice_from_reader::<f64, _>(Cursor::new(&f64_bytes)).is_err());
+
+    // u8 needs no padding at all.
+    let u8_bytes = [0x5C, 0x14, 0x04, 0x01, 0x00, 0x07];
+    rejected_everywhere(&u8_bytes, "u8 padding 1");
+    assert!(beve::read_aligned_typed_slice::<u8>(&u8_bytes).is_err());
+}
+
 /// Kinds 3 through 7 of the boolean/string/aligned category are undefined. Each
 /// decoder must reject them rather than read them as a boolean array.
 #[test]
@@ -167,19 +235,11 @@ fn undefined_kinds_are_rejected_by_every_decoder() {
     for kind in 3u8..=7 {
         // Typed array, category 3, kind in bits 5..7; SIZE 0.
         let bytes = [(kind << 5) | (3 << 3) | 4, 0x00];
-
-        let mut pos = 0;
-        assert!(beve::skip_value(&bytes, &mut pos).is_err(), "kind {kind}");
-        assert!(beve::validate_slice(&bytes).is_err(), "kind {kind}");
-        assert!(beve::from_slice::<Value>(&bytes).is_err(), "kind {kind}");
-        assert!(
-            beve::from_reader_streaming::<_, Value>(Cursor::new(&bytes)).is_err(),
-            "kind {kind}"
-        );
-        assert!(
-            beve::beve_slice_to_json_string(&bytes).is_err(),
-            "kind {kind}"
-        );
+        rejected_everywhere(&bytes, &format!("kind {kind}"));
+        assert!(matches!(
+            beve::from_field_slice::<Vec<f64>>(&bytes, "", 0, 0),
+            Err(beve::Error::InvalidHeader(_))
+        ));
     }
 }
 
@@ -187,10 +247,7 @@ fn undefined_kinds_are_rejected_by_every_decoder() {
 #[test]
 fn an_aligned_array_wrapping_a_non_numeric_header_is_rejected() {
     // Inner header 0x1C is a boolean typed array.
-    let bytes = [0x5C, 0x1C, 0x04, 0x00, 0x01];
-    let mut pos = 0;
-    assert!(beve::skip_value(&bytes, &mut pos).is_err());
-    assert!(beve::from_slice::<Value>(&bytes).is_err());
-    assert!(beve::from_reader_streaming::<_, Value>(Cursor::new(&bytes)).is_err());
-    assert!(beve::beve_slice_to_json_string(&bytes).is_err());
+    rejected_everywhere(&[0x5C, 0x1C, 0x04, 0x00, 0x01], "boolean inner header");
+    // Inner float with byte code 7, a width BEVE does not define.
+    rejected_everywhere(&[0x5C, 0xE4, 0x04, 0x00, 0x01], "float code 7 inner header");
 }

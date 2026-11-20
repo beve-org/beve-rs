@@ -70,7 +70,7 @@
 //! assert_eq!(slice, vec![100.0, 101.0, 102.0]);
 //! ```
 
-use crate::aligned::read_typed_array_prefix;
+use crate::aligned::{read_complex_array_prefix, read_typed_array_prefix};
 use crate::error::{Error, Result};
 use crate::header::*;
 use crate::size::read_size;
@@ -514,14 +514,14 @@ fn skip_value_at_depth(input: &[u8], pos: &mut usize, depth: usize) -> Result<()
                     if class > 2 {
                         return Err(Error::InvalidHeader(ch));
                     }
-                    let is_array = (ch & 0x01) != 0;
                     let cbc = (ch >> 5) & 0x07;
                     let component_bytes = numeric_width(class, cbc)
                         .ok_or(Error::Unsupported("unsupported complex width"))?;
-                    let n = if is_array {
-                        read_size(input, pos)? as usize
-                    } else {
-                        1
+                    let n = match parse_complex_kind(ch)? {
+                        ComplexKind::Scalar => 1,
+                        ComplexKind::Array | ComplexKind::AlignedArray => {
+                            read_complex_array_prefix(input, pos, ch)?
+                        }
                     };
                     // 2 components per value.
                     let total = (2usize)

@@ -1,10 +1,11 @@
-use crate::aligned::{read_typed_array_prefix, read_typed_array_prefix_from_reader};
+use crate::aligned::{
+    read_complex_array_prefix, read_complex_array_prefix_from_reader, read_typed_array_prefix,
+    read_typed_array_prefix_from_reader,
+};
 use crate::error::{Error, Result};
 use crate::ext::Complex;
 use crate::header::*;
-use crate::size::{
-    read_size, read_size_from_reader, size_encoded_len, write_size, write_size_to_writer,
-};
+use crate::size::{size_encoded_len, write_size, write_size_to_writer};
 // Only the little-endian bulk-copy paths use raw `ptr`; on big-endian they fall
 // back to per-element conversion, so the import would otherwise be unused there.
 #[cfg(target_endian = "little")]
@@ -552,13 +553,12 @@ pub fn read_complex_slice<T: BeveTypedSlice>(input: &[u8]) -> Result<Vec<Complex
         return Err(Error::InvalidType("not a complex extension"));
     }
 
-    // Complex header byte: bit0 = array flag, bits3-4 = class, bits5-7 = byte code.
+    // Complex header byte: bits0-2 = kind, bits3-4 = class, bits5-7 = byte code.
     let ch = *input.get(pos).ok_or(Error::Eof)?;
     pos += 1;
-    let is_array = (ch & 0x01) != 0;
     let class = (ch >> 3) & 0x03;
     let byte_code = (ch >> 5) & 0x07;
-    if !is_array {
+    if parse_complex_kind(ch)? == ComplexKind::Scalar {
         return Err(Error::InvalidType(
             "expected a complex array, found a scalar complex",
         ));
@@ -567,7 +567,8 @@ pub fn read_complex_slice<T: BeveTypedSlice>(input: &[u8]) -> Result<Vec<Complex
         return Err(Error::Mismatch("complex element type does not match T"));
     }
 
-    let len = read_size(input, &mut pos)? as usize;
+    // An aligned complex array reads as the plain one, its padding skipped.
+    let len = read_complex_array_prefix(input, &mut pos, ch)?;
     // Two scalars (re, im) per complex value.
     let payload = len
         .checked_mul(2 * T::ELEM_SIZE)
@@ -663,10 +664,9 @@ pub fn read_complex_slice_from_reader<T: BeveTypedSlice, R: Read>(
         return Err(Error::InvalidType("not a complex extension"));
     }
     let ch = hdr[1];
-    let is_array = (ch & 0x01) != 0;
     let class = (ch >> 3) & 0x03;
     let byte_code = (ch >> 5) & 0x07;
-    if !is_array {
+    if parse_complex_kind(ch)? == ComplexKind::Scalar {
         return Err(Error::InvalidType(
             "expected a complex array, found a scalar complex",
         ));
@@ -674,7 +674,7 @@ pub fn read_complex_slice_from_reader<T: BeveTypedSlice, R: Read>(
     if class != T::CLASS || byte_code != T::BYTE_CODE {
         return Err(Error::Mismatch("complex element type does not match T"));
     }
-    let len = read_size_from_reader(&mut reader)? as usize;
+    let len = read_complex_array_prefix_from_reader(&mut reader, ch)?;
     // Byte-swap unit (big-endian) is the scalar width `T::ELEM_SIZE`; the element
     // stride `size_of::<Complex<T>>()` covers the two scalars.
     read_le_payload::<Complex<T>, R>(&mut reader, len, T::ELEM_SIZE)

@@ -6,11 +6,13 @@ Through 9.x there was one exemption, for the `mat` feature's hdf5-pure version. 
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
-## Unreleased
+## 11.0.1 - 2026-11-24
+
+A security fix for the `mat` feature. No API change, and no change to the bytes written for input within the recursion limit.
 
 ### Fixed
 
-- **Security: the `mat` converters had no recursion limit, so deeply nested input aborted the process.** They now refuse input nested past `MAX_RECURSION_DEPTH` with `Error::RecursionLimitExceeded`, like the decoders. This affects every `beve_*_to_mat_v73_*` function and `beve-cli to-mat` since 9.0.0. The fix was in [#50](https://github.com/beve-org/beve-rs/pull/50) but never reached main.
+- **Security: the `mat` converters had no recursion limit, so deeply nested input aborted the process.** They now refuse input nested past `MAX_RECURSION_DEPTH` with `Error::RecursionLimitExceeded`, like the decoders. This affects every `beve_*_to_mat_v73_*` function and `beve-cli to-mat` since 9.0.0. The fix was in [#50](https://github.com/beve-org/beve-rs/pull/50) but never reached main; it landed in [#67](https://github.com/beve-org/beve-rs/pull/67).
 
 ## 11.0.0 - 2026-11-20
 

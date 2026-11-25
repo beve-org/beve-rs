@@ -210,7 +210,7 @@ struct Capture {
 }
 ```
 
-`beve::typed::*` covers the numeric scalars (`i8`–`i128`, `u8`–`u128`, `f32`, `f64`); `beve::complex_array::*` covers complex arrays whose element implements `beve::ComplexElement` (including `num_complex::Complex` under this crate's `num-complex` feature). The on-wire bytes are identical to the unannotated `Vec<T>` with one exception: an empty field. A plain `Vec` gives serde no element to read a type from, so it writes a generic empty array, while the helpers write a zero-length typed or complex array that still names its element type. Either form decodes into either field, so an annotated and a plain field interoperate. See [Complex Numbers and Matrices](#complex-numbers-and-matrices) for the foreign-type details.
+`beve::typed::*` covers the numeric scalars (`i8`–`i128`, `u8`–`u128`, `f32`, `f64`) plus `usize` and `isize` (written as `u64` / `i64`), with `beve::typed::option::*` for `Option<Vec<T>>` and `beve::typed::vec::*` for `Vec<Vec<T>>` fields; `beve::complex_array::*` covers complex arrays whose element implements `beve::ComplexElement` (including `num_complex::Complex` under this crate's `num-complex` feature). The on-wire bytes are identical to the unannotated `Vec<T>` with one exception: an empty field. A plain `Vec` gives serde no element to read a type from, so it writes a generic empty array, while the helpers write a zero-length typed or complex array that still names its element type. Either form decodes into either field, so an annotated and a plain field interoperate. See [Complex Numbers and Matrices](#complex-numbers-and-matrices) for the foreign-type details.
 
 ### Integer Map Keys
 Maps with integer keys serialize deterministically and read back into ordered maps:

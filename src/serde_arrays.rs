@@ -58,7 +58,7 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::de::reserve_from_hint;
-use crate::ext::{Complex, ComplexElement, ComplexSlice, TypedSlice, serialize_typed_slice};
+use crate::ext::{Complex, ComplexElement, ComplexSlice, serialize_typed_slice};
 use crate::fast::BeveTypedSlice;
 
 // ---------------------------------------------------------------------------
@@ -223,7 +223,8 @@ macro_rules! for_each_scalar {
 }
 
 /// `#[serde(with = "beve::typed::<scalar>")]` for a `Vec<scalar>` field: bulk
-/// encode and bulk (memcpy) decode of a typed numeric array.
+/// encode and bulk (memcpy) decode of a typed numeric array. `usize` and
+/// `isize` are written as typed `u64` / `i64` arrays.
 pub mod typed {
     use super::*;
 
@@ -249,84 +250,10 @@ pub mod typed {
                     )
                 }
             }
-
-            impl<'de> Deserialize<'de> for TypedVec<$module> {
-                fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                    $module::deserialize(deserializer).map(TypedVec)
-                }
-            }
         };
     }
 
     for_each_scalar!(typed_with);
-
-    /// One typed array, decoded as `typed::<scalar>` decodes it: the element of
-    /// [`option`] and [`vec`].
-    struct TypedVec<S>(Vec<S>);
-
-    /// `#[serde(with = "beve::typed::option::<scalar>")]` for an
-    /// `Option<Vec<scalar>>` field: `None` is null, `Some` the typed array
-    /// [`typed::<scalar>`](super::typed) writes, an empty one included.
-    pub mod option {
-        use super::*;
-
-        macro_rules! option_with {
-            ($module:ident, $nt:expr) => {
-                #[doc = concat!("`Option<Vec<", stringify!($module), ">>` codec for `#[serde(with = ...)]`.")]
-                pub mod $module {
-                    use super::*;
-
-                    pub fn serialize<S: Serializer>(
-                        value: &Option<Vec<$module>>,
-                        serializer: S,
-                    ) -> Result<S::Ok, S::Error> {
-                        value.as_deref().map(TypedSlice).serialize(serializer)
-                    }
-
-                    pub fn deserialize<'de, D: Deserializer<'de>>(
-                        deserializer: D,
-                    ) -> Result<Option<Vec<$module>>, D::Error> {
-                        Option::<TypedVec<$module>>::deserialize(deserializer).map(|o| o.map(|t| t.0))
-                    }
-                }
-            };
-        }
-
-        for_each_scalar!(option_with);
-    }
-
-    /// `#[serde(with = "beve::typed::vec::<scalar>")]` for a `Vec<Vec<scalar>>`
-    /// field: a generic array whose every element is the typed array
-    /// [`typed::<scalar>`](super::typed) writes, an empty one included. Each row
-    /// is encoded and decoded in bulk.
-    pub mod vec {
-        use super::*;
-
-        macro_rules! vec_with {
-            ($module:ident, $nt:expr) => {
-                #[doc = concat!("`Vec<Vec<", stringify!($module), ">>` codec for `#[serde(with = ...)]`.")]
-                pub mod $module {
-                    use super::*;
-
-                    pub fn serialize<S: Serializer>(
-                        value: &[Vec<$module>],
-                        serializer: S,
-                    ) -> Result<S::Ok, S::Error> {
-                        serializer.collect_seq(value.iter().map(|row| TypedSlice(row.as_slice())))
-                    }
-
-                    pub fn deserialize<'de, D: Deserializer<'de>>(
-                        deserializer: D,
-                    ) -> Result<Vec<Vec<$module>>, D::Error> {
-                        Vec::<TypedVec<$module>>::deserialize(deserializer)
-                            .map(|rows| rows.into_iter().map(|t| t.0).collect())
-                    }
-                }
-            };
-        }
-
-        for_each_scalar!(vec_with);
-    }
 
     /// A pointer-width integer array as the typed array of its 64-bit
     /// counterpart, the width plain serde writes it at, so the bytes do not
@@ -385,6 +312,123 @@ pub mod typed {
 
     pointer_width_with!(usize, u64);
     pointer_width_with!(isize, i64);
+
+    /// Invoke `$mac!(element)` for every element type with a flat
+    /// `typed::<element>` codec: each scalar, then `usize` and `isize`. The
+    /// nested families ([`option`], [`vec`]) are generated from this list, so
+    /// they cannot cover a different set than the flat one.
+    macro_rules! for_each_element {
+        ($mac:ident) => {
+            for_each_scalar!($mac);
+            $mac!(usize);
+            $mac!(isize);
+        };
+    }
+
+    /// One array, encoded as `typed::<element>` encodes it: the write-side
+    /// element of [`option`] and [`vec`].
+    struct TypedRow<'a, E>(&'a [E]);
+
+    /// One array, decoded as `typed::<element>` decodes it: the read-side
+    /// element of [`option`] and [`vec`].
+    struct TypedVec<E>(Vec<E>);
+
+    /// Route [`TypedRow`] and [`TypedVec`] of one element through that
+    /// element's flat codec, so a nested array is written and read exactly as
+    /// the flat field would be, the pointer-width widening included.
+    ///
+    /// This and the nested families take an optional, unused marker so that
+    /// `for_each_scalar!`, which passes one, can drive them through
+    /// `for_each_element!`. They spell the element `core::primitive::$module`
+    /// because a sibling module of the same name is in scope.
+    macro_rules! row_codec {
+        ($module:ident $(, $nt:expr)?) => {
+            impl Serialize for TypedRow<'_, core::primitive::$module> {
+                fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                    $module::serialize(self.0, serializer)
+                }
+            }
+
+            impl<'de> Deserialize<'de> for TypedVec<core::primitive::$module> {
+                fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                    $module::deserialize(deserializer).map(TypedVec)
+                }
+            }
+        };
+    }
+
+    for_each_element!(row_codec);
+
+    /// `#[serde(with = "beve::typed::option::<element>")]` for an
+    /// `Option<Vec<element>>` field: `None` is null, `Some` the typed array
+    /// [`typed::<element>`](super::typed) writes, an empty one included.
+    pub mod option {
+        // Named imports rather than a glob of `typed`, so a path to an element
+        // this module lacks fails as "not found" instead of resolving to a
+        // private re-import of the flat codec.
+        use super::{TypedRow, TypedVec};
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+        macro_rules! option_with {
+            ($module:ident $(, $nt:expr)?) => {
+                #[doc = concat!("`Option<Vec<", stringify!($module), ">>` codec for `#[serde(with = ...)]`.")]
+                pub mod $module {
+                    use super::*;
+
+                    pub fn serialize<S: Serializer>(
+                        value: &Option<Vec<core::primitive::$module>>,
+                        serializer: S,
+                    ) -> Result<S::Ok, S::Error> {
+                        value.as_deref().map(TypedRow).serialize(serializer)
+                    }
+
+                    pub fn deserialize<'de, D: Deserializer<'de>>(
+                        deserializer: D,
+                    ) -> Result<Option<Vec<core::primitive::$module>>, D::Error> {
+                        Option::<TypedVec<core::primitive::$module>>::deserialize(deserializer)
+                            .map(|o| o.map(|t| t.0))
+                    }
+                }
+            };
+        }
+
+        for_each_element!(option_with);
+    }
+
+    /// `#[serde(with = "beve::typed::vec::<element>")]` for a
+    /// `Vec<Vec<element>>` field: a generic array whose every element is the
+    /// typed array [`typed::<element>`](super::typed) writes, an empty one
+    /// included. Each row is encoded and decoded in bulk.
+    pub mod vec {
+        // Named imports for the same reason as in `option`.
+        use super::{TypedRow, TypedVec};
+        use serde::{Deserialize, Deserializer, Serializer};
+
+        macro_rules! vec_with {
+            ($module:ident $(, $nt:expr)?) => {
+                #[doc = concat!("`Vec<Vec<", stringify!($module), ">>` codec for `#[serde(with = ...)]`.")]
+                pub mod $module {
+                    use super::*;
+
+                    pub fn serialize<S: Serializer>(
+                        value: &[Vec<core::primitive::$module>],
+                        serializer: S,
+                    ) -> Result<S::Ok, S::Error> {
+                        serializer.collect_seq(value.iter().map(|row| TypedRow(row.as_slice())))
+                    }
+
+                    pub fn deserialize<'de, D: Deserializer<'de>>(
+                        deserializer: D,
+                    ) -> Result<Vec<Vec<core::primitive::$module>>, D::Error> {
+                        Vec::<TypedVec<core::primitive::$module>>::deserialize(deserializer)
+                            .map(|rows| rows.into_iter().map(|t| t.0).collect())
+                    }
+                }
+            };
+        }
+
+        for_each_element!(vec_with);
+    }
 }
 
 /// `#[serde(with = "beve::complex_array::<scalar>")]` for a `Vec<T>` field whose

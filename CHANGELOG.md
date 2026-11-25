@@ -6,6 +6,12 @@ Through 9.x there was one exemption, for the `mat` feature's hdf5-pure version. 
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Fixed
+
+- `beve::typed::option::{usize, isize}` and `beve::typed::vec::{usize, isize}` were missing, so naming them failed to compile with a misleading "module is private" error. They now exist, written as typed `u64` / `i64` arrays like `typed::usize`, and a path to an element the helpers lack now fails as "not found".
+
 ## 11.1.0 - 2026-11-25
 
 Newtype structs and all-`Some` option arrays now decode, and `beve::typed` gains helpers for optional, nested and pointer-width arrays. No breaking change. The bytes beve writes are unchanged, except that a newtype object key, refused before, is now written as its inner key.

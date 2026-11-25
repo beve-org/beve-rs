@@ -1,7 +1,8 @@
 //! `beve::typed::option::*`, `beve::typed::vec::*`, `beve::typed::usize` and
-//! `beve::typed::isize`: round-trips through every decoder and JSON, the bytes
-//! plain serde writes where it already writes a typed array, and a typed array
-//! where it does not (an empty one).
+//! `beve::typed::isize`, the pointer-width ones nested too: round-trips
+//! through every decoder and JSON, the bytes plain serde writes where it
+//! already writes a typed array, and a typed array where it does not (an
+//! empty one).
 
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
@@ -18,6 +19,10 @@ struct Arrays {
     index: Vec<usize>,
     #[serde(with = "beve::typed::isize")]
     offset: Vec<isize>,
+    #[serde(with = "beve::typed::vec::usize")]
+    index_rows: Vec<Vec<usize>>,
+    #[serde(with = "beve::typed::option::isize")]
+    maybe_offset: Option<Vec<isize>>,
 }
 
 /// The same fields without the helpers.
@@ -28,6 +33,8 @@ struct Plain {
     counts: Vec<Vec<i32>>,
     index: Vec<usize>,
     offset: Vec<isize>,
+    index_rows: Vec<Vec<usize>>,
+    maybe_offset: Option<Vec<isize>>,
 }
 
 fn full() -> Arrays {
@@ -37,6 +44,8 @@ fn full() -> Arrays {
         counts: vec![vec![-1, 2, 3]],
         index: vec![0, 7, usize::MAX],
         offset: vec![isize::MIN, -1, 5],
+        index_rows: vec![vec![usize::MAX, 3], vec![9]],
+        maybe_offset: Some(vec![isize::MAX, -2]),
     }
 }
 
@@ -47,6 +56,8 @@ fn empty() -> Arrays {
         counts: vec![],
         index: vec![],
         offset: vec![],
+        index_rows: vec![vec![], vec![1]],
+        maybe_offset: Some(vec![]),
     }
 }
 
@@ -57,6 +68,8 @@ fn plain(a: &Arrays) -> Plain {
         counts: a.counts.clone(),
         index: a.index.clone(),
         offset: a.offset.clone(),
+        index_rows: a.index_rows.clone(),
+        maybe_offset: a.maybe_offset.clone(),
     }
 }
 
@@ -88,6 +101,7 @@ fn nested_and_pointer_width_arrays_roundtrip() {
     roundtrip(&empty());
     roundtrip(&Arrays {
         maybe: None,
+        maybe_offset: None,
         ..full()
     });
 }
@@ -96,7 +110,11 @@ fn nested_and_pointer_width_arrays_roundtrip() {
 fn non_empty_arrays_are_the_bytes_plain_serde_writes() {
     let a = full();
     assert_eq!(beve::to_vec(&a).unwrap(), beve::to_vec(&plain(&a)).unwrap());
-    let none = Arrays { maybe: None, ..a };
+    let none = Arrays {
+        maybe: None,
+        maybe_offset: None,
+        ..a
+    };
     assert_eq!(
         beve::to_vec(&none).unwrap(),
         beve::to_vec(&plain(&none)).unwrap()
@@ -129,10 +147,30 @@ fn empty_arrays_are_written_typed() {
             .unwrap()
             .is_empty()
     );
+    assert!(
+        beve::read_typed_slice::<u64>(field("/index_rows/0"))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        beve::read_typed_slice::<u64>(field("/index_rows/1")).unwrap(),
+        [1]
+    );
+    assert!(
+        beve::read_typed_slice::<i64>(field("/maybe_offset"))
+            .unwrap()
+            .is_empty()
+    );
 
     // Plain serde writes them as generic arrays, which a strict read refuses.
     let plain_bytes = beve::to_vec(&plain(&empty())).unwrap();
-    for p in ["/maybe", "/rows/0", "/index"] {
+    for p in [
+        "/maybe",
+        "/rows/0",
+        "/index",
+        "/index_rows/0",
+        "/maybe_offset",
+    ] {
         let f = beve::field_bytes(&plain_bytes, p).unwrap();
         assert!(beve::read_typed_slice::<f64>(f).is_err(), "{p}");
     }

@@ -1420,7 +1420,7 @@ impl<'de> de::SeqAccess<'de> for SeqAccessBool<'de> {
             self.byte_idx += 1;
         }
         self.remaining -= 1;
-        seed.deserialize(NewtypeAdapter(BoolDeserializer::new(bit != 0)))
+        seed.deserialize(ScalarDe(BoolDeserializer::new(bit != 0)))
             .map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
@@ -1443,7 +1443,7 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessString<'a, 'de> {
         }
         let s = self.de.parse_string_borrowed()?;
         self.remaining -= 1;
-        seed.deserialize(NewtypeAdapter(BorrowedStrDeserializer::new(s)))
+        seed.deserialize(ScalarDe(BorrowedStrDeserializer::new(s)))
             .map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
@@ -1452,19 +1452,26 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessString<'a, 'de> {
 }
 
 /// One of serde's value deserializers, for a bool, string or string key read off
-/// the wire, made to decode a newtype struct around it. Serde's own forward
-/// `deserialize_newtype_struct` to `deserialize_any`, which a derived newtype
-/// visitor refuses. Enums still go to the inner deserializer, which reads a
-/// unit variant from a string.
-pub(crate) struct NewtypeAdapter<D>(pub(crate) D);
+/// the wire, made to decode an `Option` or a newtype struct around it. Serde's
+/// own forward `deserialize_option` and `deserialize_newtype_struct` to
+/// `deserialize_any`, which serde's `Option` visitor and a derived newtype
+/// visitor refuse. The value is present, so it is `Some`. Enums still go to the
+/// inner deserializer, which reads a unit variant from a string.
+pub(crate) struct ScalarDe<D>(pub(crate) D);
 
-impl<'de, D: de::Deserializer<'de>> de::Deserializer<'de> for NewtypeAdapter<D> {
+impl<'de, D: de::Deserializer<'de>> de::Deserializer<'de> for ScalarDe<D> {
     type Error = D::Error;
     fn deserialize_any<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> core::result::Result<V::Value, D::Error> {
         self.0.deserialize_any(visitor)
+    }
+    fn deserialize_option<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> core::result::Result<V::Value, D::Error> {
+        visitor.visit_some(self)
     }
     fn deserialize_newtype_struct<V: Visitor<'de>>(
         self,
@@ -1486,7 +1493,7 @@ impl<'de, D: de::Deserializer<'de>> de::Deserializer<'de> for NewtypeAdapter<D> 
     }
     forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
-        option unit unit_struct seq tuple tuple_struct map struct identifier ignored_any
+        unit unit_struct seq tuple tuple_struct map struct identifier ignored_any
     }
 }
 
@@ -1505,7 +1512,7 @@ impl<'de, 'a> de::MapAccess<'de> for MapAccessString<'a, 'de> {
         let key_len = read_size(self.de.input, &mut self.de.pos)? as usize;
         let key_bytes = self.de.read_exact(key_len)?;
         let key = decode_utf8(key_bytes, "invalid utf-8 in key")?;
-        seed.deserialize(NewtypeAdapter(BorrowedStrDeserializer::new(key)))
+        seed.deserialize(ScalarDe(BorrowedStrDeserializer::new(key)))
             .map(Some)
     }
     fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
@@ -1607,8 +1614,12 @@ impl<'de, 'a> de::Deserializer<'de> for ComplexElemDe<'a, 'de> {
     ) -> Result<V::Value> {
         visitor.visit_newtype_struct(self)
     }
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        // An element of a typed array is never null, so it is `Some`.
+        visitor.visit_some(self)
+    }
     forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct tuple_struct map struct enum identifier ignored_any
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf unit unit_struct tuple_struct map struct enum identifier ignored_any
     }
 }
 
@@ -1722,7 +1733,11 @@ impl<'de, 'a> de::Deserializer<'de> for SeqArrayDeUnsigned<'a, 'de> {
     ) -> Result<V::Value> {
         visitor.visit_newtype_struct(self)
     }
-    forward_to_deserialize_any! { bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct tuple tuple_struct map struct enum identifier ignored_any }
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        // A typed array is never null, so it is `Some`.
+        visitor.visit_some(self)
+    }
+    forward_to_deserialize_any! { bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf unit unit_struct tuple tuple_struct map struct enum identifier ignored_any }
 }
 
 struct SeqArrayDeSigned<'a, 'de> {
@@ -1746,7 +1761,11 @@ impl<'de, 'a> de::Deserializer<'de> for SeqArrayDeSigned<'a, 'de> {
     ) -> Result<V::Value> {
         visitor.visit_newtype_struct(self)
     }
-    forward_to_deserialize_any! { bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct tuple tuple_struct map struct enum identifier ignored_any }
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        // A typed array is never null, so it is `Some`.
+        visitor.visit_some(self)
+    }
+    forward_to_deserialize_any! { bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf unit unit_struct tuple tuple_struct map struct enum identifier ignored_any }
 }
 
 struct MapAccessSigned<'a, 'de> {
@@ -2072,8 +2091,12 @@ impl<'de> de::Deserializer<'de> for NumDe {
         }
     }
 
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        // An element of a typed array is never null, so it is `Some`.
+        visitor.visit_some(self)
+    }
     forward_to_deserialize_any! {
-        bool char str string bytes byte_buf option unit unit_struct seq tuple tuple_struct map struct enum identifier ignored_any
+        bool char str string bytes byte_buf unit unit_struct seq tuple tuple_struct map struct enum identifier ignored_any
     }
 }
 

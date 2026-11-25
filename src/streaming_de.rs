@@ -12,7 +12,7 @@ use crate::aligned::{
     check_aligned_padding, is_aligned_marker, size_to_usize,
 };
 use crate::de::{
-    ComplexArrayPlan, EnumIndexAccess, HalfBitsDeserializer, HalfKind, NewtypeAdapter, NumDe,
+    ComplexArrayPlan, EnumIndexAccess, HalfBitsDeserializer, HalfKind, NumDe, ScalarDe,
     VariantAccessNoValue, complex_array_plan, le_signed, widen_complex_components,
 };
 use crate::error::{Error, Result};
@@ -911,7 +911,7 @@ impl<'de, 'a, R: Read> de::SeqAccess<'de> for SeqAccessBoolStreaming<'a, R> {
             self.bit_idx = 0;
         }
         self.remaining -= 1;
-        seed.deserialize(NewtypeAdapter(de::value::BoolDeserializer::new(bit != 0)))
+        seed.deserialize(ScalarDe(de::value::BoolDeserializer::new(bit != 0)))
             .map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
@@ -938,10 +938,8 @@ impl<'de, 'a, R: Read> de::SeqAccess<'de> for SeqAccessStringStreaming<'a, R> {
         }
         self.remaining -= 1;
         let s = self.de.parse_string_owned()?;
-        seed.deserialize(NewtypeAdapter(de::value::StringDeserializer::<Error>::new(
-            s,
-        )))
-        .map(Some)
+        seed.deserialize(ScalarDe(de::value::StringDeserializer::<Error>::new(s)))
+            .map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
         Some(self.remaining)
@@ -984,10 +982,8 @@ impl<'de, 'a, R: Read> de::MapAccess<'de> for MapAccessStringStreaming<'a, R> {
             return Ok(None);
         }
         let key = self.de.parse_string_owned()?;
-        seed.deserialize(NewtypeAdapter(de::value::StringDeserializer::<Error>::new(
-            key,
-        )))
-        .map(Some)
+        seed.deserialize(ScalarDe(de::value::StringDeserializer::<Error>::new(key)))
+            .map(Some)
     }
     fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
         self.remaining -= 1;
@@ -1214,9 +1210,13 @@ impl<'de, 'a, R: Read> serde::Deserializer<'de> for ComplexElemDeStreaming<'a, R
     ) -> Result<V::Value> {
         visitor.visit_newtype_struct(self)
     }
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        // An element of a typed array is never null, so it is `Some`.
+        visitor.visit_some(self)
+    }
     forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
-        option unit unit_struct tuple_struct map struct enum identifier ignored_any
+        unit unit_struct tuple_struct map struct enum identifier ignored_any
     }
 }
 
@@ -1315,9 +1315,13 @@ impl<'de, 'a, R: Read> serde::Deserializer<'de> for SeqDeserializerWrapper<'a, R
     ) -> Result<V::Value> {
         visitor.visit_newtype_struct(self)
     }
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        // A typed array is never null, so it is `Some`.
+        visitor.visit_some(self)
+    }
     forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
-        option unit unit_struct tuple tuple_struct map struct enum identifier ignored_any
+        unit unit_struct tuple tuple_struct map struct enum identifier ignored_any
     }
 }
 

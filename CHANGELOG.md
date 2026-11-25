@@ -18,6 +18,7 @@ Entries for 4.0.0 and earlier were written after the fact, from the tagged relea
 ### Fixed
 
 - Newtype structs did not decode from bytes (`from_slice`, `from_reader_streaming`): the decoders handed a derived newtype visitor the inner value without `visit_newtype_struct`, so `struct Meters(f64)` failed with "expected tuple struct", whether a value, an array element (numeric, complex, string or bool) or a map key. Through `Value` (`from_value`), only map keys were affected.
+- An array of `Option`s that were all `Some`, such as `vec![Some(1.0)]`, did not decode: it is written as a typed (or bool, string or complex) array, and the decoders did not read its elements as `Some`.
 
 ## 11.0.1 - 2026-11-24
 

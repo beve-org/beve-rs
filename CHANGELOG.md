@@ -6,19 +6,21 @@ Through 9.x there was one exemption, for the `mat` feature's hdf5-pure version. 
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
-## Unreleased
+## 11.1.0 - 2026-11-25
+
+Newtype structs and all-`Some` option arrays now decode, and `beve::typed` gains helpers for optional, nested and pointer-width arrays. No breaking change. The bytes beve writes are unchanged, except that a newtype object key, refused before, is now written as its inner key.
 
 ### Added
 
-- `beve::typed::option::<scalar>` for `Option<Vec<scalar>>` fields and `beve::typed::vec::<scalar>` for `Vec<Vec<scalar>>` fields: each array is a typed array, an empty one included, encoded and decoded in bulk. Non-empty arrays are the bytes plain serde writes.
-- `beve::typed::usize` and `beve::typed::isize`, written as typed `u64` / `i64` arrays (what plain serde writes for a non-empty `Vec<usize>`).
-- `beve::field_bytes(bytes, pointer)`: the encoded bytes of the value at a JSON pointer. With `read_typed_slice`, which accepts only a typed array, it checks how a field was written; decoding stays lenient.
-- A newtype struct can be an object key; it is written as its inner key.
+- `beve::typed::option::<scalar>` for `Option<Vec<scalar>>` fields and `beve::typed::vec::<scalar>` for `Vec<Vec<scalar>>` fields: each array is a typed array, an empty one included, encoded and decoded in bulk. Non-empty arrays are the bytes plain serde writes. ([#68](https://github.com/beve-org/beve-rs/pull/68))
+- `beve::typed::usize` and `beve::typed::isize`, written as typed `u64` / `i64` arrays (what plain serde writes for a non-empty `Vec<usize>`). ([#68](https://github.com/beve-org/beve-rs/pull/68))
+- `beve::field_bytes(bytes, pointer)`: the encoded bytes of the value at a JSON pointer. With `read_typed_slice`, which accepts only a typed array, it checks how a field was written; decoding stays lenient. ([#68](https://github.com/beve-org/beve-rs/pull/68))
+- A newtype struct can be an object key; it is written as its inner key. ([#68](https://github.com/beve-org/beve-rs/pull/68))
 
 ### Fixed
 
-- Newtype structs did not decode from bytes (`from_slice`, `from_reader_streaming`): the decoders handed a derived newtype visitor the inner value without `visit_newtype_struct`, so `struct Meters(f64)` failed with "expected tuple struct", whether a value, an array element (numeric, complex, string or bool) or a map key. Through `Value` (`from_value`), only map keys were affected.
-- An array of `Option`s that were all `Some`, such as `vec![Some(1.0)]`, did not decode: it is written as a typed (or bool, string or complex) array, and the decoders did not read its elements as `Some`.
+- Newtype structs did not decode from bytes (`from_slice`, `from_reader_streaming`): the decoders handed a derived newtype visitor the inner value without `visit_newtype_struct`, so `struct Meters(f64)` failed with "expected tuple struct", whether a value, an array element (numeric, complex, string or bool) or a map key. Through `Value` (`from_value`), only map keys were affected. ([#68](https://github.com/beve-org/beve-rs/pull/68))
+- An array of `Option`s that were all `Some`, such as `vec![Some(1.0)]`, did not decode: it is written as a typed (or bool, string or complex) array, and the decoders did not read its elements as `Some`. ([#68](https://github.com/beve-org/beve-rs/pull/68))
 
 ## 11.0.1 - 2026-11-24
 

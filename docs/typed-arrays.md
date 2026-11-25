@@ -87,9 +87,9 @@ f32, f64, usize, isize}`, with `usize` / `isize` written as typed `u64` /
 `i64` arrays so the bytes do not depend on the target. The same elements are
 available nested: `beve::typed::option::<element>` for an
 `Option<Vec<element>>` field and `beve::typed::vec::<element>` for a
-`Vec<Vec<element>>` field. The wire bytes are identical to an unannotated `Vec<T>` field
-(so the two interoperate), and human-readable formats (JSON) fall back to
-the portable element-wise form. The complex counterpart is
+`Vec<Vec<element>>` field. The wire bytes are identical to an unannotated
+`Vec<T>` field (so the two interoperate), and human-readable formats (JSON)
+fall back to the portable element-wise form. The complex counterpart is
 `beve::complex_array::<scalar>` (see
 [complex-and-matrices.md](complex-and-matrices.md)).
 

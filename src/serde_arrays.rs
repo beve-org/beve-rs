@@ -336,15 +336,20 @@ pub mod typed {
     /// Route [`TypedRow`] and [`TypedVec`] of one element through that
     /// element's flat codec, so a nested array is written and read exactly as
     /// the flat field would be, the pointer-width widening included.
+    ///
+    /// This and the nested families take an optional, unused marker so that
+    /// `for_each_scalar!`, which passes one, can drive them through
+    /// `for_each_element!`. They spell the element `core::primitive::$module`
+    /// because a sibling module of the same name is in scope.
     macro_rules! row_codec {
         ($module:ident $(, $nt:expr)?) => {
-            impl Serialize for TypedRow<'_, $module> {
+            impl Serialize for TypedRow<'_, core::primitive::$module> {
                 fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                     $module::serialize(self.0, serializer)
                 }
             }
 
-            impl<'de> Deserialize<'de> for TypedVec<$module> {
+            impl<'de> Deserialize<'de> for TypedVec<core::primitive::$module> {
                 fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
                     $module::deserialize(deserializer).map(TypedVec)
                 }
@@ -371,7 +376,7 @@ pub mod typed {
                     use super::*;
 
                     pub fn serialize<S: Serializer>(
-                        value: &Option<Vec<$module>>,
+                        value: &Option<Vec<core::primitive::$module>>,
                         serializer: S,
                     ) -> Result<S::Ok, S::Error> {
                         value.as_deref().map(TypedRow).serialize(serializer)
@@ -379,8 +384,9 @@ pub mod typed {
 
                     pub fn deserialize<'de, D: Deserializer<'de>>(
                         deserializer: D,
-                    ) -> Result<Option<Vec<$module>>, D::Error> {
-                        Option::<TypedVec<$module>>::deserialize(deserializer).map(|o| o.map(|t| t.0))
+                    ) -> Result<Option<Vec<core::primitive::$module>>, D::Error> {
+                        Option::<TypedVec<core::primitive::$module>>::deserialize(deserializer)
+                            .map(|o| o.map(|t| t.0))
                     }
                 }
             };
@@ -405,7 +411,7 @@ pub mod typed {
                     use super::*;
 
                     pub fn serialize<S: Serializer>(
-                        value: &[Vec<$module>],
+                        value: &[Vec<core::primitive::$module>],
                         serializer: S,
                     ) -> Result<S::Ok, S::Error> {
                         serializer.collect_seq(value.iter().map(|row| TypedRow(row.as_slice())))
@@ -413,8 +419,8 @@ pub mod typed {
 
                     pub fn deserialize<'de, D: Deserializer<'de>>(
                         deserializer: D,
-                    ) -> Result<Vec<Vec<$module>>, D::Error> {
-                        Vec::<TypedVec<$module>>::deserialize(deserializer)
+                    ) -> Result<Vec<Vec<core::primitive::$module>>, D::Error> {
+                        Vec::<TypedVec<core::primitive::$module>>::deserialize(deserializer)
                             .map(|rows| rows.into_iter().map(|t| t.0).collect())
                     }
                 }

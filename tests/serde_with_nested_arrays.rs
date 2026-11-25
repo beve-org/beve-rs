@@ -1,7 +1,8 @@
 //! `beve::typed::option::*`, `beve::typed::vec::*`, `beve::typed::usize` and
-//! `beve::typed::isize`, the pointer-width ones nested too: round-trips through every decoder and JSON, the bytes
-//! plain serde writes where it already writes a typed array, and a typed array
-//! where it does not (an empty one).
+//! `beve::typed::isize`, the pointer-width ones nested too: round-trips
+//! through every decoder and JSON, the bytes plain serde writes where it
+//! already writes a typed array, and a typed array where it does not (an
+//! empty one).
 
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;

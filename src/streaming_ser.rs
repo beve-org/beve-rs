@@ -1266,10 +1266,10 @@ impl<'a, W: Write> ser::SerializeMap for StreamingMapSerializer<'a, W> {
             }
             fn serialize_newtype_struct<T: ?Sized + Serialize>(
                 self,
-                _: &'static str,
-                _: &T,
+                _name: &'static str,
+                value: &T,
             ) -> Result<()> {
-                Err(Error::InvalidType("newtype not allowed as object key"))
+                value.serialize(self)
             }
             fn serialize_newtype_variant<T: ?Sized + Serialize>(
                 self,

@@ -6,6 +6,19 @@ Through 9.x there was one exemption, for the `mat` feature's hdf5-pure version. 
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
+## Unreleased
+
+### Added
+
+- `beve::typed::option::<scalar>` for `Option<Vec<scalar>>` fields and `beve::typed::vec::<scalar>` for `Vec<Vec<scalar>>` fields: each array is a typed array, an empty one included, encoded and decoded in bulk. Non-empty arrays are the bytes plain serde writes.
+- `beve::typed::usize` and `beve::typed::isize`, written as typed `u64` / `i64` arrays (what plain serde writes for a non-empty `Vec<usize>`).
+- `beve::field_bytes(bytes, pointer)`: the encoded bytes of the value at a JSON pointer. With `read_typed_slice`, which accepts only a typed array, it checks how a field was written; decoding stays lenient.
+- A newtype struct can be an object key; it is written as its inner key.
+
+### Fixed
+
+- Newtype structs did not decode from bytes (`from_slice`, `from_reader_streaming`): the decoders handed a derived newtype visitor the inner value without `visit_newtype_struct`, so `struct Meters(f64)` failed with "expected tuple struct", whether a value, an array element (numeric, complex, string or bool) or a map key. Through `Value` (`from_value`), only map keys were affected.
+
 ## 11.0.1 - 2026-11-24
 
 A security fix for the `mat` feature. No API change, and no change to the bytes written for input within the recursion limit.

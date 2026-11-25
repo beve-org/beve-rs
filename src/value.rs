@@ -1842,9 +1842,16 @@ impl<'de> Deserializer<'de> for KeyAsDeserializer<'de> {
         self.deserialize_str(visitor)
     }
 
+    fn deserialize_newtype_struct<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_newtype_struct(self)
+    }
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char bytes byte_buf
-        option unit unit_struct newtype_struct seq tuple tuple_struct map struct
+        option unit unit_struct seq tuple tuple_struct map struct
         enum identifier ignored_any
     }
 }

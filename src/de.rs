@@ -1062,7 +1062,11 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
                         None => self.deserialize_any(visitor),
                     };
                 }
-                self.deserialize_any(visitor)
+                // Any other newtype struct is its inner value on the wire (the
+                // serializers write it transparently), so hand the visitor the
+                // inner value as serde's newtype contract expects. A derived
+                // newtype visitor accepts nothing else.
+                visitor.visit_newtype_struct(self)
             }
         }
     }
@@ -1416,7 +1420,8 @@ impl<'de> de::SeqAccess<'de> for SeqAccessBool<'de> {
             self.byte_idx += 1;
         }
         self.remaining -= 1;
-        seed.deserialize(BoolDeserializer::new(bit != 0)).map(Some)
+        seed.deserialize(NewtypeAdapter(BoolDeserializer::new(bit != 0)))
+            .map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
         Some(self.remaining)
@@ -1438,10 +1443,50 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqAccessString<'a, 'de> {
         }
         let s = self.de.parse_string_borrowed()?;
         self.remaining -= 1;
-        seed.deserialize(BorrowedStrDeserializer::new(s)).map(Some)
+        seed.deserialize(NewtypeAdapter(BorrowedStrDeserializer::new(s)))
+            .map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
         Some(self.remaining)
+    }
+}
+
+/// One of serde's value deserializers, for a bool, string or string key read off
+/// the wire, made to decode a newtype struct around it. Serde's own forward
+/// `deserialize_newtype_struct` to `deserialize_any`, which a derived newtype
+/// visitor refuses. Enums still go to the inner deserializer, which reads a
+/// unit variant from a string.
+pub(crate) struct NewtypeAdapter<D>(pub(crate) D);
+
+impl<'de, D: de::Deserializer<'de>> de::Deserializer<'de> for NewtypeAdapter<D> {
+    type Error = D::Error;
+    fn deserialize_any<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> core::result::Result<V::Value, D::Error> {
+        self.0.deserialize_any(visitor)
+    }
+    fn deserialize_newtype_struct<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> core::result::Result<V::Value, D::Error> {
+        visitor.visit_newtype_struct(self)
+    }
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        name: &'static str,
+        variants: &'static [&'static str],
+        visitor: V,
+    ) -> core::result::Result<V::Value, D::Error> {
+        self.0.deserialize_enum(name, variants, visitor)
+    }
+    fn is_human_readable(&self) -> bool {
+        self.0.is_human_readable()
+    }
+    forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
+        option unit unit_struct seq tuple tuple_struct map struct identifier ignored_any
     }
 }
 
@@ -1460,7 +1505,7 @@ impl<'de, 'a> de::MapAccess<'de> for MapAccessString<'a, 'de> {
         let key_len = read_size(self.de.input, &mut self.de.pos)? as usize;
         let key_bytes = self.de.read_exact(key_len)?;
         let key = decode_utf8(key_bytes, "invalid utf-8 in key")?;
-        seed.deserialize(BorrowedStrDeserializer::new(key))
+        seed.deserialize(NewtypeAdapter(BorrowedStrDeserializer::new(key)))
             .map(Some)
     }
     fn next_value_seed<V: de::DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
@@ -1555,8 +1600,15 @@ impl<'de, 'a> de::Deserializer<'de> for ComplexElemDe<'a, 'de> {
     fn deserialize_tuple<V: Visitor<'de>>(self, _len: usize, visitor: V) -> Result<V::Value> {
         self.deserialize_any(visitor)
     }
+    fn deserialize_newtype_struct<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value> {
+        visitor.visit_newtype_struct(self)
+    }
     forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct newtype_struct tuple_struct map struct enum identifier ignored_any
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct tuple_struct map struct enum identifier ignored_any
     }
 }
 
@@ -1663,7 +1715,14 @@ impl<'de, 'a> de::Deserializer<'de> for SeqArrayDeUnsigned<'a, 'de> {
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         self.deserialize_any(visitor)
     }
-    forward_to_deserialize_any! { bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct newtype_struct tuple tuple_struct map struct enum identifier ignored_any }
+    fn deserialize_newtype_struct<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value> {
+        visitor.visit_newtype_struct(self)
+    }
+    forward_to_deserialize_any! { bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct tuple tuple_struct map struct enum identifier ignored_any }
 }
 
 struct SeqArrayDeSigned<'a, 'de> {
@@ -1680,7 +1739,14 @@ impl<'de, 'a> de::Deserializer<'de> for SeqArrayDeSigned<'a, 'de> {
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         self.deserialize_any(visitor)
     }
-    forward_to_deserialize_any! { bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct newtype_struct tuple tuple_struct map struct enum identifier ignored_any }
+    fn deserialize_newtype_struct<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value> {
+        visitor.visit_newtype_struct(self)
+    }
+    forward_to_deserialize_any! { bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf option unit unit_struct tuple tuple_struct map struct enum identifier ignored_any }
 }
 
 struct MapAccessSigned<'a, 'de> {
@@ -2002,7 +2068,7 @@ impl<'de> de::Deserializer<'de> for NumDe {
                 let deser = HalfBitsDeserializer { kind, bits };
                 visitor.visit_newtype_struct(deser)
             }
-            _ => self.deserialize_any(visitor),
+            _ => visitor.visit_newtype_struct(self),
         }
     }
 

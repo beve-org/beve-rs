@@ -6,11 +6,17 @@ Through 9.x there was one exemption, for the `mat` feature's hdf5-pure version. 
 
 Entries for 4.0.0 and earlier were written after the fact, from the tagged releases and their merged pull requests, so they summarize each release rather than enumerate it. 5.0.0 onward is written as part of the change.
 
-## Unreleased
+## 11.2.0 - 2026-11-25
 
-### Fixed
+`beve::typed::option` and `beve::typed::vec` gain `usize` and `isize`. No breaking change, and the bytes beve writes are unchanged.
 
-- `beve::typed::option::{usize, isize}` and `beve::typed::vec::{usize, isize}` were missing, so naming them failed to compile with a misleading "module is private" error. They now exist, written as typed `u64` / `i64` arrays like `typed::usize`, and a path to an element the helpers lack now fails as "not found".
+### Added
+
+- `beve::typed::option::{usize, isize}` and `beve::typed::vec::{usize, isize}`, written as typed `u64` / `i64` arrays like `typed::usize`. Naming them before failed to compile with a misleading "module is private" error. ([#69](https://github.com/beve-org/beve-rs/pull/69))
+
+### Changed
+
+- A path to an element the `typed::option` / `typed::vec` helpers lack now fails to compile as "not found" rather than "module is private". ([#69](https://github.com/beve-org/beve-rs/pull/69))
 
 ## 11.1.0 - 2026-11-25
 

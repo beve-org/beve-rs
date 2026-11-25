@@ -11,6 +11,7 @@
 //! |---|---|
 //! | [`from_field`] | Navigate to a pointer and deserialize the value there. |
 //! | [`from_field_slice`] | Navigate to a typed numeric array and deserialize a sub-range. |
+//! | [`field_bytes`] | Navigate to a pointer and return the encoded bytes of the value there. |
 //! | [`skip_value`] | Advance past one BEVE value without deserializing it. |
 //!
 //! # JSON Pointer syntax
@@ -118,12 +119,55 @@ use simdutf8::basic::from_utf8;
 /// assert_eq!(t, "Main");
 /// ```
 pub fn from_field<'de, T: Deserialize<'de>>(bytes: &'de [u8], pointer: &str) -> Result<T> {
-    let tokens = parse_json_pointer(pointer)?;
-    let mut pos: usize = 0;
-    navigate_to(bytes, &mut pos, &tokens)?;
+    let pos = locate(bytes, pointer)?;
     let mut de = crate::de::Deserializer::from_slice_at(bytes, pos);
     let value = T::deserialize(&mut de)?;
     Ok(value)
+}
+
+/// The encoded bytes of the value at `pointer`: its header through its last
+/// byte, borrowed from `bytes` and not decoded.
+///
+/// Decoding is deliberately lenient about how an array was written: a
+/// `Vec<f64>` field, with or without [`typed::f64`](crate::typed::f64), reads
+/// a typed array and a generic array of numbers alike, since other writers may
+/// send either. These bytes say which it was. [`read_typed_slice`] on them is
+/// strict, accepting only a typed array of its element type, so a test can
+/// check that a field is written as one.
+///
+/// [`read_typed_slice`]: crate::read_typed_slice
+///
+/// # Errors
+///
+/// Returns an error if navigation to `pointer` fails (same rules as
+/// [`from_field`]) or the value there is malformed or truncated.
+///
+/// # Examples
+///
+/// ```rust
+/// use serde::Serialize;
+///
+/// #[derive(Serialize)]
+/// struct Run {
+///     #[serde(with = "beve::typed::f64")]
+///     typed: Vec<f64>,
+///     plain: Vec<f64>,
+/// }
+///
+/// let bytes = beve::to_vec(&Run { typed: vec![], plain: vec![] }).unwrap();
+///
+/// // Serde cannot tell an empty `Vec`'s element type, so without the helper
+/// // the empty array is written as a generic one.
+/// let typed = beve::field_bytes(&bytes, "/typed").unwrap();
+/// assert!(beve::read_typed_slice::<f64>(typed).unwrap().is_empty());
+/// let plain = beve::field_bytes(&bytes, "/plain").unwrap();
+/// assert!(beve::read_typed_slice::<f64>(plain).is_err());
+/// ```
+pub fn field_bytes<'a>(bytes: &'a [u8], pointer: &str) -> Result<&'a [u8]> {
+    let start = locate(bytes, pointer)?;
+    let mut end = start;
+    skip_value(bytes, &mut end)?;
+    Ok(&bytes[start..end])
 }
 
 /// Deserialize a sub-range of a typed numeric array located at `pointer`.
@@ -175,9 +219,7 @@ pub fn from_field_slice<T: serde::de::DeserializeOwned>(
     start: usize,
     count: usize,
 ) -> Result<T> {
-    let tokens = parse_json_pointer(pointer)?;
-    let mut pos: usize = 0;
-    navigate_to(bytes, &mut pos, &tokens)?;
+    let mut pos = locate(bytes, pointer)?;
 
     // Read the typed-array header and produce a sub-slice view
     let header = read_byte(bytes, &mut pos)?;
@@ -236,6 +278,14 @@ pub fn from_field_slice<T: serde::de::DeserializeOwned>(
 // ---------------------------------------------------------------------------
 // JSON Pointer parsing (RFC 6901)
 // ---------------------------------------------------------------------------
+
+/// The offset of the value at `pointer` in `bytes`.
+fn locate(bytes: &[u8], pointer: &str) -> Result<usize> {
+    let tokens = parse_json_pointer(pointer)?;
+    let mut pos: usize = 0;
+    navigate_to(bytes, &mut pos, &tokens)?;
+    Ok(pos)
+}
 
 fn parse_json_pointer(pointer: &str) -> Result<Vec<String>> {
     if pointer.is_empty() {

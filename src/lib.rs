@@ -79,7 +79,7 @@ pub use crate::fast::{
     to_writer_typed_slice, typed_slice_size, write_bool_slice, write_complex_slice,
     write_str_slice, write_string_slice, write_typed_slice,
 };
-pub use crate::field::{from_field, from_field_slice, skip_value};
+pub use crate::field::{field_bytes, from_field, from_field_slice, skip_value};
 pub use crate::json::{
     beve_slice_to_json, beve_slice_to_json_string, json_slice_to_beve, json_str_to_beve,
 };
